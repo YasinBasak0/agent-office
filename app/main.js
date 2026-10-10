@@ -1,6 +1,6 @@
 // Agent Office shell: window, projects, accounts, one claude pty per project (several with tabs), and office data.
 const { app, BrowserWindow, ipcMain, dialog, clipboard, Menu, Notification, shell: eShell } = require('electron');
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -12,6 +12,7 @@ const N = require('./src/attention.js');
 const OS = require('./src/platform.js');
 const L = require('./src/locales.js');
 const UP = require('./src/updates.js');
+const M = require('./src/memory.js');
 const IS_MAC = OS.isMac();
 
 let win = null;
@@ -371,6 +372,22 @@ function scanUsage() {
 }
 
 // Is there a Claude session in the folder to resume with this account (see projects.js historyDir).
+// Accounts other than default use the project's ~/.claude memory (see src/memory.js): the account's own memories
+// are merged into it first, then the session gets autoMemoryDirectory pointing there. null: Claude Code's default.
+function projectMemoryDir(cwd, configDir) {
+  if (!configDir) return null;
+  let git = '';
+  try {
+    git = execFileSync('git', ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'],
+      { cwd, timeout: 2000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch {}
+  const base = M.memoryBase(cwd, git);
+  const shared = M.sharedMemoryDir({ configDir, home: app.getPath('home'), base });
+  if (!shared) return null;
+  try { M.mergeMemory(M.accountMemoryDir({ configDir, base }), shared); } catch (e) { console.error('hafıza birleştirilemedi:', e.message); }
+  return shared;
+}
+
 function hasHistory(dir, configDir) {
   try { return fs.readdirSync(P.historyDir(dir, configDir, app.getPath('home'))).some((f) => f.endsWith('.jsonl')); } catch { return false; }
 }
@@ -390,11 +407,13 @@ function startPty(id, { resume = false } = {}) {
   const { cols, rows } = sizes.get(id) || lastSize;
   // the plugin path is passed as $1: paths with spaces (Application Support) cause no quoting trouble.
   // The account folder is set again after the rc files (see accounts.js ptyEnv).
-  // claude's arguments are passed via "$@": the plugin path and the status line setting (for the quota, see usage.js).
+  // claude's arguments are passed via "$@": the plugin path and the settings JSON (status line for the quota, see
+  // usage.js; the project memory folder, see memory.js).
   const dir = pluginDir();
   const sl = usageStatusLine(project, configDir, cwd, usageKey(id));
+  const settings = M.withMemorySetting(sl?.settings, isDir(cwd) ? projectMemoryDir(cwd, configDir) : null);
   const isResume = resume && (!tab || Boolean(tab.worktree)) && hasHistory(cwd, configDir);
-  const args = [...(dir ? ['--plugin-dir', dir] : []), ...(sl ? ['--settings', sl.settings] : []), ...(isResume ? ['--continue'] : [])];
+  const args = [...(dir ? ['--plugin-dir', dir] : []), ...(settings ? ['--settings', settings] : []), ...(isResume ? ['--continue'] : [])];
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
   const env = { ...A.ptyEnv(process.env, configDir), AGENT_OFFICE_APP: '1' };

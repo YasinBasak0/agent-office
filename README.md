@@ -77,7 +77,7 @@ Homebrew keeps showing the version it installed, because the app updates itself:
 | **Change the bots' color** | **Bot color** at the bottom of the sidebar (↺ resets it) |
 | **Hide the sidebar** | ≡ in the title bar |
 
-The **Default** account is your normal Claude Code login in `~/.claude`. A new account starts empty: it does not share settings, MCP servers or `CLAUDE.md` with your default one.
+The **Default** account is your normal Claude Code login in `~/.claude`. A new account starts empty: it does not share settings, MCP servers or `CLAUDE.md` with your default one. Project memory is the exception: every account reads and writes the project's memory in `~/.claude/projects/…/memory/`, the same one plain Claude Code uses, so your saved rules apply whichever account a project runs on.
 
 ## How it works
 

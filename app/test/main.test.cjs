@@ -582,3 +582,49 @@ test('tema ayarı: auto ya da ad; bilinmeyen ad saklanır ama ofise boş (projey
   assert.equal(TH.effectiveTheme('gone', m), '');
   assert.equal(TH.effectiveTheme(undefined, m), '');
 });
+
+const M = require('../src/memory.js');
+const fsT = require('fs');
+const osT = require('os');
+const pathT = require('path');
+
+test('hafıza: slug Claude Code gibi, worktree ana klasörün hafızasını kullanır', () => {
+  assert.equal(M.memorySlug('/Users/a/My Proj.x'), '-Users-a-My-Proj-x');
+  assert.equal(M.memorySlug('/' + 'a'.repeat(250)), null);
+  assert.equal(M.memoryBase('/r/sub', '/r\n/r/.git\n'), '/r');
+  assert.equal(M.memoryBase('/r-wt-2', '/r-wt-2\n/r/.git\n'), '/r');
+  assert.equal(M.memoryBase('/x', ''), '/x');
+  assert.equal(M.memoryBase('/s', '/s\n/r/.git/modules/s\n'), '/s');
+  assert.equal(M.sharedMemoryDir({ configDir: null, home: '/h', base: '/r' }), null);
+  assert.equal(M.sharedMemoryDir({ configDir: '/acc/w', home: '/h', base: '/r' }), '/h/.claude/projects/-r/memory');
+  assert.equal(M.accountMemoryDir({ configDir: '/acc/w', base: '/r' }), '/acc/w/projects/-r/memory');
+});
+
+test('hafıza: --settings JSON\'una autoMemoryDirectory eklenir', () => {
+  assert.equal(M.withMemorySetting(null, null), null);
+  assert.equal(M.withMemorySetting('{"a":1}', null), '{"a":1}');
+  assert.deepEqual(JSON.parse(M.withMemorySetting('{"statusLine":{"type":"command"}}', '/m')), { statusLine: { type: 'command' }, autoMemoryDirectory: '/m' });
+  assert.deepEqual(JSON.parse(M.withMemorySetting(null, '/m')), { autoMemoryDirectory: '/m' });
+});
+
+test('hafıza: hesabın hafızası ~/.claude\'a birleşir, mevcut olan ezilmez', () => {
+  const root = fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-mem-'));
+  const from = pathT.join(root, 'acc'); const to = pathT.join(root, 'home');
+  fsT.mkdirSync(from); fsT.mkdirSync(to);
+  fsT.writeFileSync(pathT.join(to, 'MEMORY.md'), '# Memory Index\n\n- [Commit](commit.md) — no attribution');
+  fsT.writeFileSync(pathT.join(to, 'commit.md'), 'home');
+  fsT.writeFileSync(pathT.join(from, 'commit.md'), 'account');
+  fsT.writeFileSync(pathT.join(from, 'new.md'), 'new');
+  fsT.writeFileSync(pathT.join(from, 'MEMORY.md'), '- [New](new.md) — x\n- [Commit](commit.md) — old\n');
+  assert.deepEqual(M.mergeMemory(from, to), ['new.md']);
+  assert.equal(fsT.readFileSync(pathT.join(to, 'commit.md'), 'utf8'), 'home');
+  assert.equal(fsT.readFileSync(pathT.join(to, 'new.md'), 'utf8'), 'new');
+  assert.equal(fsT.readFileSync(pathT.join(to, 'MEMORY.md'), 'utf8'), '# Memory Index\n\n- [Commit](commit.md) — no attribution\n- [New](new.md) — x\n');
+  // idempotent; a missing source or target folder is fine
+  assert.deepEqual(M.mergeMemory(from, to), []);
+  assert.deepEqual(M.mergeMemory(pathT.join(root, 'none'), to), []);
+  const fresh = pathT.join(root, 'fresh', 'memory');
+  assert.deepEqual(M.mergeMemory(from, fresh).sort(), ['commit.md', 'new.md']);
+  assert.equal(fsT.readFileSync(pathT.join(fresh, 'MEMORY.md'), 'utf8'), '- [New](new.md) — x\n- [Commit](commit.md) — old\n');
+  fsT.rmSync(root, { recursive: true, force: true });
+});
