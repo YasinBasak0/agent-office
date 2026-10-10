@@ -60,7 +60,7 @@ agentOffice.platform: 'darwin' | 'linux'                               // proces
 agentOffice.pathForFile(file: File): string
 ```
 
-The sidebar's add button adds projects; ⌘O = add project, ⌘1…9 = switch, ⌘V = paste into the focused terminal. On Linux the same keys are Ctrl+Shift+O, Ctrl+Shift+1…9 and Ctrl+Shift+V (Ctrl+Shift+C / X copy and cut from the menu), because plain Ctrl+… keys belong to Claude Code in the terminal. Linux windows use the system title bar (no traffic-light inset), and the in-app updater runs only in the AppImage.
+The sidebar's add button adds projects; ⌘O = add project, ⌘1…9 = switch, ⌘V = paste into the focused terminal. On Linux the same keys are Ctrl+Shift+O, Ctrl+Shift+1…9 and Ctrl+Shift+V (Ctrl+Shift+C / X copy and cut from the menu), because plain Ctrl+… keys belong to Claude Code in the terminal. In the terminal, ⌘Enter (macOS) and Ctrl+Enter are sent to Claude Code as ctrl+enter (`ESC [13;5u`, `src/terminal-keys.mjs`), its send-now key for a queued message; xterm.js alone would send a bare Enter. Linux windows use the system title bar (no traffic-light inset), and the in-app updater runs only in the AppImage.
 
 ## `src/sessions.js` (main)
 
