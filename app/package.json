@@ -14,7 +14,7 @@
     "predist": "node scripts/sync-core.mjs",
     "dist": "electron-builder --mac && rm -rf release/mac release/mac-arm64 release/builder-debug.yml",
     "predist:linux": "node scripts/sync-core.mjs",
-    "dist:linux": "electron-builder --linux --publish never && rm -rf release/linux-unpacked release/builder-debug.yml",
+    "dist:linux": "electron-builder --linux --config scripts/linux-builder-config.cjs --publish never && rm -rf release/linux-unpacked release/builder-debug.yml",
     "predist:win": "node scripts/sync-core.mjs",
     "dist:win": "electron-builder --win --config scripts/win-builder-config.cjs --publish never && node -e \"for (const p of ['release/win-unpacked', 'release/builder-debug.yml']) require('fs').rmSync(p, { recursive: true, force: true })\"",
     "icon": "node scripts/make-icon.mjs",
@@ -108,9 +108,6 @@
       "synopsis": "Claude Code in a pixel office",
       "maintainer": "Savas Isisever <isisever@users.noreply.github.com>",
       "artifactName": "AgentOffice-${version}-${arch}.${ext}",
-      "files": [
-        "!node_modules/node-pty/prebuilds/darwin-*/**"
-      ],
       "syncDesktopName": true
     },
     "win": {
