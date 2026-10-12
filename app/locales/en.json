@@ -41,6 +41,7 @@
     "working": "{n} working",
     "delivered": "{n} delivered",
     "workedFrom": "worked on from {from}",
+    "bossWorking": "boss working",
     "defaultLabel": "Default",
     "defaultNote": "The Default account is your normal Claude Code login on this Mac; you cannot log out of it here.",
     "authDot": {
