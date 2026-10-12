@@ -1,0 +1,58 @@
+name: release-windows
+
+# The macOS release is published by hand (README → Releasing); every published release gets the Windows installer
+# here: the NSIS Setup .exe (x64, not code-signed), its blockmap, and latest.yml for the in-app updater. Only these
+# files are uploaded, so latest-mac.yml and latest-linux.yml are left alone.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.7.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check the version matches the tag
+        run: |
+          v=$(node -p "require('./app/package.json').version")
+          [ "v$v" = "$TAG" ] || [ "$v" = "$TAG" ] || { echo "app/package.json $v, tag $TAG"; exit 1; }
+      # not npm ci: the lock file was made on macOS (see test.yml → linux-build)
+      - name: Install app dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: Build the installer
+        working-directory: app
+        run: npm run dist:win
+      - name: Check the installer
+        working-directory: app
+        run: |
+          v=$(node -p "require('./package.json').version")
+          ls -l release
+          test -f "release/AgentOffice-$v-Setup.exe"
+          test -f "release/AgentOffice-$v-Setup.exe.blockmap"
+          grep -q "AgentOffice-$v-Setup.exe" release/latest.yml
+      - name: Upload to the release
+        working-directory: app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          gh release upload "$TAG" "release/AgentOffice-$v-Setup.exe" "release/AgentOffice-$v-Setup.exe.blockmap" release/latest.yml --clobber

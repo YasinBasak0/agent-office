@@ -86,3 +86,54 @@ jobs:
             app/release/*.deb
             app/release/latest-linux.yml
           if-no-files-found: error
+
+  # Windows installer (NSIS, x64; not code-signed). node-pty ships a win32-x64 prebuild (ConPTY), so nothing has to
+  # compile. npm install, not npm ci: the lock file was made on macOS (see linux-build). Besides the build: the
+  # Windows-only checks (status line through Git Bash and PowerShell, npm's claude.cmd through cmd.exe), the platform
+  # tests of main.test.cjs, and node-pty running a command in a ConPTY inside the packaged app.
+  windows-build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Windows checks
+        run: node --test app/test/windows.test.cjs
+      - name: Platform decisions (main.test.cjs, Windows and terminal tests)
+        run: node --test --test-name-pattern="^(Windows|terminal):" app/test/main.test.cjs
+      - name: Install app dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+      - name: Build the installer
+        working-directory: app
+        run: |
+          node scripts/sync-core.mjs
+          npx electron-builder --win --config scripts/win-builder-config.cjs --publish never
+      - name: Check the installer
+        working-directory: app
+        run: |
+          ls -l release
+          test -f release/latest.yml
+          ls release/AgentOffice-*-Setup.exe release/AgentOffice-*-Setup.exe.blockmap
+          # node-pty for Windows must be in the package (prebuild or a local build), with ConPTY
+          u="release/win-unpacked/resources/app.asar.unpacked/node_modules/node-pty"
+          test -f "$u/prebuilds/win32-x64/conpty.node" || test -f "$u/build/Release/conpty.node"
+          if ls "$u/prebuilds" 2>/dev/null | grep -q darwin; then echo "macOS node-pty prebuilds in the package"; exit 1; fi
+      - name: node-pty in the packaged app (ConPTY)
+        working-directory: app
+        timeout-minutes: 2
+        env:
+          ELECTRON_RUN_AS_NODE: '1'
+        run: '"release/win-unpacked/Agent Office.exe" test/pty-smoke.cjs "$(cygpath -w "$PWD/release/win-unpacked/resources/app.asar.unpacked/node_modules/node-pty")"'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-office-windows
+          path: |
+            app/release/*-Setup.exe
+            app/release/*-Setup.exe.blockmap
+            app/release/latest.yml
+          if-no-files-found: error
