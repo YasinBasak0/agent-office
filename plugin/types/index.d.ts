@@ -52,6 +52,8 @@ declare module 'claude-code' {
       inboxSeen: number
       isOpen: boolean
       frame: OfficeFrame
+      // the office journal (app contract v3.12): read up to `cursor`, the ids seen around it
+      journal: { cursor: number; seen: string[] }
     }
   }
 }
