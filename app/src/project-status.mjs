@@ -1,16 +1,20 @@
 // The sidebar's per-project subline (pure: the renderer draws it, tests run it with a translator).
 
 /**
- * "2 working · 5 delivered", or "idle". Work across projects (contract v3.5): agents of another project's session
+ * "2 working · 5 delivered", or "idle". A busy boss on the project (isBossHere: its own session's boss, wherever it
+ * cd'd, or another session's boss working in this folder) comes first, "boss working · 5 delivered", so a project
+ * the boss works on alone never reads as idle. Work across projects (contract v3.5): agents of another project's session
  * working in this project's folder (readOffice's `remote`) count toward its "N working", and the line names where
  * they are worked on from.
- * @param {{ working?: number, delivered?: number, remote?: { working?: number, from?: string[] } | null } | undefined} s
+ * @param {{ working?: number, delivered?: number, isBossBusy?: boolean,
+ *   remote?: { working?: number, isBossBusy?: boolean, from?: string[] } | null } | undefined} s
  *   one entry of OfficeData.projects
  * @param {(key: string, vars?: Record<string, unknown>) => string} t the translator
  */
 export function projectStatus(s, t) {
   if (!s) return t('sidebar.idle');
   const parts = [];
+  if (isBossHere(s)) parts.push(t('sidebar.bossWorking'));
   const working = (s.working || 0) + (s.remote?.working || 0);
   if (working) parts.push(t('sidebar.working', { n: working }));
   if (s.delivered) parts.push(t('sidebar.delivered', { n: s.delivered }));

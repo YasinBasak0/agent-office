@@ -1311,13 +1311,48 @@ test('kenar çubuğu durumu: başka projeden çalışılan proje çalışıyor g
   assert.equal(projectStatus(remote, tr), '2 çalışan · shop projesinden çalışılıyor');
   assert.equal(projectStatus(remote, en), '2 working · worked on from shop');
   const both = { working: 1, delivered: 3, remote: { working: 1, isBossBusy: true, from: ['shop', 'blog'] } };
-  assert.equal(projectStatus(both, en), '2 working · 3 delivered · worked on from shop, blog');
+  assert.equal(projectStatus(both, en), 'boss working · 2 working · 3 delivered · worked on from shop, blog');
   // only the boss works there: no agents to count, still not idle
   const boss = { working: 0, delivered: 0, isBossBusy: false, remote: { working: 0, isBossBusy: true, from: ['shop'] } };
-  assert.equal(projectStatus(boss, en), 'worked on from shop');
+  assert.equal(projectStatus(boss, en), 'boss working · worked on from shop');
   assert.equal(isBossHere(boss), true);
   assert.equal(isBossHere({ isBossBusy: false }), false);
   assert.equal(isBossHere(undefined), false);
+});
+
+test('kenar çubuğu durumu: ajansız çalışan müdür projeyi boşta göstermez, önce yazılır', async () => {
+  const { projectStatus } = await import('../src/project-status.mjs');
+  const en = await tFor('en');
+  const tr = await tFor('tr');
+  assert.equal(projectStatus({ working: 0, delivered: 0, isBossBusy: true }, tr), 'patron çalışıyor');
+  assert.equal(projectStatus({ working: 0, delivered: 4, isBossBusy: true }, tr), 'patron çalışıyor · 4 teslim');
+  assert.equal(projectStatus({ working: 0, delivered: 4, isBossBusy: true }, en), 'boss working · 4 delivered');
+  assert.equal(projectStatus({ working: 2, delivered: 1, isBossBusy: true }, tr), 'patron çalışıyor · 2 çalışan · 1 teslim');
+  assert.equal(projectStatus({ working: 0, delivered: 4, isBossBusy: false }, tr), '4 teslim');
+  assert.equal(projectStatus({ working: 0, delivered: 0, isBossBusy: false }, tr), 'boşta');
+});
+
+
+test('readOffice: müdür hiçbir projede olmayan bir klasöre (scratchpad worktree) geçse de kendi projesinde meşgul sayılır', async () => {
+  const { projectStatus, isBossHere } = await import('../src/project-status.mjs');
+  const tr = await tFor('tr');
+  const root = fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-bossdir-'));
+  const now = Date.now();
+  fsT.mkdirSync(pathT.join(root, 'sessions'), { recursive: true });
+  fsT.writeFileSync(pathT.join(root, 'sessions', 'sess-1.json'), JSON.stringify({
+    format: 2, project: 'shop', updatedAt: now - 1000, workers: [],
+    stats: { isBossBusy: true, bossDir: '/private/tmp/claude-501/x/scratchpad/wt-boss', today: { date: SS.dayKey(now), ids: ['a', 'b', 'c', 'd'] } },
+  }));
+  const places = [{ dir: '/w/shop', name: 'shop' }, { dir: '/w/blog', name: 'blog' }];
+  const d = SS.readOffice(['shop', 'blog'], now, root, null, places);
+  const byName = Object.fromEntries(d.projects.map((p) => [p.name, p]));
+  assert.equal(d.isBossBusy, true);
+  assert.equal(byName.shop.isBossBusy, true);
+  assert.equal(isBossHere(byName.shop), true);
+  assert.equal(projectStatus(byName.shop, tr), 'patron çalışıyor · 4 teslim');
+  assert.equal(byName.blog.remote, undefined);
+  assert.equal(projectStatus(byName.blog, tr), 'boşta');
+  fsT.rmSync(root, { recursive: true });
 });
 
 test('nextAttention: başka projeden çalışılan proje meşgul sayılmaz; bitiş bildirimi sahibinden gelir', () => {
