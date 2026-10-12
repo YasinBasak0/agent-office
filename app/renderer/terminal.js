@@ -4,6 +4,7 @@ import { Terminal } from '../node_modules/@xterm/xterm/lib/xterm.mjs';
 import { FitAddon } from '../node_modules/@xterm/addon-fit/lib/addon-fit.mjs';
 import { t } from './i18n.js';
 import { isMac, isModKey, keyOf } from './platform.js';
+import { translateKey } from '../src/terminal-keys.mjs';
 
 // Text lives in locales/*.json (terminal.exited). A line already written to the terminal is not rewritten on a language change.
 
@@ -101,7 +102,13 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
   // ⌘V in the terminal is caught here: Chromium's own paste would send empty text for images/files.
   // Linux: Ctrl+Shift+V pastes (Ctrl+V goes to claude, which reads the image from the clipboard); Ctrl+Shift+C/X
   // are not passed to xterm (it would send ^C) and are left to Copy/Cut in the menu.
+  // Cmd+Enter / Ctrl+Enter: xterm would send a bare CR; claude gets ctrl+enter (send a queued message now).
   term.attachCustomKeyEventHandler((ev) => {
+    const seq = translateKey(ev, isMac);
+    if (seq) {
+      if (ev.type === 'keydown') { ev.preventDefault(); term.input(seq); }
+      return false;
+    }
     // macOS: ⌘V and ⌘⇧V (Shift optional, as before); Linux: Ctrl+Shift
     const mod = isMac ? ev.metaKey && !ev.ctrlKey && !ev.altKey : isModKey(ev);
     if (ev.type !== 'keydown' || !mod) return true;

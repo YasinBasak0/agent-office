@@ -628,3 +628,19 @@ test('hafıza: hesabın hafızası ~/.claude\'a birleşir, mevcut olan ezilmez',
   assert.equal(fsT.readFileSync(pathT.join(fresh, 'MEMORY.md'), 'utf8'), '- [New](new.md) — x\n- [Commit](commit.md) — old\n');
   fsT.rmSync(root, { recursive: true, force: true });
 });
+
+test('terminal: ⌘Enter (macOS) ve Ctrl+Enter claude\'a ctrl+enter (hemen gönder) olarak gider', async () => {
+  const K = await import('../src/terminal-keys.mjs');
+  const enter = (m = {}) => ({ key: 'Enter', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...m });
+  assert.equal(K.CTRL_ENTER, '\x1b[13;5u');
+  assert.equal(K.translateKey(enter({ metaKey: true }), true), K.CTRL_ENTER);
+  assert.equal(K.translateKey(enter({ ctrlKey: true }), true), K.CTRL_ENTER);
+  assert.equal(K.translateKey(enter({ ctrlKey: true }), false), K.CTRL_ENTER);
+  // plain Enter, Shift/Option+Enter and ⌘ on Linux stay with xterm
+  assert.equal(K.translateKey(enter(), true), null);
+  assert.equal(K.translateKey(enter({ shiftKey: true }), true), null);
+  assert.equal(K.translateKey(enter({ altKey: true }), true), null);
+  assert.equal(K.translateKey(enter({ metaKey: true }), false), null);
+  assert.equal(K.translateKey(enter({ metaKey: true, ctrlKey: true }), true), null);
+  assert.equal(K.translateKey({ key: 's', ctrlKey: true }, true), null);
+});
