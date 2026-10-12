@@ -1324,10 +1324,10 @@ test('kenar çubuğu durumu: ajansız çalışan müdür projeyi boşta gösterm
   const { projectStatus } = await import('../src/project-status.mjs');
   const en = await tFor('en');
   const tr = await tFor('tr');
-  assert.equal(projectStatus({ working: 0, delivered: 0, isBossBusy: true }, tr), 'müdür çalışıyor');
-  assert.equal(projectStatus({ working: 0, delivered: 4, isBossBusy: true }, tr), 'müdür çalışıyor · 4 teslim');
+  assert.equal(projectStatus({ working: 0, delivered: 0, isBossBusy: true }, tr), 'patron çalışıyor');
+  assert.equal(projectStatus({ working: 0, delivered: 4, isBossBusy: true }, tr), 'patron çalışıyor · 4 teslim');
   assert.equal(projectStatus({ working: 0, delivered: 4, isBossBusy: true }, en), 'boss working · 4 delivered');
-  assert.equal(projectStatus({ working: 2, delivered: 1, isBossBusy: true }, tr), 'müdür çalışıyor · 2 çalışan · 1 teslim');
+  assert.equal(projectStatus({ working: 2, delivered: 1, isBossBusy: true }, tr), 'patron çalışıyor · 2 çalışan · 1 teslim');
   assert.equal(projectStatus({ working: 0, delivered: 4, isBossBusy: false }, tr), '4 teslim');
   assert.equal(projectStatus({ working: 0, delivered: 0, isBossBusy: false }, tr), 'boşta');
 });
@@ -1349,7 +1349,7 @@ test('readOffice: müdür hiçbir projede olmayan bir klasöre (scratchpad workt
   assert.equal(d.isBossBusy, true);
   assert.equal(byName.shop.isBossBusy, true);
   assert.equal(isBossHere(byName.shop), true);
-  assert.equal(projectStatus(byName.shop, tr), 'müdür çalışıyor · 4 teslim');
+  assert.equal(projectStatus(byName.shop, tr), 'patron çalışıyor · 4 teslim');
   assert.equal(byName.blog.remote, undefined);
   assert.equal(projectStatus(byName.blog, tr), 'boşta');
   fsT.rmSync(root, { recursive: true });

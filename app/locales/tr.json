@@ -41,7 +41,7 @@
     "working": "{n} çalışan",
     "delivered": "{n} teslim",
     "workedFrom": "{from} projesinden çalışılıyor",
-    "bossWorking": "müdür çalışıyor",
+    "bossWorking": "patron çalışıyor",
     "defaultLabel": "Varsayılan",
     "defaultNote": "Varsayılan hesap, sistemdeki normal Claude Code girişidir; buradan çıkış yapılmaz.",
     "authDot": {
