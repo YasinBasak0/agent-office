@@ -391,3 +391,4 @@ type Account = { …; shareDefault?: false }   // absent = on; stored in state.j
 
 - **Never shared.** Logins (`.credentials.json`, keychain, `oauthAccount`/`primaryApiKey` in `.claude.json`), `settings.json` (hooks, permissions, env, status line), claude.ai-synced skills and plugins, history, `projects/` transcripts, policy and remote settings. Project memory follows its own rule (v2: always `~/.claude`).
 - **Off.** The account's links made by the app, the marker and the tab's MCP file are removed at the next start; no `--plugin-dir`/`--mcp-config` is added.
+- **MCP file lifetime.** `userData/mcp/<tab>.json` holds tokens, so it exists only while its tab's claude runs: removed when the pty exits or is killed (restart, sleep, tab or project removal, quit), when the tab starts under Default or with the setting off, and at app start every file is removed (`pruneMcpFiles(dir, runningTabKeys)`; none runs yet).

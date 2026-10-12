@@ -1460,3 +1460,21 @@ test('shared config: a session start links, stages and writes the MCP file; neve
   assert.equal(fsT.existsSync(stage), false);
   assert.equal(fsT.readFileSync(pathT.join(cache('lsp'), 'README.md'), 'utf8'), 'readme');
 });
+
+test('shared config: MCP files with tokens live only while their tab runs; Default and off leave none', (t) => {
+  assert.deepEqual(SC.staleMcpFiles(['p1.json', 'p1-2.json', 'old.json', 'p1.json.123'], ['p1', 'p1-2']), ['old.json', 'p1.json.123']);
+  const root = fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-mcp-'));
+  t.after(() => fsT.rmSync(root, { recursive: true, force: true }));
+  const dir = pathT.join(root, 'mcp');
+  fsT.mkdirSync(dir);
+  for (const n of ['a.json', 'b-2.json', 'gone.json']) fsT.writeFileSync(pathT.join(dir, n), '{"mcpServers":{}}');
+  assert.deepEqual(SC.pruneMcpFiles(dir, ['a', 'b-2']).sort(), ['gone.json']);
+  assert.deepEqual(fsT.readdirSync(dir).sort(), ['a.json', 'b-2.json']);
+  assert.deepEqual(SC.pruneMcpFiles(dir).sort(), ['a.json', 'b-2.json']); // app start: no tab runs yet
+  assert.deepEqual(SC.pruneMcpFiles(pathT.join(root, 'missing')), []);
+  // a tab whose project moved to Default: its old file goes at the next start
+  const mcpFile = pathT.join(dir, 'p.json');
+  fsT.writeFileSync(mcpFile, '{"mcpServers":{"s":{"headers":{"Authorization":"Bearer t"}}}}');
+  assert.deepEqual(SC.prepareShared({ account: { id: 'default', configDir: null }, home: root, cwd: null, stageRoot: pathT.join(root, 'st'), mcpFile }), { pluginDirs: [], mcpConfig: null });
+  assert.equal(fsT.existsSync(mcpFile), false);
+});

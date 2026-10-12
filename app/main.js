@@ -217,7 +217,14 @@ function pluginDir() {
   return plugin;
 }
 
+// A tab's MCP file (Default's servers with their tokens, see shared-config.js) lives only while its claude runs.
+const mcpDir = () => path.join(app.getPath('userData'), 'mcp');
+function removeMcpFile(id) {
+  try { fs.rmSync(path.join(mcpDir(), SC.mcpFileName(usageKey(id))), { force: true }); } catch {}
+}
+
 function killPty(id) {
+  if (terms.has(id)) removeMcpFile(id);
   const map = terms.has(id) ? terms : logins;
   const t = map.get(id);
   if (!t) return;
@@ -474,7 +481,7 @@ function sharedConfig(account, cwd, key) {
     return SC.prepareShared({
       account, home: app.getPath('home'), cwd: isDir(cwd) ? cwd : null,
       stageRoot: path.join(app.getPath('userData'), 'shared-plugins'),
-      mcpFile: path.join(app.getPath('userData'), 'mcp', `${key}.json`),
+      mcpFile: path.join(mcpDir(), SC.mcpFileName(key)),
     });
   } catch (e) {
     console.error('varsayılan hesabın ayarları paylaşılamadı:', e.message);
@@ -550,6 +557,7 @@ function startPty(id, { resume = false, sessionId = null, imported = false } = {
   t.onExit(({ exitCode }) => {
     if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
     terms.delete(id);
+    removeMcpFile(id);
     // the session to resume was not found or could not be opened: start fresh without showing the exit to the user
     if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) {
       if (!imported) return startPty(id);
@@ -1389,6 +1397,8 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   buildMenu();
   setupUpdates();
   saveState();
+  // MCP files left by an earlier run (a crash, a forced quit): no tab is running yet, so none belongs to one
+  SC.pruneMcpFiles(mcpDir(), [...terms.keys()].map(usageKey));
   loadUsageCache();
   lastFocusCheck = Date.now();
   checkAllAuth();

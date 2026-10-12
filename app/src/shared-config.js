@@ -247,7 +247,10 @@ function prepareShared({ account, home, cwd, stageRoot, mcpFile, platform = proc
   const none = { pluginDirs: [], mcpConfig: null };
   const configDir = account?.configDir;
   const claudeDir = path.join(home, '.claude');
-  if (!configDir || samePath(configDir, claudeDir)) return none;
+  if (!configDir || samePath(configDir, claudeDir)) {
+    try { fs.rmSync(mcpFile, { force: true }); } catch {}
+    return none;
+  }
   const on = shareEnabled(account);
   syncLinks(configDir, on ? linkPlan(listClaudeDir(claudeDir), claudeDir) : [], { platform });
   if (!on) {
@@ -301,6 +304,25 @@ function prepareShared({ account, home, cwd, stageRoot, mcpFile, platform = proc
   return { pluginDirs, mcpConfig };
 }
 
+// ---- the per-tab MCP files hold tokens: each lives only while its tab's claude runs
+
+const mcpFileName = (key) => `${key}.json`;
+
+/** The files in the MCP folder that belong to no running tab (names: the folder's entries; liveKeys: tab keys). */
+const staleMcpFiles = (names, liveKeys) => {
+  const live = new Set([...liveKeys].map(mcpFileName));
+  return names.filter((n) => !live.has(n));
+};
+
+/** Removes the MCP files of tabs that are not running (at app start: all of them). Returns the removed names. */
+function pruneMcpFiles(dir, liveKeys = []) {
+  const gone = [];
+  for (const n of staleMcpFiles(names(dir), liveKeys)) {
+    try { fs.rmSync(path.join(dir, n), { force: true }); gone.push(n); } catch {}
+  }
+  return gone;
+}
+
 /** The claude arguments for prepareShared's result. */
 const sharedArgs = ({ pluginDirs, mcpConfig }) => [
   ...pluginDirs.flatMap((d) => ['--plugin-dir', d]),
@@ -309,5 +331,5 @@ const sharedArgs = ({ pluginDirs, mcpConfig }) => [
 
 module.exports = {
   MARKER, shareEnabled, sharedMcpServers, sharedPlugins, pluginManifest, stageName, linkPlan, listClaudeDir,
-  syncLinks, stagePlugin, prepareShared, sharedArgs,
+  syncLinks, stagePlugin, prepareShared, sharedArgs, mcpFileName, staleMcpFiles, pruneMcpFiles,
 };
