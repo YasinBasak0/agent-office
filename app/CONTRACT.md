@@ -16,7 +16,7 @@ All UI text is Turkish.
 
 ```ts
 type Project = { id: string; dir: string; name: string; accountId: string }   // name = basename(dir); id stable (random)
-type Account = { id: string; label: string; configDir: string | null; auth: AccountAuth }  // 'default': label 'Varsayılan', configDir null (system ~/.claude)
+type Account = { id: string; label: string; configDir: string | null; auth: AccountAuth; shareDefault?: false }  // 'default': label 'Varsayılan', configDir null (system ~/.claude); shareDefault: v3.6
 type AccountAuth = { state: 'checking' | 'in' | 'out' | 'error'; email?: string; method?: string; error?: string }
 // from `claude auth status --json` run with that account's CLAUDE_CONFIG_DIR: loggedIn → 'in' (email, authMethod), else 'out'
 type ProjectStatus = { id: string; isRunning: boolean }                       // claude pty alive
@@ -41,6 +41,7 @@ agentOffice.projects.onChange(cb: (s: { projects: Project[]; activeId: string | 
 agentOffice.accounts.list(): Promise<Account[]>
 agentOffice.accounts.add(label: string): Promise<Account>
 agentOffice.accounts.rename(id: string, label: string): Promise<void>
+agentOffice.accounts.setShare(id: string, on: boolean): Promise<void> // v3.6: use Default's plugins, skills and MCP servers (not 'default')
 agentOffice.accounts.remove(id: string): Promise<void>                // not 'default'; its projects move to 'default' (restarted)
 agentOffice.accounts.onChange(cb: (accounts: Account[]) => void): () => void   // after add / rename / remove and every auth change ('accounts:changed')
 agentOffice.accounts.refreshAuth(id?: string): Promise<Account[]>     // re-run auth status (one account, or all)
@@ -369,3 +370,25 @@ OfficeData.projects[i].remote?: { working: number; isBossBusy: boolean; from: st
 - **Sidebar** (`src/project-status.mjs`). B's line counts `working + remote.working` and adds `sidebar.workedFrom` (**worked on from A** / **A projesinden çalışılıyor**); its ★ shows while the boss works there.
 - **Office** (`core.mjs`). Such agents sit at desks with B's plate and colour; the boss's sign and the board's busy dot name B too while the boss works there. The panel shows **from A** next to the project and its **Terminal ›** opens A.
 - **Manager mode.** The manager section asks the boss to work in the other project's folder with absolute paths (and have its agents do so) when a job is for another project, so it shows up there.
+
+## Default's plugins, skills and MCP servers in every account (v3.6)
+
+What the user installed for plain Claude Code (`~/.claude`) is available in every account, so a project has the same tools whichever account it runs on. `src/shared-config.js` (pure functions plus the file work; no Electron).
+
+```ts
+agentOffice.accounts.setShare(id: string, on: boolean): Promise<void>
+type Account = { …; shareDefault?: false }   // absent = on; stored in state.json only when off; never on 'default'
+```
+
+- **Setting.** A checkbox under every non-default account in the sidebar: **Use Default's plugins, skills and MCP servers** / **Varsayılan hesabın eklentilerini, skill'lerini ve MCP sunucularını kullan**, default on; its tooltip says what is shared (MCP tokens included) and that it applies when the account's sessions start next. Toggling restarts nothing (`accounts.js` `setAccountShare`).
+- **When.** `startPty` calls `prepareShared` at every start of a tab whose account has a `configDir` (Default: nothing, it already is `~/.claude`). Each item uses the mechanism Claude Code 2.1.296 loads without touching `~/.claude`:
+
+  | Item | Mechanism |
+  | --- | --- |
+  | User MCP servers (`~/.claude.json` top-level `mcpServers`) | `--mcp-config <userData/mcp/<tab>.json>` (0600; a file, so tokens never appear in argv). No `--strict-mcp-config`: the account's own servers still load. A dynamic server replaces a user/local one of the same name, so names in the account's `.claude.json` (top level and `projects[cwd]`) and in `<cwd>/.mcp.json` are left out (`sharedMcpServers`). |
+  | Plugins (`plugins/installed_plugins.json`, scope `user`, enabled in `settings.json` `enabledPlugins`) | `--plugin-dir <installPath>` each, after the app's own plugin: Default's installed copy, no second install, nothing in the account's plugin registry. A `strict: false` marketplace plugin has no `.claude-plugin/plugin.json`; it gets `userData/shared-plugins/<name@marketplace>/` (plugin.json = its marketplace entry without `source`/`category`/`strict`/`tags`, plus links to the installed copy's files), and that folder is passed instead. Skipped: `agent-office` (passed already), plugins under `plugins/synced/`, and plugins the account enabled itself (by name: `--plugin-dir` would override the account's install). Stage folders of plugins Default no longer has are removed. `enabledPlugins` + `extraKnownMarketplaces` in `--settings` were tried: Claude Code does not install them by itself. |
+  | Personal skills, agents, commands, output styles (`~/.claude/{skills,agents,commands,output-styles}/<entry>`), `~/.claude/CLAUDE.md` | Links in the account folder: `<config>/<dir>/<entry>` → the entry in `~/.claude` (Windows: directory junctions; a file falls back to a hard link, then a copy). Never `skills/synced` (claude.ai's per-account skills) or dot entries. An existing entry is never replaced; the app's links are listed in `<config>/.agent-office-shared.json`, and only those are updated or removed (source gone, or the setting off). Removal unlinks; it never follows a link. |
+
+- **Never shared.** Logins (`.credentials.json`, keychain, `oauthAccount`/`primaryApiKey` in `.claude.json`), `settings.json` (hooks, permissions, env, status line), claude.ai-synced skills and plugins, history, `projects/` transcripts, policy and remote settings. Project memory follows its own rule (v2: always `~/.claude`).
+- **Off.** The account's links made by the app, the marker and the tab's MCP file are removed at the next start; no `--plugin-dir`/`--mcp-config` is added.
+- **MCP file lifetime.** `userData/mcp/<tab>.json` holds tokens, so it exists only while its tab's claude runs: removed when the pty exits or is killed (restart, sleep, tab or project removal, quit), when the tab starts under Default or with the setting off, and at app start every file is removed (`pruneMcpFiles(dir, runningTabKeys)`; none runs yet).

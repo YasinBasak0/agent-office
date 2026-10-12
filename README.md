@@ -95,7 +95,7 @@ Homebrew keeps showing the version it installed, because the app updates itself:
 | **Change the bots' color** | **Bot color** at the bottom of the sidebar (↺ resets it) |
 | **Hide the sidebar** | ≡ in the title bar |
 
-The **Default** account is your normal Claude Code login in `~/.claude`. A new account starts empty: it does not share settings, MCP servers or `CLAUDE.md` with your default one. Project memory is the exception: every account reads and writes the project's memory in `~/.claude/projects/…/memory/`, the same one plain Claude Code uses, so your saved rules apply whichever account a project runs on.
+The **Default** account is your normal Claude Code login in `~/.claude`. Every other account uses what you installed there too: your plugins, personal skills, agents, commands, output styles, `CLAUDE.md` and user MCP servers, **including the tokens in their headers or environment**, so a project gets the same tools whichever account it runs on. Each account keeps its own login, `settings.json`, history and the skills claude.ai syncs for that account; an MCP server, plugin or skill the account has set up itself wins over Default's one of the same name. To keep an account apart, untick **Use Default's plugins, skills and MCP servers** under it in the sidebar; it applies when that account's Claude sessions start next. Project memory is shared as well: every account reads and writes the project's memory in `~/.claude/projects/…/memory/`, the same one plain Claude Code uses, so your saved rules apply whichever account a project runs on.
 
 ## The boss delegates
 
@@ -168,7 +168,7 @@ All data stays on your machine:
 | --- | --- |
 | `~/.claude/agent-office/sessions/` | Per session: the agents, the first 600 characters of each agent's task and 4000 of its result, and a one-line summary of its last 20 tool calls (commands, file paths, search patterns, URLs), and the folder each agent and the boss last worked in. Removed automatically a day after the session ends. |
 | `.agentoffice` files | Only where you save them: a session you chose to move (see [Move a session to another computer](#move-a-session-to-another-computer)). |
-| `~/Library/Application Support/Agent Office/` (Linux: `~/.config/Agent Office/`, Windows: `%APPDATA%\Agent Office\`) | Your project list, the config folders of the accounts you added (each one holds that account's Claude Code login) and, under `usage/`, each project's latest Claude Code status line input (model, context and plan usage), used for the usage bars. |
+| `~/Library/Application Support/Agent Office/` (Linux: `~/.config/Agent Office/`, Windows: `%APPDATA%\Agent Office\`) | Your project list, the config folders of the accounts you added (each one holds that account's Claude Code login, plus links to your `~/.claude` skills, agents, commands, output styles and `CLAUDE.md`), under `mcp/` each open tab's copy of your user MCP servers for other accounts (readable only by you), under `shared-plugins/` a small manifest for plugins whose manifest lives in their marketplace, and, under `usage/`, each project's latest Claude Code status line input (model, context and plan usage), used for the usage bars. |
 
 Nothing is sent anywhere by Agent Office. Claude Code itself talks to Anthropic as usual.
 

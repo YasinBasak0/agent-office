@@ -249,6 +249,11 @@ body.sidebar-collapsed #sidebar { display: none; }
 .auth-checking .sb-auth-text { color: var(--accent); opacity: .9; }
 .auth-error .sb-auth-text { color: var(--err); opacity: 1; cursor: help; }
 
+/* "Use Default's plugins, skills and MCP servers" under a non-default account. */
+.sb-share { display: flex; align-items: flex-start; gap: 6px; padding-left: 12px; font-size: 10px; line-height: 1.3; cursor: pointer; }
+.sb-share span { opacity: .6; }
+.sb-share .sb-check { flex: 0 0 auto; width: 11px; height: 11px; margin-top: 1px; }
+
 /* Account plan quota: label, pixel bar, percentage, reset time. */
 .sb-usages { display: flex; flex-direction: column; gap: 2px; padding-left: 12px; font-size: 9px; cursor: help; }
 .sb-usages.stale { opacity: .55; }

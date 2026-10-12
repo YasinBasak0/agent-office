@@ -1332,3 +1332,149 @@ test('nextAttention: başka projeden çalışılan proje meşgul sayılmaz; biti
   assert.deepEqual(r.events, [{ kind: 'done', id: 'a' }]);
   assert.equal(r.attention.has('b'), false);
 });
+
+const SC = require('../src/shared-config.js');
+
+test('shared config: setting per account, default on, never for Default; kept by normalize', () => {
+  assert.equal(SC.shareEnabled({ id: 'default', configDir: null }), false);
+  assert.equal(SC.shareEnabled({ id: 'w', configDir: '/a/w' }), true);
+  assert.equal(SC.shareEnabled({ id: 'w', configDir: '/a/w', shareDefault: false }), false);
+  let s = P.normalizeState({ accounts: [{ id: 'w', label: 'W', configDir: '/a/w' }] });
+  assert.equal(A.setAccountShare(s, 'default', false), s);
+  assert.equal(A.setAccountShare(s, 'w', true), s);
+  s = A.setAccountShare(s, 'w', false);
+  assert.equal(s.accounts[1].shareDefault, false);
+  assert.equal(P.normalizeState(JSON.parse(JSON.stringify(s))).accounts[1].shareDefault, false);
+  s = A.setAccountShare(s, 'w', true);
+  assert.equal('shareDefault' in s.accounts[1], false);
+});
+
+test('shared config: MCP servers from ~/.claude.json minus the names the account or the project has', () => {
+  const defaultConfig = { mcpServers: { a: { type: 'http', url: 'u', headers: { Authorization: 'Bearer t' } }, own: { command: 'x' }, loc: { command: 'y' }, proj: { command: 'z' }, bad: 1 }, oauthAccount: { email: 'e' } };
+  const accountConfig = { mcpServers: { own: { command: 'mine' } }, projects: { '/p': { mcpServers: { loc: {} } } } };
+  assert.deepEqual(SC.sharedMcpServers({ defaultConfig, accountConfig, cwd: '/p', projectMcp: { mcpServers: { proj: {} } } }),
+    { mcpServers: { a: defaultConfig.mcpServers.a } });
+  assert.deepEqual(Object.keys(SC.sharedMcpServers({ defaultConfig, accountConfig: null, cwd: '/q', projectMcp: null }).mcpServers), ['a', 'own', 'loc', 'proj']);
+  assert.equal(SC.sharedMcpServers({ defaultConfig: {}, accountConfig: null }), null);
+  assert.equal(SC.sharedMcpServers({ defaultConfig: { mcpServers: { own: {} } }, accountConfig }), null);
+});
+
+test('shared config: enabled user plugins, not Agent Office, not synced, not those the account enabled itself', () => {
+  const rec = (p, scope = 'user') => [{ scope, installPath: p }];
+  const installed = { plugins: {
+    'a@m': rec('/c/a'), 'off@m': rec('/c/off'), 'proj@m': rec('/c/proj', 'project'), 'agent-office@t': rec('/c/ao'),
+    'mine@m': rec('/c/mine'), 'syn@s': rec('/h/plugins/synced/syn'), 'v@m': rec('/c/v'),
+  } };
+  const settings = { enabledPlugins: { 'a@m': true, 'off@m': false, 'proj@m': true, 'agent-office@t': true, 'mine@m': true, 'syn@s': true, 'v@m': ['1.0'] } };
+  const accountInstalled = { plugins: { 'mine@other': rec('/acc/mine') } };
+  const accountSettings = { enabledPlugins: { 'mine@other': true } };
+  assert.deepEqual(SC.sharedPlugins({ installed, settings, accountInstalled, accountSettings, syncedDir: '/h/plugins/synced' }).map((p) => p.key), ['a@m', 'v@m']);
+  assert.deepEqual(SC.sharedPlugins({ installed, settings, syncedDir: '/h/plugins/synced' }).map((p) => p.key), ['a@m', 'mine@m', 'v@m']);
+  assert.deepEqual(SC.sharedPlugins({ installed, settings, accountInstalled, accountSettings: {} }).find((p) => p.key === 'mine@m'),
+    { key: 'mine@m', name: 'mine', marketplace: 'm', installPath: '/c/mine' });
+  assert.deepEqual(SC.pluginManifest({ name: 'swift-lsp', version: '1', source: './p', category: 'd', strict: false, tags: [], lspServers: { s: { command: 'x' } } }),
+    { name: 'swift-lsp', version: '1', lspServers: { s: { command: 'x' } } });
+  assert.equal(SC.stageName('a b/c@m'), 'a-b-c@m');
+});
+
+test('shared config: link plan skips skills/synced and dot entries', () => {
+  const plan = SC.linkPlan({ skills: ['synced', '.DS_Store', 'tidy'], agents: ['r.md'], commands: [], files: ['CLAUDE.md'] }, '/h/.claude');
+  assert.deepEqual(plan.map((p) => p.rel), ['skills/tidy', 'agents/r.md', 'CLAUDE.md']);
+  assert.equal(plan[0].target, pathT.join('/h/.claude', 'skills', 'tidy'));
+});
+
+test('shared config: a session start links, stages and writes the MCP file; never clobbers; off undoes only its own', (t) => {
+  const root = fsT.realpathSync(fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-shared-')));
+  t.after(() => fsT.rmSync(root, { recursive: true, force: true }));
+  const j = (...p) => pathT.join(root, ...p);
+  const w = (p, txt) => { fsT.mkdirSync(pathT.dirname(p), { recursive: true }); fsT.writeFileSync(p, txt); };
+  const home = j('home'); const cd = j('home', '.claude'); const acc = j('acc'); const proj = j('proj');
+  w(pathT.join(cd, 'skills', 'tidy', 'SKILL.md'), 'tidy');
+  w(pathT.join(cd, 'skills', 'mine', 'SKILL.md'), 'default mine');
+  w(pathT.join(cd, 'skills', 'synced', 'x', 'SKILL.md'), 'default synced');
+  w(pathT.join(cd, 'agents', 'r.md'), 'agent');
+  w(pathT.join(cd, 'CLAUDE.md'), 'rules');
+  w(pathT.join(cd, '.credentials.json'), 'secret');
+  const cache = (n) => pathT.join(cd, 'plugins', 'cache', 'm', n, '1');
+  w(pathT.join(cache('fd'), '.claude-plugin', 'plugin.json'), '{"name":"fd"}');
+  w(pathT.join(cache('lsp'), 'README.md'), 'readme');
+  w(pathT.join(cd, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {
+    'fd@m': [{ scope: 'user', installPath: cache('fd') }], 'lsp@m': [{ scope: 'user', installPath: cache('lsp') }],
+  } }));
+  w(pathT.join(cd, 'plugins', 'known_marketplaces.json'), JSON.stringify({ m: { installLocation: j('mkt') } }));
+  w(j('mkt', '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'lsp', strict: false, source: './x', lspServers: { s: { command: 'sk' } } }] }));
+  w(pathT.join(cd, 'settings.json'), JSON.stringify({ enabledPlugins: { 'fd@m': true, 'lsp@m': true } }));
+  w(pathT.join(home, '.claude.json'), JSON.stringify({ oauthAccount: { email: 'e' }, primaryApiKey: 'k', mcpServers: { s1: { type: 'http', url: 'u', headers: { Authorization: 'Bearer t' } }, own: { command: 'd' } } }));
+  w(pathT.join(acc, 'skills', 'mine', 'SKILL.md'), 'account mine');
+  w(pathT.join(acc, 'skills', 'synced', 'y', 'SKILL.md'), 'account synced');
+  w(pathT.join(acc, '.claude.json'), JSON.stringify({ mcpServers: { own: { command: 'a' } } }));
+  fsT.mkdirSync(proj);
+  const opts = (account) => ({ account, home, cwd: proj, stageRoot: j('ud', 'shared-plugins'), mcpFile: j('ud', 'mcp', 'p1.json') });
+  const account = { id: 'w', configDir: acc };
+
+  const r = SC.prepareShared(opts(account));
+  const stage = j('ud', 'shared-plugins', 'lsp@m');
+  assert.deepEqual(r.pluginDirs, [cache('fd'), stage]);
+  assert.deepEqual(SC.sharedArgs(r), ['--plugin-dir', cache('fd'), '--plugin-dir', stage, '--mcp-config', j('ud', 'mcp', 'p1.json')]);
+  assert.deepEqual(JSON.parse(fsT.readFileSync(pathT.join(stage, '.claude-plugin', 'plugin.json'), 'utf8')), { name: 'lsp', lspServers: { s: { command: 'sk' } } });
+  assert.equal(fsT.readFileSync(pathT.join(stage, 'README.md'), 'utf8'), 'readme');
+  const mcp = JSON.parse(fsT.readFileSync(r.mcpConfig, 'utf8'));
+  assert.deepEqual(Object.keys(mcp.mcpServers), ['s1']);
+  assert.equal(JSON.stringify(mcp).includes('oauthAccount') || JSON.stringify(mcp).includes('primaryApiKey'), false);
+  if (process.platform !== 'win32') assert.equal(fsT.statSync(r.mcpConfig).mode & 0o777, 0o600);
+  assert.equal(fsT.readFileSync(pathT.join(acc, 'skills', 'tidy', 'SKILL.md'), 'utf8'), 'tidy');
+  assert.equal(fsT.readFileSync(pathT.join(acc, 'skills', 'mine', 'SKILL.md'), 'utf8'), 'account mine');
+  assert.equal(fsT.readFileSync(pathT.join(acc, 'skills', 'synced', 'y', 'SKILL.md'), 'utf8'), 'account synced');
+  assert.equal(fsT.existsSync(pathT.join(acc, 'skills', 'synced', 'x')), false);
+  assert.equal(fsT.readFileSync(pathT.join(acc, 'agents', 'r.md'), 'utf8'), 'agent');
+  assert.equal(fsT.readFileSync(pathT.join(acc, 'CLAUDE.md'), 'utf8'), 'rules');
+  assert.equal(fsT.existsSync(pathT.join(acc, '.credentials.json')), false);
+  assert.deepEqual(JSON.parse(fsT.readFileSync(pathT.join(acc, SC.MARKER), 'utf8')), ['CLAUDE.md', 'agents/r.md', 'skills/tidy']);
+
+  // the same start again changes nothing; a skill removed from ~/.claude loses its link
+  assert.deepEqual(SC.prepareShared(opts(account)), r);
+  fsT.rmSync(pathT.join(cd, 'skills', 'tidy'), { recursive: true });
+  SC.prepareShared(opts(account));
+  assert.equal(fsT.existsSync(pathT.join(acc, 'skills', 'tidy')), false);
+  // a plugin the account enabled itself is not passed (its stage stays for other accounts)
+  w(pathT.join(acc, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'lsp@m': [{ scope: 'user', installPath: '/x' }] } }));
+  w(pathT.join(acc, 'settings.json'), JSON.stringify({ enabledPlugins: { 'lsp@m': true } }));
+  assert.deepEqual(SC.prepareShared(opts(account)).pluginDirs, [cache('fd')]);
+  assert.equal(fsT.existsSync(stage), true);
+
+  // off: the app's links, marker and MCP file go; the account's own entries and every source stay
+  assert.deepEqual(SC.prepareShared(opts({ ...account, shareDefault: false })), { pluginDirs: [], mcpConfig: null });
+  assert.equal(fsT.existsSync(pathT.join(acc, 'agents', 'r.md')), false);
+  assert.equal(fsT.existsSync(pathT.join(acc, 'CLAUDE.md')), false);
+  assert.equal(fsT.existsSync(pathT.join(acc, SC.MARKER)), false);
+  assert.equal(fsT.existsSync(j('ud', 'mcp', 'p1.json')), false);
+  assert.equal(fsT.readFileSync(pathT.join(acc, 'skills', 'mine', 'SKILL.md'), 'utf8'), 'account mine');
+  assert.equal(fsT.readFileSync(pathT.join(cd, 'agents', 'r.md'), 'utf8'), 'agent');
+  assert.equal(fsT.readFileSync(pathT.join(cd, 'CLAUDE.md'), 'utf8'), 'rules');
+  assert.equal(fsT.readFileSync(pathT.join(cache('lsp'), 'README.md'), 'utf8'), 'readme');
+  // Default: nothing at all
+  assert.deepEqual(SC.prepareShared(opts({ id: 'default', configDir: null })), { pluginDirs: [], mcpConfig: null });
+  // a plugin uninstalled from Default: its stage is removed, its source untouched
+  w(pathT.join(cd, 'settings.json'), JSON.stringify({ enabledPlugins: { 'fd@m': true } }));
+  SC.prepareShared(opts(account));
+  assert.equal(fsT.existsSync(stage), false);
+  assert.equal(fsT.readFileSync(pathT.join(cache('lsp'), 'README.md'), 'utf8'), 'readme');
+});
+
+test('shared config: MCP files with tokens live only while their tab runs; Default and off leave none', (t) => {
+  assert.deepEqual(SC.staleMcpFiles(['p1.json', 'p1-2.json', 'old.json', 'p1.json.123'], ['p1', 'p1-2']), ['old.json', 'p1.json.123']);
+  const root = fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-mcp-'));
+  t.after(() => fsT.rmSync(root, { recursive: true, force: true }));
+  const dir = pathT.join(root, 'mcp');
+  fsT.mkdirSync(dir);
+  for (const n of ['a.json', 'b-2.json', 'gone.json']) fsT.writeFileSync(pathT.join(dir, n), '{"mcpServers":{}}');
+  assert.deepEqual(SC.pruneMcpFiles(dir, ['a', 'b-2']).sort(), ['gone.json']);
+  assert.deepEqual(fsT.readdirSync(dir).sort(), ['a.json', 'b-2.json']);
+  assert.deepEqual(SC.pruneMcpFiles(dir).sort(), ['a.json', 'b-2.json']); // app start: no tab runs yet
+  assert.deepEqual(SC.pruneMcpFiles(pathT.join(root, 'missing')), []);
+  // a tab whose project moved to Default: its old file goes at the next start
+  const mcpFile = pathT.join(dir, 'p.json');
+  fsT.writeFileSync(mcpFile, '{"mcpServers":{"s":{"headers":{"Authorization":"Bearer t"}}}}');
+  assert.deepEqual(SC.prepareShared({ account: { id: 'default', configDir: null }, home: root, cwd: null, stageRoot: pathT.join(root, 'st'), mcpFile }), { pluginDirs: [], mcpConfig: null });
+  assert.equal(fsT.existsSync(mcpFile), false);
+});

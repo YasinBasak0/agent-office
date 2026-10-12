@@ -405,6 +405,11 @@ async function renameAccount(id, label) {
   await refreshAccounts();
 }
 
+async function setAccountShare(id, on) {
+  try { await api.accounts.setShare?.(id, on); } catch (e) { console.error(e); }
+  await refreshAccounts();
+}
+
 async function removeAccount(a) {
   const users = projects.filter((p) => p.accountId === a.id).length;
   const note = users ? t('app.removeAccountNote', { n: users }) : '';
@@ -425,6 +430,7 @@ sidebar = mountSidebar($('sidebar'), {
   addAccount,
   renameAccount,
   removeAccount,
+  setShare: setAccountShare,
   login: (id) => openLogin(id),
   logout: logoutAccount,
   refreshAuth,
