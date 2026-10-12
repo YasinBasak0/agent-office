@@ -10,6 +10,7 @@
 //   in the environment take precedence over the login in every account; a Console login made without an API key
 //   (Anthropic profile, ~/.config/anthropic) lives outside the folder, so it isn't kept apart.
 // - A new folder starts empty: the settings, plugins, MCP servers and CLAUDE.md in ~/.claude are not in that account.
+//   Project auto-memory is the exception: it stays in ~/.claude (see memory.js).
 const path = require('path');
 
 const DEFAULT_ID = 'default';
