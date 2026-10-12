@@ -77,6 +77,14 @@ export function mountSidebar(el, on) {
   const resumeLabel = h('span', {});
   const resumeBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setResume?.(e.target.checked) });
   const resumeRow = h('label', { class: 'sb-botcolor sb-langrow' }, resumeLabel, resumeBox);
+  // interrupted turns carry on by themselves at launch (main's src/resume.js); needs "continue last session"
+  const resumeWorkLabel = h('span', {});
+  const resumeWorkBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setResumeWork?.(e.target.checked) });
+  const resumeWorkRow = h('label', { class: 'sb-botcolor sb-langrow sb-subpref' }, resumeWorkLabel, resumeWorkBox);
+  const syncResumeWork = () => {
+    resumeWorkBox.disabled = !resumeBox.checked;
+    resumeWorkRow.classList.toggle('is-disabled', !resumeBox.checked);
+  };
   // manager mode: the boss delegates the work to agents (plugin, AGENT_OFFICE_MANAGER); sessions started afterwards
   const managerLabel = h('span', {});
   const managerBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setManager?.(e.target.checked) });
@@ -101,6 +109,7 @@ export function mountSidebar(el, on) {
       acctList,
     ),
     resumeRow,
+    resumeWorkRow,
     managerRow,
     sleepRow,
     langRow,
@@ -120,6 +129,8 @@ export function mountSidebar(el, on) {
     langLabel.textContent = t('sidebar.language');
     resumeLabel.textContent = t('sidebar.resume');
     resumeRow.title = t('sidebar.resumeTitle');
+    resumeWorkLabel.textContent = t('sidebar.resumeWork');
+    resumeWorkRow.title = t('sidebar.resumeWorkTitle');
     managerLabel.textContent = t('sidebar.manager');
     managerRow.title = t('sidebar.managerTitle');
     sleepLabel.textContent = t('sidebar.sleep');
@@ -369,7 +380,9 @@ export function mountSidebar(el, on) {
       renderThemes();
     },
     /** Setting to resume the last session on launch. */
-    setResume(on) { resumeBox.checked = on !== false; },
+    setResume(on) { resumeBox.checked = on !== false; syncResumeWork(); },
+    /** Setting to carry on interrupted work at launch (greyed while "continue last session" is off). */
+    setResumeWork(on) { resumeWorkBox.checked = on !== false; syncResumeWork(); },
     /** Manager mode setting (the boss delegates to agents). */
     setManager(on) { managerBox.checked = on !== false; },
     /** Minutes after which an idle background session sleeps (0 = off). */

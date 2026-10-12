@@ -436,6 +436,7 @@ sidebar = mountSidebar($('sidebar'), {
   refreshAuth,
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
   setResume: (on) => api.prefs?.set({ resume: on }).then((p) => sidebar.setResume(p?.resume)).catch((e) => console.error(e)),
+  setResumeWork: (on) => api.prefs?.set({ resumeWork: on }).then((p) => sidebar.setResumeWork(p?.resumeWork)).catch((e) => console.error(e)),
   setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
@@ -504,6 +505,7 @@ onLang(applyStaticText);
 applyStaticText();
 api.prefs?.get().then((p) => {
   sidebar.setResume(p?.resume);
+  sidebar.setResumeWork(p?.resumeWork);
   sidebar.setManager(p?.manager);
   sidebar.setSleep(p?.sleepMinutes);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
