@@ -141,8 +141,8 @@ function hsl(h, s, l) {
 // with no matching theme, generates one from the project name: the name's hue drives wall, carpet, frame, accent
 function projectTheme(project) {
   const hue = strHash(String(project).toLowerCase()) % 360
-  // wall sign: the project folder's full name (my-app → MY-APP); given a path, its last segment
-  const label = String(project).split('/').filter(Boolean).pop() || 'AGENT'
+  // wall sign: the project folder's full name (my-app → MY-APP); given a path (slashes or Windows backslashes), its last segment
+  const label = String(project).split(/[\\/]/).filter(Boolean).pop() || 'AGENT'
   return {
     sign: label,
     colors: {

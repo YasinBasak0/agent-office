@@ -1,7 +1,10 @@
-// OS differences (macOS / Linux): pure functions (no Electron; tested with node --test).
-// macOS behavior is unchanged; Linux uses the equivalents.
+// OS differences (macOS / Linux / Windows): pure functions (no Electron; tested with node --test).
+// macOS behavior is unchanged; Linux and Windows use the equivalents.
+const path = require('path');
+const { crc32, deflateSync } = require('zlib');
 
 const isMac = (platform = process.platform) => platform === 'darwin';
+const isWindows = (platform = process.platform) => platform === 'win32';
 
 // Shell for project and login ptys: $SHELL, else zsh on macOS, bash on Linux.
 const defaultShell = (env = process.env, platform = process.platform) =>
@@ -10,15 +13,21 @@ const defaultShell = (env = process.env, platform = process.platform) =>
 // Files that Linux file managers put on the clipboard: text/uri-list or GNOME/Nautilus's
 // x-special/gnome-copied-files format (a "copy" / "cut" line, then file:// URLs).
 // Only local file:// URLs become paths; other lines (comments, http, actions) are skipped.
-function filesFromUriList(text) {
+// platform 'win32': file:///C:/a%20b → C:\a b, file://server/share/x → \\server\share\x.
+function filesFromUriList(text, platform = 'linux') {
   const out = [];
   for (const raw of String(text || '').split(/\r?\n/)) {
     const line = raw.trim();
     if (!line.startsWith('file://')) continue;
     try {
       const u = new URL(line);
-      if (u.host && u.host !== 'localhost') continue;
       const p = decodeURIComponent(u.pathname);
+      if (platform === 'win32') {
+        if (u.host && u.host !== 'localhost') out.push(`\\\\${u.host}${p.replace(/\//g, '\\')}`);
+        else if (/^\/[A-Za-z]:\//.test(p)) out.push(p.slice(1).replace(/\//g, '\\'));
+        continue;
+      }
+      if (u.host && u.host !== 'localhost') continue;
       if (p.startsWith('/')) out.push(p);
     } catch {}
   }
@@ -34,10 +43,185 @@ function linuxClipboardCommands(env = process.env) {
   return env.WAYLAND_DISPLAY ? [...wl, ...x] : [...x, ...wl];
 }
 
-// Keyboard shortcuts. macOS: ⌘ (metaKey). Linux: Ctrl+Shift, because keys such as Ctrl+V, Ctrl+O, Ctrl+C
+// Keyboard shortcuts. macOS: ⌘ (metaKey). Linux and Windows: Ctrl+Shift, because keys such as Ctrl+V, Ctrl+O, Ctrl+C
 // go to Claude Code in the terminal (e.g. Ctrl+V pastes an image, Ctrl+O opens the transcript).
 const shortcuts = (platform = process.platform) => (isMac(platform)
   ? { paste: 'CmdOrCtrl+V', copy: null, cut: null }               // null: the role's own shortcut
   : { paste: 'Ctrl+Shift+V', copy: 'Ctrl+Shift+C', cut: 'Ctrl+Shift+X' });
 
-module.exports = { isMac, defaultShell, filesFromUriList, linuxClipboardCommands, shortcuts };
+// The in-app updater: macOS (zip), Windows (NSIS installer, latest.yml) and the Linux AppImage. A .deb install is
+// the package manager's job.
+const canSelfUpdate = (platform = process.platform, env = process.env) =>
+  platform === 'darwin' || platform === 'win32' || Boolean(env.APPIMAGE);
+
+// ---- Windows. There is no login shell: claude is found on PATH and started directly in a ConPTY.
+// The functions use path.win32, so they behave the same when tested on macOS or Linux.
+const W = path.win32;
+
+/** The value of an environment variable, ignoring case as Windows does (a copied env object keeps 'Path'). */
+function envGet(env, name) {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === name.toUpperCase());
+  return key === undefined ? undefined : env[key];
+}
+
+/** A copy of env with dir appended to PATH (under the key the env already uses, e.g. 'Path'). */
+function withPathDir(env, dir) {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+  const cur = env[key] || '';
+  const parts = cur.split(';').filter(Boolean);
+  if (parts.some((p) => p.toLowerCase() === dir.toLowerCase())) return { ...env };
+  return { ...env, [key]: [...parts, dir].join(';') };
+}
+
+const RUNNABLE = ['.exe', '.cmd', '.bat', '.com'];
+
+/**
+ * Full path of a command on the Windows PATH (PATHEXT order, only .exe/.cmd/.bat/.com), else null.
+ * exists(file) tells whether a file is there (fs.statSync(f).isFile() in main).
+ */
+function findOnPath(name, env, exists) {
+  const exts = (envGet(env, 'PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.toLowerCase())
+    .filter((e) => RUNNABLE.includes(e));
+  const named = RUNNABLE.includes(W.extname(name).toLowerCase()) ? [''] : exts;
+  for (const dir of String(envGet(env, 'PATH') || '').split(';')) {
+    const d = dir.trim().replace(/^"(.*)"$/, '$1');
+    if (!d) continue;
+    for (const ext of named) {
+      const f = W.join(d, name + ext);
+      if (exists(f)) return f;
+    }
+  }
+  return null;
+}
+
+/**
+ * Where claude is on Windows: PATH first (claude.exe from the native installer or WinGet, claude.cmd from npm),
+ * then the native installer's and npm's default folders (in case the app's PATH predates the install). null: not installed.
+ */
+function findClaude(env, exists) {
+  const found = findOnPath('claude', env, exists);
+  if (found) return found;
+  const home = envGet(env, 'USERPROFILE');
+  const appData = envGet(env, 'APPDATA');
+  const known = [home && W.join(home, '.local', 'bin', 'claude.exe'), appData && W.join(appData, 'npm', 'claude.cmd')];
+  return known.find((f) => f && exists(f)) || null;
+}
+
+/** One argument for a cmd.exe command line: bare if it is safe, else in double quotes. */
+const cmdQuote = (a) => (/^[\w\-.:\\/=@+,]+$/.test(a) ? a : `"${String(a).replace(/"/g, '""')}"`);
+
+/**
+ * How to start a Windows command with these arguments. An .exe starts directly; a .cmd/.bat (npm's claude.cmd)
+ * cannot be started without cmd.exe, so it runs as `cmd.exe /d /s /c "<command line>"` with the line passed
+ * verbatim (verbatim: true → node-pty gets args as one string, execFile gets windowsVerbatimArguments).
+ * @param {string} file @param {string[]} args @param {Record<string, string | undefined>} env
+ * @returns {{ file: string, args: string[], verbatim: boolean }}
+ */
+function windowsCommand(file, args, env) {
+  if (!['.cmd', '.bat'].includes(W.extname(file).toLowerCase())) return { file, args, verbatim: false };
+  const line = [file, ...args].map(cmdQuote).join(' ');
+  return { file: envGet(env, 'ComSpec') || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true };
+}
+
+/**
+ * Git Bash, which Claude Code on Windows uses for status line commands (PowerShell when there is none):
+ * CLAUDE_CODE_GIT_BASH_PATH, else next to git.exe on PATH (<Git>\\cmd\\git.exe → <Git>\\bin\\bash.exe), else the
+ * default install folders. null: no Git Bash.
+ */
+function findGitBash(env, exists) {
+  const set = envGet(env, 'CLAUDE_CODE_GIT_BASH_PATH');
+  if (set && exists(set)) return set;
+  const git = findOnPath('git.exe', env, exists);
+  const cands = [];
+  if (git) {
+    const dir = W.dirname(git);
+    cands.push(W.join(dir, '..', 'bin', 'bash.exe'), W.join(dir, 'bash.exe'), W.join(dir, '..', '..', 'bin', 'bash.exe'));
+  }
+  for (const root of [envGet(env, 'ProgramFiles'), envGet(env, 'ProgramFiles(x86)'), envGet(env, 'LOCALAPPDATA') && W.join(envGet(env, 'LOCALAPPDATA'), 'Programs')]) {
+    if (root) cands.push(W.join(root, 'Git', 'bin', 'bash.exe'));
+  }
+  return cands.map((c) => W.normalize(c)).find((c) => exists(c)) || null;
+}
+
+// Files copied in Explorer. Electron 44 surfaces Windows clipboard formats without a MIME type as
+// 'electron application/osclipboard;format="<name>"'; Explorer puts CF_HDROP (all files) and FileNameW (the first).
+
+/** Paths in a DROPFILES block (CF_HDROP): a 20-byte header whose first DWORD is the list's offset, then
+ *  NUL-terminated names (UTF-16LE when the fWide DWORD at 16 is set, else ANSI), ending with an empty one. */
+function filesFromDropFiles(buf) {
+  if (!buf || buf.length < 20) return [];
+  const offset = buf.readUInt32LE(0);
+  const wide = buf.readUInt32LE(16) !== 0;
+  if (offset < 20 || offset >= buf.length) return [];
+  const text = wide ? buf.subarray(offset, offset + ((buf.length - offset) & ~1)).toString('utf16le') : buf.subarray(offset).toString('latin1');
+  const out = [];
+  for (const name of text.split('\0')) {
+    if (!name) break;
+    out.push(name);
+  }
+  return out;
+}
+
+/** The path in FileNameW (UTF-16LE, NUL-terminated); [] if empty. */
+function filesFromFileNameW(buf) {
+  const name = buf ? buf.toString('utf16le').split('\0')[0] : '';
+  return name ? [name] : [];
+}
+
+/** Which reader fits a clipboard item type: 'drop' (CF_HDROP), 'name' (FileNameW), 'uri' (text/uri-list) or null. */
+function windowsClipboardKind(type) {
+  const t = String(type);
+  if (t === 'text/uri-list') return 'uri';
+  const m = /^electron application\/osclipboard;format="?([^"]+)"?$/i.exec(t);
+  if (!m) return null;
+  const name = m[1].toLowerCase();
+  if (name === 'cf_hdrop' || name === '15' || name === 'filedrop') return 'drop';
+  if (name === 'filenamew') return 'name';
+  return null;
+}
+
+// PowerShell fallback when Electron shows no file formats: one full path per line.
+const POWERSHELL_FILES = ['-NoProfile', '-NonInteractive', '-Command',
+  '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }'];
+/** Absolute Windows paths, one per line, from the PowerShell output. */
+const filesFromLines = (text) => String(text || '').split(/\r?\n/).map((l) => l.trim()).filter((l) => /^(?:[A-Za-z]:\\|\\\\)/.test(l));
+
+/**
+ * A size×size PNG of a filled circle (the taskbar overlay badge on Windows: the Dock badge's stand-in).
+ * @param {number} size @param {number} rgb 0xRRGGBB
+ */
+function dotPng(size, rgb) {
+  const raw = Buffer.alloc((size * 4 + 1) * size);
+  const r = size / 2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let cover = 0;
+      for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
+        const dx = x + (sx + 0.5) / 4 - r, dy = y + (sy + 0.5) / 4 - r;
+        if (dx * dx + dy * dy <= r * r) cover++;
+      }
+      const o = y * (size * 4 + 1) + 1 + x * 4;
+      raw[o] = (rgb >> 16) & 255; raw[o + 1] = (rgb >> 8) & 255; raw[o + 2] = rgb & 255;
+      raw[o + 3] = Math.round((cover / 16) * 255);
+    }
+  }
+  const chunk = (type, body) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length);
+    const tb = Buffer.concat([Buffer.from(type), body]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(tb));
+    return Buffer.concat([len, tb, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr.set([8, 6, 0, 0, 0], 8);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+module.exports = {
+  isMac, isWindows, defaultShell, filesFromUriList, linuxClipboardCommands, shortcuts, canSelfUpdate,
+  envGet, withPathDir, findOnPath, findClaude, cmdQuote, windowsCommand, findGitBash,
+  filesFromDropFiles, filesFromFileNameW, windowsClipboardKind, POWERSHELL_FILES, filesFromLines, dotPng,
+};

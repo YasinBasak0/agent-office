@@ -56,6 +56,8 @@ function mainWorkingCopy(root) {
 /** The folder Claude Code keys the memory by for a session started in cwd. */
 function memoryBase(cwd) {
   let real = cwd;
+  // Windows: the JS realpathSync (not .native) resolves links but keeps the drive letter and spelling as given, so
+  // C:\Users\a\proj stays C:\… (slug C--Users-a-proj); .native would turn a mapped drive into a UNC path.
   try { real = fs.realpathSync(cwd); } catch {}
   const root = gitRoot(real);
   return (root ? mainWorkingCopy(root) : real).normalize('NFC');

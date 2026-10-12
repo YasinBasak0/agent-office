@@ -56,12 +56,12 @@ agentOffice.pty.restart(projectId: string): void
 agentOffice.office.onData(cb: (data: OfficeData) => void): () => void
 agentOffice.office.themes(): Promise<Record<string, ThemeSpec>>
 agentOffice.clipboard.hasImage(): Promise<boolean>
-agentOffice.clipboard.read(): Promise<{ hasImage: boolean, text: string, files: string[] }>  // files: copied in Finder (osascript) or, on Linux, a file manager (text/uri-list via Electron, wl-paste or xclip)
-agentOffice.platform: 'darwin' | 'linux'                               // process.platform; renderer/platform.js sets <html class="platform-…"> and picks the shortcuts
+agentOffice.clipboard.read(): Promise<{ hasImage: boolean, text: string, files: string[] }>  // files: copied in Finder (osascript), on Linux a file manager (text/uri-list via Electron, wl-paste or xclip), on Windows Explorer (CF_HDROP / FileNameW via Electron, else PowerShell's Get-Clipboard)
+agentOffice.platform: 'darwin' | 'linux' | 'win32'                     // process.platform; renderer/platform.js sets <html class="platform-…"> and picks the shortcuts
 agentOffice.pathForFile(file: File): string
 ```
 
-The sidebar's add button adds projects; ⌘O = add project, ⌘1…9 = switch, ⌘V = paste into the focused terminal. On Linux the same keys are Ctrl+Shift+O, Ctrl+Shift+1…9 and Ctrl+Shift+V (Ctrl+Shift+C / X copy and cut from the menu), because plain Ctrl+… keys belong to Claude Code in the terminal. In the terminal, ⌘Enter (macOS) and Ctrl+Enter are sent to Claude Code as ctrl+enter (`ESC [13;5u`, `src/terminal-keys.mjs`), its send-now key for a queued message; xterm.js alone would send a bare Enter. Linux windows use the system title bar (no traffic-light inset), and the in-app updater runs only in the AppImage.
+The sidebar's add button adds projects; ⌘O = add project, ⌘1…9 = switch, ⌘V = paste into the focused terminal. On Linux the same keys are Ctrl+Shift+O, Ctrl+Shift+1…9 and Ctrl+Shift+V (Ctrl+Shift+C / X copy and cut from the menu), because plain Ctrl+… keys belong to Claude Code in the terminal. In the terminal, ⌘Enter (macOS) and Ctrl+Enter are sent to Claude Code as ctrl+enter (`ESC [13;5u`, `src/terminal-keys.mjs`), its send-now key for a queued message; xterm.js alone would send a bare Enter. Linux windows use the system title bar (no traffic-light inset), and the in-app updater runs only in the AppImage. Windows is like Linux (system title bar, Ctrl+Shift keys) except: claude starts directly in a ConPTY (no login shell: found on PATH or in the native installer's folder, npm's `claude.cmd` through `cmd.exe /d /s /c`; the `--settings` JSON goes in a file under `userData/settings/`; if Claude Code is missing the terminal says so and exits with 127), an image paste sends Claude Code's Alt+V (`ESC v`) instead of Ctrl+V, pasted paths get double quotes, the taskbar button gets a dot overlay and flashes instead of a Dock badge, and the NSIS install updates itself (`latest.yml`).
 
 ## `src/sessions.js` (main)
 
@@ -174,6 +174,7 @@ type AccountUsage = { updatedAt: number; fiveHour?: UsageWindow; sevenDay?: Usag
 
 - Source: the status line input's `rate_limits` (code.claude.com/docs/en/statusline). Claude Code sends it only for Pro/Max subscriptions and only after the session's first API response, so an account's usage is the last value reported by any of its project sessions.
 - Main starts each project's claude with `--settings '{"statusLine":…}'` running `userData/usage/statusline.sh <userData/usage/<accountId>/<projectId>.json>` (written at start, `src/usage.js` `SCRIPT`). The script stores its stdin there and, when the user has a command status line of their own (first `statusLine` found in the project's `.claude/settings.local.json`, `.claude/settings.json`, then the account's `settings.json`), runs it with the same input via `AGENT_OFFICE_STATUSLINE`, so the terminal shows the user's status line as before. Its `padding` is carried over.
+- Windows: Claude Code runs status line commands through Git Bash, or PowerShell without it, so the command is the bare word `agent-office-statusline.cmd` (the same in both). Main writes it and `statusline.js` (`WIN_SCRIPT`) to `userData/usage/`, appends that folder to claude's `PATH`, and passes the tab's file in `AGENT_OFFICE_USAGE_OUT`; the `.cmd` runs the app's own executable as Node (`ELECTRON_RUN_AS_NODE` set only inside the `.cmd`). The user's own status line runs in the shell Claude Code would use (`AGENT_OFFICE_STATUSLINE_SHELL`: Git Bash's path, empty for PowerShell).
 - Main scans those files every 3 s; the newest one with `rate_limits` becomes the account's usage, is kept in `usage/<accountId>/last.json` (loaded at start) and sent with `accounts:changed`. A project's file is removed from other accounts' folders when its pty starts, and when the project is removed; an account's folder goes with the account.
 - UI: under a logged-in account, one line per window: label (`5 sa`, `Hafta`), a bar (accent; yellow from 70%, red from 90%), the percentage and the reset time (`14:30` within 24 h, else `Pzt 09:00`; `sıfırlandı` once passed, shown as 0%). The tooltip says how old the value is; values older than 30 minutes are dimmed. Redrawn every minute.
 
@@ -200,7 +201,7 @@ agentOffice.language.onChange(cb: (info: LanguageInfo) => void): () => void   //
 
 ## Waiting on you (v2.6)
 
-When Claude needs the person, the app says so: a desktop notification, the Dock badge (on Linux `app.setBadgeCount`, where the desktop supports it), a mark on the project's row and the boss's sign.
+When Claude needs the person, the app says so: a desktop notification, the Dock badge (on Linux `app.setBadgeCount`, where the desktop supports it; on Windows a dot overlay on the taskbar button, which also flashes), a mark on the project's row and the boss's sign.
 
 The plugin adds to the session state file:
 
