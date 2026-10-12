@@ -35,7 +35,8 @@ export function mountOffice(canvas, { onTheme, onSelect } = {}) {
   }
 
   function draw() {
-    if (dead || !geo) return
+    // hidden (minimized, covered, other space): nothing is drawn; the first frame comes when it shows again
+    if (dead || !geo || document.hidden) return
     // the core module's state is shared: pass the geometry again every frame
     setGeometry(canvas.width, canvas.height)
     // if a focus is given, the theme comes from it and its desks are highlighted; otherwise the newest session's project
@@ -113,6 +114,8 @@ export function mountOffice(canvas, { onTheme, onSelect } = {}) {
   ro.observe(canvas)
   resize()
   timer = setInterval(draw, FRAME_MS)
+  const onVisibility = () => draw()
+  document.addEventListener('visibilitychange', onVisibility)
 
   return {
     setData(d) {
@@ -155,6 +158,7 @@ export function mountOffice(canvas, { onTheme, onSelect } = {}) {
     destroy() {
       dead = true
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
       if (hoverRaf) cancelAnimationFrame(hoverRaf)
       canvas.removeEventListener('click', onClick)
       canvas.removeEventListener('mousemove', onMove)
