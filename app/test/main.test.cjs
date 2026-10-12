@@ -142,6 +142,45 @@ test('sessionEnv: AGENT_OFFICE_APP her zaman, AGENT_OFFICE_MANAGER yalnız müd�
   assert.equal(base.AGENT_OFFICE_MANAGER, '1'); // girdi değişmez
 });
 
+test('sessionEnv: müdür modu kapalıyken AGENT_OFFICE_FINISH=1 (bitirme bekçisi), açıkken yok (v3.10)', () => {
+  const base = A.ptyEnv({ PATH: '/bin', AGENT_OFFICE_FINISH: '1' }, null);
+  const on = A.sessionEnv(base, { manager: true });
+  assert.equal(on.AGENT_OFFICE_MANAGER, '1');
+  assert.equal('AGENT_OFFICE_FINISH' in on, false);
+  const off = A.sessionEnv({ PATH: '/bin', AGENT_OFFICE_MANAGER: '1' }, { manager: false });
+  assert.equal('AGENT_OFFICE_MANAGER' in off, false);
+  assert.equal(off.AGENT_OFFICE_FINISH, '1');
+});
+
+test('proje başına müdür modu: normalizeState, setProjectManager, managerOf (v3.10)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', manager: false },
+      { id: 'b', dir: '/b', manager: true },
+      { id: 'c', dir: '/c', manager: 'yes' },
+      { id: 'd', dir: '/d' },
+    ],
+  });
+  assert.deepEqual(s.projects.map((p) => p.manager), [false, true, undefined, undefined]);
+  assert.equal('manager' in s.projects[2], false); // geçersiz değer yazılmaz
+  // global ayar: açık (varsayılan), kapalı
+  const of = (st, id) => P.managerOf(st, P.findProject(st, id));
+  assert.deepEqual(['a', 'b', 'd'].map((id) => of(s, id)), [false, true, true]);
+  assert.deepEqual(['a', 'b', 'd'].map((id) => of({ ...s, manager: false }, id)), [false, true, false]);
+  // değiştirmek; aynı değer ya da bilinmeyen proje aynı state'i döndürür
+  assert.equal(P.setProjectManager(s, 'a', false), s);
+  assert.equal(P.setProjectManager(s, 'zz', true), s);
+  assert.equal(P.setProjectManager(s, 'd', null), s);
+  s = P.setProjectManager(s, 'd', false);
+  assert.equal(of(s, 'd'), false);
+  s = P.setProjectManager(s, 'b', null); // genel ayara dönüş: alan silinir
+  assert.equal('manager' in P.findProject(s, 'b'), false);
+  assert.deepEqual(P.setProjectManager(s, 'a', 'x'), P.setProjectManager(s, 'a', null)); // geçersiz = genel ayar
+  // state.json'a yazılıp okununca aynı kalır
+  const again = P.normalizeState(JSON.parse(JSON.stringify(s)));
+  assert.deepEqual(again.projects.map((p) => p.manager), [false, undefined, undefined, false]);
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });

@@ -22,6 +22,7 @@ function normalizeState(raw, { id = newId } = {}) {
       dir: p.dir,
       name: projectName(p.dir),
       accountId: known.has(p.accountId) ? p.accountId : DEFAULT_ID,
+      ...withManager(p.manager),
       ...withTabs(normalizeTabs(p.tabs)),
     });
   }
@@ -187,6 +188,26 @@ function setProjectAccount(state, id, accountId) {
   return { ...state, projects: state.projects.map((p) => (p.id === id ? { ...p, accountId } : p)) };
 }
 
+// --- per-project manager mode (contract v3.10)
+// Project.manager: true = the boss delegates (manager mode), false = it does the work itself; absent = the global
+// setting (state.manager). A project on the global setting never has the field written.
+const withManager = (v) => (typeof v === 'boolean' ? { manager: v } : {});
+
+/** value: true | false | null (null: back to the global setting). Same state when nothing changes. */
+function setProjectManager(state, id, value) {
+  const p = findProject(state, id);
+  const v = typeof value === 'boolean' ? value : null;
+  if (!p || (p.manager ?? null) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { manager: _, ...rest } = x;
+    return v === null ? rest : { ...rest, manager: v };
+  }) };
+}
+
+/** Does this project's boss delegate? Its own setting, else the global one (on by default). */
+const managerOf = (state, project) => (typeof project?.manager === 'boolean' ? project.manager : state.manager !== false);
+
 // Claude Code's session history folder: <account folder or ~/.claude>/projects/<path, non-alphanumerics → '-'>
 // (tried: /Users/a/.claude → -Users-a--claude). If it has a .jsonl, `claude --continue` finds a session to resume.
 const historyDir = (projectDir, configDir, home) =>
@@ -197,5 +218,5 @@ module.exports = {
   MAIN_TAB, normalizeTabs, tabsOf, tabPtyId, parsePtyId, ptyIdsOf, tabDir, resolvePty,
   nextTabNumber, worktreeRoot, worktreeBranch, worktreeDir, addTab, removeTab, sessionAliases, projectPlaces,
   newId, projectName, normalizeState, findProject, findByDir,
-  addProject, removeProject, setActive, setProjectAccount,
+  addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
 };

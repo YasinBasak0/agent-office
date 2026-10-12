@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
 import type { Delivery, OfficeFrame, OfficeStats, Shell, Worker } from '../types'
+import { finishCandidate, finishModeOf, finishPrompt, finishTurnComplete, finishTurnStart, finishVerdict, JUDGE_LABELS } from './finish'
+import type { StopInput } from './finish'
 
 // Claude Code side of Agent Office: writes agent arrivals, tools, deliveries and background shells to
 // ~/.claude/agent-office/sessions/<session>.json. The office itself is drawn by the
@@ -160,6 +162,7 @@ You are the manager in Agent Office: a dispatcher who hands the work to agents a
 - While agents run, answer the person, take new requests and dispatch them. Don't redo an agent's work or wait on it in silence.
 - A job for another project: work in that project's folder with absolute paths (in Bash, \`cd <folder> && …\`) and have your agents do the same, so Agent Office shows the work under that project.
 - Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them, or dispatch them.
+- Make technical choices yourself (libraries, structure, how to fix something) and give the reason in one line. Never end a turn with an offer ("want me to…?", "istersen…"): do it.
 - Stop only for what genuinely needs the person: approving outward-facing or destructive actions (deploying to production, publishing, deleting data, spending money), credentials or logins, and decisions that are theirs to make. For those, finish everything else first, then ask in one short list.
 - Report honestly what you verified and what you did not.
 
@@ -917,6 +920,21 @@ function withNudge(answer: ToolCallResult): ToolCallResult {
   return { ...answer, context: [...(answer.context ?? []), NUDGE_TEXT] }
 }
 
+// the finish guard (finish.ts, contract v3.10): `answer` (what the Stop hooks beneath said) with a block added when
+// the main loop's final message lists work it could still do. A cue goes to the fast-model judge ($.model.classify)
+// unless AGENT_OFFICE_FINISH_JUDGE=0 or `isJudged` is false (the hook's .catch after a failure or a slow judge)
+async function guardStop<R extends { block?: string }>($: EngineInterface, e: StopInput, answer: R, isJudged: boolean): Promise<R> {
+  if (answer.block) return answer
+  const mode = finishModeOf(await $.env.get('AGENT_OFFICE_MANAGER'), await $.env.get('AGENT_OFFICE_FINISH'))
+  const found = finishCandidate(mode, e)
+  if (!found) return answer
+  let label: string | undefined
+  if (isJudged && (await $.env.get('AGENT_OFFICE_FINISH_JUDGE')) !== '0')
+    label = await $.model.classify(found.judged, JUDGE_LABELS).catch(() => undefined)
+  const verdict = finishVerdict(found, label)
+  return verdict ? { ...answer, ...verdict } : answer
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Windows: the user profile, as Node's os.homedir() there (the app reads the office from it); HOME is often unset
@@ -1084,6 +1102,7 @@ export const register: Register = on => {
   // when the session is idle; one that arrives mid-turn is absorbed as an attachment row instead, so
   // session.append (same origin) sees both. Either ends the shell it names, the first one wins.
   on('prompt.submit', async ($, e, next) => {
+    finishPrompt(e.origin?.kind, e.text)
     if (e.origin?.kind === 'task-notification') await endNotified($, e.text)
     else await clearWaiting($)
 
@@ -1108,8 +1127,9 @@ export const register: Register = on => {
       await endShells($, s => (ids.has(s.id) ? undefined : { status: 'completed' }))
     }
 
-    return next(e)
-  }).catch(($, e, next) => next(e))
+    // the finish guard (finish.ts): no stopping on a list of work the main loop could still do
+    return guardStop($, e as StopInput, await next(e), true)
+  }).catch(async ($, e, next) => guardStop($, e as StopInput, await next(e), false))
 
   // a permission dialog opens (main session or a subagent): the app tells the person (contract v2.6)
   on('classic.PermissionRequest', async ($, e, next) => {
@@ -1135,6 +1155,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
+    finishTurnStart()
     ownSteps = 0
     isNudged = false
     // a new turn starts where the main loop runs, not where the last one ended
@@ -1146,6 +1167,7 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    finishTurnComplete(e)
     // the main turn is over: nothing is left waiting on a dialog
     if (e.agentId === undefined) await setStats($, ({ waiting: _, bossDir: __, ...s }) => ({ ...s, isBossBusy: false }))
     else {
@@ -1204,5 +1226,4 @@ export const register: Register = on => {
       </Box>
     )
   })
-
 }

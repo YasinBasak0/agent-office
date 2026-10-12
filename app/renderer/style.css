@@ -168,6 +168,8 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 .sb-acct:hover, .sb-acct:focus { filter: brightness(1.15); outline: none; }
 .sb-acct option { color: var(--status-text); background: var(--status-bg); }
+/* per-project manager mode (v3.10): the account select's look, a little narrower */
+.sb-mode { max-width: 96px; }
 
 .sb-x {
   background: none;

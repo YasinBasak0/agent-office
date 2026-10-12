@@ -161,6 +161,11 @@ window.agentOffice = {
       if (p) p.accountId = accountId;
       for (const tid of p ? tabIds(p) : [id]) { ev.exit.emit(tid, 0); boot(tid); }
     },
+    setManager: async (id, value) => {
+      const p = projects.find((x) => x.id === id);
+      if (p) { if (typeof value === 'boolean') p.manager = value; else delete p.manager; changed(); }
+      return { restarted: [] };
+    },
     onChange: ev.projects.add,
   },
   tabs: {
