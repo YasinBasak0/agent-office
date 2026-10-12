@@ -682,3 +682,28 @@ test('terminal: ⌘Enter (macOS) ve Ctrl+Enter claude\'a ctrl+enter (hemen gönd
   assert.equal(K.translateKey(enter({ metaKey: true, ctrlKey: true }), true), null);
   assert.equal(K.translateKey({ key: 's', ctrlKey: true }, true), null);
 });
+
+test('terminal: macOS Option ile klavye düzeninin ürettiği ASCII işaret yazılır, diğerleri Meta kalır', async () => {
+  const K = await import('../src/terminal-keys.mjs');
+  const opt = (key, code, m = {}) => ({ key, code, altKey: true, metaKey: false, ctrlKey: false, shiftKey: false, ...m });
+  // TR Q layout: Option+Q @, Option+7 {, Option+8 [; DE: Option+Shift+7 is a backslash
+  assert.equal(K.translateKey(opt('@', 'KeyQ'), true), '@');
+  assert.equal(K.translateKey(opt('{', 'Digit7'), true), '{');
+  assert.equal(K.translateKey(opt('[', 'Digit8'), true), '[');
+  assert.equal(K.translateKey(opt('\\', 'Digit7', { shiftKey: true }), true), '\\');
+  assert.equal(K.translateKey(opt('~', 'KeyN'), true), '~');
+  // US Option+p (π), letters/digits, keys without a character, dead keys: Meta (xterm sends ESC+key)
+  assert.equal(K.translateKey(opt('π', 'KeyP'), true), null);
+  assert.equal(K.translateKey(opt('p', 'KeyP'), true), null);
+  assert.equal(K.translateKey(opt('1', 'Digit1'), true), null);
+  assert.equal(K.translateKey(opt(' ', 'Space'), true), null);
+  assert.equal(K.translateKey(opt('ArrowLeft', 'ArrowLeft'), true), null);
+  assert.equal(K.translateKey(opt('Backspace', 'Backspace'), true), null);
+  assert.equal(K.translateKey(opt('Enter', 'Enter'), true), null);
+  assert.equal(K.translateKey(opt('Dead', 'KeyE'), true), null);
+  // IME composition, Linux Alt, Cmd/Ctrl held with Option: left to xterm
+  assert.equal(K.translateKey(opt('@', 'KeyQ', { isComposing: true }), true), null);
+  assert.equal(K.translateKey(opt('@', 'KeyQ'), false), null);
+  assert.equal(K.translateKey(opt('@', 'KeyQ', { metaKey: true }), true), null);
+  assert.equal(K.translateKey(opt('@', 'KeyQ', { ctrlKey: true }), true), null);
+});
