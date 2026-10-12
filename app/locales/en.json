@@ -33,7 +33,8 @@
     "mainTab": "Main terminal (cannot be closed)\n{dir}",
     "sameTab": "Terminal in the project folder\n{dir}",
     "worktreeTab": "Git worktree, branch {branch}\n{dir}",
-    "stopped": " (Claude stopped)"
+    "stopped": " (Claude stopped)",
+    "asleep": " (asleep: starts when opened)"
   },
   "sidebar": {
     "idle": "idle",
@@ -66,6 +67,10 @@
     "language": "Language",
     "resume": "Continue last session",
     "resumeTitle": "When the app starts, each project continues its last Claude session (claude --continue)",
+    "sleep": "Sleep idle sessions",
+    "sleepTitle": "Saves memory: a project starts its Claude when first opened, and a background Claude that has been idle this long is ended and continues its session (claude --resume) when you open the project again. Never while it works, waits for approval, runs agents, background shells or scheduled tasks, or has unsent text.",
+    "sleepOff": "Off",
+    "sleepAfter": "after {n} min",
     "languageTitle": "Interface language (Auto follows the system)",
     "auto": "Auto",
     "theme": "Theme",
@@ -84,6 +89,7 @@
     "noLoginTitle": "“{label}” is not logged in; Claude cannot work in this project.\nClick to log in",
     "claudeRunning": "Claude running",
     "claudeStopped": "Claude stopped",
+    "claudeAsleep": "Asleep to save memory: Claude starts again, where it left off, when you open this project",
     "bossBusy": "Boss busy",
     "attnPermission": "Claude is waiting for your approval in this project",
     "attnDone": "Claude finished here and is waiting for you",
@@ -220,7 +226,8 @@
     "checking": "checking login…"
   },
   "terminal": {
-    "exited": "— Claude exited — press Enter to restart —"
+    "exited": "— Claude exited — press Enter to restart —",
+    "asleep": "— Asleep to save memory: it continues where it left off when you open it —"
   },
   "main": {
     "defaultAccount": "Default",

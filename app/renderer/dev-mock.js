@@ -127,7 +127,8 @@ const galleryFiles = (await Promise.all(GALLERY.map((n) => fetch(`../../themes/$
 const mockThemes = mergeThemes(galleryThemes(galleryFiles), {});
 let themeSetting = q.get('theme') || 'auto';
 let resumeSetting = true;
-const prefsNow = () => ({ resume: resumeSetting, theme: themeSetting });
+let sleepSetting = 30;
+const prefsNow = () => ({ resume: resumeSetting, theme: themeSetting, sleepMinutes: sleepSetting });
 
 window.agentOffice = {
   platform: q.get('platform') || 'darwin',
@@ -215,12 +216,15 @@ window.agentOffice = {
     onData: ev.data.add,
     onExit: ev.exit.add,
     restart: (id) => boot(id),
+    wake: () => {},
+    onSleep: () => {},
   },
   prefs: {
     get: async () => prefsNow(),
     set: async (p) => {
       if (typeof p?.resume === 'boolean') resumeSetting = p.resume;
       if (typeof p?.theme === 'string') themeSetting = p.theme.trim() || 'auto';
+      if ([0, 15, 30, 60].includes(p?.sleepMinutes)) sleepSetting = p.sleepMinutes;
       return prefsNow();
     },
   },

@@ -52,6 +52,7 @@ export function mountSidebar(el, on) {
   let accounts = [];
   let activeId = null;
   let status = new Map();
+  let asleep = new Set(); // projects whose main claude sleeps (src/sleep.js)
   let attn = new Map(); // projectId → 'permission' | 'done' (main's notification state)
   let stats = new Map();
   let projKey = '';
@@ -81,6 +82,12 @@ export function mountSidebar(el, on) {
   const resumeLabel = h('span', {});
   const resumeBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setResume?.(e.target.checked) });
   const resumeRow = h('label', { class: 'sb-botcolor sb-langrow' }, resumeLabel, resumeBox);
+  // sleep idle background sessions after N minutes (0 = off); main's src/sleep.js has the rules
+  const SLEEP_CHOICES = [0, 15, 30, 60];
+  let sleepMinutes = 30;
+  const sleepLabel = h('span', {});
+  const sleepSelect = h('select', { class: 'sb-acct sb-lang sb-sleep', onchange: (e) => on.setSleep?.(Number(e.target.value)) });
+  const sleepRow = h('div', { class: 'sb-botcolor sb-langrow' }, sleepLabel, sleepSelect);
   const projHead = h('span', {});
   const acctHead = h('span', {});
   const addProjectBtn = h('button', { class: 'sb-add', id: 'sb-add-project', onclick: () => on.addProject() });
@@ -95,6 +102,7 @@ export function mountSidebar(el, on) {
       acctList,
     ),
     resumeRow,
+    sleepRow,
     langRow,
     themeRow,
     botRow,
@@ -112,6 +120,9 @@ export function mountSidebar(el, on) {
     langLabel.textContent = t('sidebar.language');
     resumeLabel.textContent = t('sidebar.resume');
     resumeRow.title = t('sidebar.resumeTitle');
+    sleepLabel.textContent = t('sidebar.sleep');
+    sleepRow.title = t('sidebar.sleepTitle');
+    renderSleep();
     langSelect.title = t('sidebar.languageTitle');
     themeLabel.textContent = t('sidebar.theme');
     renderLanguages();
@@ -133,6 +144,10 @@ export function mountSidebar(el, on) {
     // the closed picker shows the chosen theme's description
     const chosen = themeChoices.find((c) => c.name === cur);
     themeSelect.title = chosen ? themeDesc(chosen) || chosen.name : t('sidebar.themeAutoTitle');
+  }
+  function renderSleep() {
+    sleepSelect.replaceChildren(...SLEEP_CHOICES.map((n) =>
+      h('option', { value: String(n), selected: n === sleepMinutes }, n ? t('sidebar.sleepAfter', { n }) : t('sidebar.sleepOff'))));
   }
   function renderLanguages() {
     langSelect.replaceChildren(
@@ -179,13 +194,14 @@ export function mountSidebar(el, on) {
     projList.replaceChildren(...projects.map((p, i) => {
       const s = stats.get(p.name);
       const live = status.get(p.id);
+      const sleeping = !live && asleep.has(p.id);
       return h('li', {
         class: 'sb-proj' + (p.id === activeId ? ' active' : ''),
         'data-id': p.id,
         title: p.dir + (i < 9 ? `\n${modLabel}${i + 1}` : ''),
         onclick: () => on.select(p.id),
       },
-        h('span', { class: 'sb-dot' + (live ? ' live' : ''), title: live ? t('sidebar.claudeRunning') : t('sidebar.claudeStopped') }),
+        h('span', { class: 'sb-dot' + (live ? ' live' : sleeping ? ' asleep' : ''), title: live ? t('sidebar.claudeRunning') : sleeping ? t('sidebar.claudeAsleep') : t('sidebar.claudeStopped') }),
         h('span', { class: 'sb-name' }, p.name),
         attn.get(p.id) === 'permission'
           ? h('span', { class: 'sb-attn permission', title: t('sidebar.attnPermission') }, '✋')
@@ -340,6 +356,12 @@ export function mountSidebar(el, on) {
     },
     /** Setting to resume the last session on launch. */
     setResume(on) { resumeBox.checked = on !== false; },
+    /** Minutes after which an idle background session sleeps (0 = off). */
+    setSleep(minutes) {
+      if (!SLEEP_CHOICES.includes(minutes)) return;
+      sleepMinutes = minutes;
+      renderSleep();
+    },
     /** Bot color shown in the picker. */
     setBotColor(hex) { botInput.value = hex || '#3fb6a8'; },
     /** Project list, active project, working state and accounts. */
@@ -348,8 +370,9 @@ export function mountSidebar(el, on) {
       accounts = s.accounts || [];
       activeId = s.activeId;
       status = new Map((s.status || []).map((x) => [x.id, x.isRunning]));
+      asleep = new Set((s.status || []).filter((x) => x.isAsleep).map((x) => x.id));
       attn = new Map((s.status || []).filter((x) => x.attention).map((x) => [x.id, x.attention]));
-      const pk = JSON.stringify([projects, activeId, [...status], [...attn], accounts.map((a) => [a.id, a.label, a.auth?.state])]);
+      const pk = JSON.stringify([projects, activeId, [...status], [...asleep], [...attn], accounts.map((a) => [a.id, a.label, a.auth?.state])]);
       if (pk !== projKey) { projKey = pk; renderProjects(); }
       const ak = JSON.stringify(accounts);
       if (ak !== acctKey && !editing) { acctKey = ak; renderAccounts(); }
