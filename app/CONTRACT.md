@@ -292,7 +292,7 @@ agentOffice.office.themes(): Promise<Record<string, ThemeSpec>>   // now: galler
 
 ## Manager mode (v3.2)
 
-In the app the project's Claude session is the boss: it should delegate the work to agents and keep going until the task list is done, stopping only for what needs the person.
+In the app the project's Claude session is the boss: a dispatcher that delegates the work to background agents by default and stays available to the person, keeps going until the task list is done, and stops only for what needs the person.
 
 ```ts
 agentOffice.prefs.get(): Promise<{ resume: boolean; theme: 'auto' | string; manager: boolean }>
@@ -302,6 +302,7 @@ agentOffice.prefs.set(p: { resume?: boolean; theme?: 'auto' | string; manager?: 
 - **Setting.** Main keeps `manager` in `state.json` next to `resume` (default true). The sidebar shows it as a checkbox under **Continue last session**: **Manager mode — delegate to agents** / **Müdür modu — işleri ajanlara dağıt**; its tooltip says it applies to sessions started afterwards. Toggling restarts nothing.
 - **Env.** `startPty` builds the pty's env with `accounts.js` `sessionEnv(ptyEnv(…), { manager })`: `AGENT_OFFICE_APP=1` always, `AGENT_OFFICE_MANAGER=1` when the setting is on (off, the variable is removed, even if the app inherited it).
 - **Plugin.** A `prompt.compose` hook appends one section, `agent-office:manager` (scope `session`, fixed text: `MANAGER_TEXT` in `plugin/hooks/register.tsx`), to the system prompt of every request when `AGENT_OFFICE_MANAGER=1` and the loop offers the Agent tool (not to a teammate, not to a loop without the Agent tool). Being part of the system prompt, it holds across `--continue`, `/resume`, `/clear` and compaction. Outside the app the plugin adds nothing unless the person sets `AGENT_OFFICE_MANAGER=1` themselves.
+- **Nudge (plugin, no app change).** With `AGENT_OFFICE_MANAGER=1`, a `tool.call` hook counts the main loop's own tool calls (no `agentId`) per turn. `turn.start` and an `Agent` / `Task` / `SendMessage` call reset the count; bookkeeping tools (`TodoWrite`, `Task*` list/output/stop, `ToolSearch`, `AskUserQuestion`, plan mode, `ListAgents`) neither count nor reset. On the sixth (`NUDGE_AFTER`) the call's answer gets `context: [NUDGE_TEXT]`, a reminder after the tool result (like PostToolUse `additionalContext`); at most once per turn (a refused call passes it to the next one). Being a message, not system-prompt text, it leaves the prompt cache alone. Subagents and teammates are never nudged.
 
 ## Sleeping sessions (v3.3, memory)
 
