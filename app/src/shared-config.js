@@ -375,23 +375,78 @@ function sharedPluginDirs({ claudeDir, configDir, stageRoot, platform }) {
 }
 
 /** The files a project's own session reads its project-level servers from (see projectServers). */
-function readProjectServers({ home, dir, configDir, share }) {
+function readProjectServers({ home, dir, configDir, share, read = readJson }) {
   const claudeDir = path.join(home, '.claude');
   const isDefault = !configDir || samePath(configDir, claudeDir);
   const defaultFile = path.join(home, '.claude.json');
-  const accountConfig = readJson(isDefault ? defaultFile : path.join(configDir, '.claude.json'));
+  const accountConfig = read(isDefault ? defaultFile : path.join(configDir, '.claude.json'));
   return projectServers({
     dir,
     accountConfig,
-    defaultConfig: !isDefault && share ? readJson(defaultFile) : null,
-    projectMcp: readJson(path.join(dir, '.mcp.json')),
+    defaultConfig: !isDefault && share ? read(defaultFile) : null,
+    projectMcp: read(path.join(dir, '.mcp.json')),
     approvals: [
-      readJson(path.join(dir, '.claude', 'settings.local.json')),
-      readJson(path.join(isDefault ? claudeDir : configDir, 'settings.json')),
+      read(path.join(dir, '.claude', 'settings.local.json')),
+      read(path.join(isDefault ? claudeDir : configDir, 'settings.json')),
       isObj(accountConfig?.projects) ? accountConfig.projects[dir] : null,
     ],
   });
 }
+
+/**
+ * The MCP side of prepareShared, reading only: what the tab's --mcp-config holds and the names for the office
+ * directory. Also what a running tab's MCP fingerprint is made of (see mcpFingerprint).
+ * → { servers: { name: config }, mcpNames, own: { user, local, project, approvals } } (own: the session's own
+ * servers, which Claude Code loads by itself)
+ */
+function mcpPlan({ account, home, cwd, office = null, read = readJson }) {
+  const configDir = account?.configDir;
+  const claudeDir = path.join(home, '.claude');
+  const isDefault = !configDir || samePath(configDir, claudeDir);
+  const on = !isDefault && shareEnabled(account);
+  const defaultConfig = read(path.join(home, '.claude.json'));
+  const accountConfig = isDefault ? defaultConfig : read(path.join(configDir, '.claude.json'));
+  const projectMcp = cwd ? read(path.join(cwd, '.mcp.json')) : null;
+  const shared = on ? sharedMcpServers({ defaultConfig, accountConfig, cwd, projectMcp })?.mcpServers || {} : {};
+  const mcpNames = {};
+  let added = {};
+  const projects = Array.isArray(office?.projects) ? office.projects.filter((p) => isObj(p) && typeof p.dir === 'string' && p.dir) : [];
+  if (office?.current && cwd) {
+    mcpNames[office.current] = Object.keys(readProjectServers({ home, dir: cwd, configDir: isDefault ? null : configDir, share: on, read }));
+  }
+  if (office?.share && (isDefault || on)) {
+    const have = {
+      ...serversOf(accountConfig?.mcpServers), ...serversOf(projectMcp?.mcpServers), ...localServers(accountConfig, cwd), ...shared,
+    };
+    const others = projects
+      .filter((p) => p.dir !== office.current)
+      .map((p) => ({ key: p.dir, name: String(p.name || path.basename(p.dir)), servers: readProjectServers({ home, dir: p.dir, configDir: p.configDir, share: p.share !== false, read }) }));
+    const r = officeMcpServers({ have, others });
+    added = r.servers;
+    Object.assign(mcpNames, r.names);
+  }
+  const entry = isObj(accountConfig?.projects) && cwd ? accountConfig.projects[cwd] : null;
+  const pick = (o) => (isObj(o) ? { all: o.enableAllProjectMcpServers === true, on: list(o.enabledMcpjsonServers), off: list(o.disabledMcpjsonServers) } : null);
+  const own = {
+    user: serversOf(accountConfig?.mcpServers),
+    local: localServers(accountConfig, cwd),
+    project: serversOf(projectMcp?.mcpServers),
+    approvals: [
+      pick(entry),
+      pick(cwd ? read(path.join(cwd, '.claude', 'settings.local.json')) : null),
+      pick(read(path.join(isDefault ? claudeDir : configDir, 'settings.json'))),
+    ],
+  };
+  return { servers: { ...shared, ...added }, mcpNames, own };
+}
+
+/**
+ * A tab's MCP fingerprint (contract v3.11): a hash of the servers its claude loads (its own user, local and project
+ * servers with their approvals, and the --mcp-config servers) and nothing else, so an unrelated edit of
+ * ~/.claude.json (history, tips, window sizes) leaves it alone. Only the hash is kept, never the configs.
+ */
+const mcpFingerprint = (plan) =>
+  require('crypto').createHash('sha256').update(canonical({ servers: plan.servers, own: plan.own })).digest('hex');
 
 /**
  * Prepares one session (call at every pty start): for an account other than Default, syncs the links and the
@@ -415,29 +470,7 @@ function prepareShared({ account, home, cwd, stageRoot, mcpFile, office = null, 
     syncLinks(configDir, on ? linkPlan(listClaudeDir(claudeDir), claudeDir) : [], { platform });
     if (on) pluginDirs = sharedPluginDirs({ claudeDir, configDir, stageRoot, platform });
   }
-  // MCP servers: Default's set (accounts sharing it), then the other office projects'
-  const defaultConfig = readJson(path.join(home, '.claude.json'));
-  const accountConfig = isDefault ? defaultConfig : readJson(path.join(configDir, '.claude.json'));
-  const projectMcp = cwd ? readJson(path.join(cwd, '.mcp.json')) : null;
-  const shared = on ? sharedMcpServers({ defaultConfig, accountConfig, cwd, projectMcp })?.mcpServers || {} : {};
-  const mcpNames = {};
-  let added = {};
-  const projects = Array.isArray(office?.projects) ? office.projects.filter((p) => isObj(p) && typeof p.dir === 'string' && p.dir) : [];
-  if (office?.current && cwd) {
-    mcpNames[office.current] = Object.keys(readProjectServers({ home, dir: cwd, configDir: isDefault ? null : configDir, share: on }));
-  }
-  if (office?.share && (isDefault || on)) {
-    const have = {
-      ...serversOf(accountConfig?.mcpServers), ...serversOf(projectMcp?.mcpServers), ...localServers(accountConfig, cwd), ...shared,
-    };
-    const others = projects
-      .filter((p) => p.dir !== office.current)
-      .map((p) => ({ key: p.dir, name: String(p.name || path.basename(p.dir)), servers: readProjectServers({ home, dir: p.dir, configDir: p.configDir, share: p.share !== false }) }));
-    const r = officeMcpServers({ have, others });
-    added = r.servers;
-    Object.assign(mcpNames, r.names);
-  }
-  const servers = { ...shared, ...added };
+  const { servers, mcpNames } = mcpPlan({ account, home, cwd, office });
   let mcpConfig = null;
   try {
     if (Object.keys(servers).length) {
@@ -479,5 +512,5 @@ const sharedArgs = ({ pluginDirs = [], mcpConfig }) => [
 module.exports = {
   MARKER, shareEnabled, sharedMcpServers, approvedProjectServers, projectServers, officeMcpServers, canonical, slugOf,
   sharedPlugins, pluginManifest, stageName, linkPlan, listClaudeDir,
-  syncLinks, stagePlugin, prepareShared, sharedArgs, mcpFileName, staleMcpFiles, pruneMcpFiles,
+  syncLinks, stagePlugin, prepareShared, mcpPlan, mcpFingerprint, sharedArgs, mcpFileName, staleMcpFiles, pruneMcpFiles,
 };

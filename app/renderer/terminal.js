@@ -154,6 +154,16 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
       asleep = true;
       needSize = true;
     },
+    /** claude was restarted in its session because its MCP servers changed (v3.11): the resumed claude draws the
+     * conversation again below a dim line that says so. */
+    reloaded() {
+      dead = false;
+      quietExit = true;
+      term.reset();
+      term.write(`\x1b[2m${t('terminal.mcpReloaded')}\x1b[0m\r\n`);
+      needSize = true;
+      resize();
+    },
     setTheme(t) { term.options.theme = xtermTheme(t); },
     focus() { term.focus(); },
     fit: resize,

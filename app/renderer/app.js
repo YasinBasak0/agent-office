@@ -283,6 +283,7 @@ api.pty.onData((id, d) => {
   buf.exited = false;
   pending.set(id, buf);
 });
+api.pty.onReloaded?.((id) => panes.get(id)?.term.reloaded());
 api.pty.onSleep?.((id) => {
   panes.get(id)?.term.sleep();
   pending.delete(id);
@@ -440,6 +441,7 @@ sidebar = mountSidebar($('sidebar'), {
   setResumeWork: (on) => api.prefs?.set({ resumeWork: on }).then((p) => sidebar.setResumeWork(p?.resumeWork)).catch((e) => console.error(e)),
   setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
   setShareMcp: (on) => api.prefs?.set({ shareMcp: on }).then((p) => sidebar.setShareMcp(p?.shareMcp)).catch((e) => console.error(e)),
+  setReloadMcp: (on) => api.prefs?.set({ reloadMcp: on }).then((p) => sidebar.setReloadMcp(p?.reloadMcp)).catch((e) => console.error(e)),
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
 });
@@ -518,6 +520,7 @@ api.prefs?.get().then((p) => {
   sidebar.setResumeWork(p?.resumeWork);
   sidebar.setManager(p?.manager);
   sidebar.setShareMcp(p?.shareMcp);
+  sidebar.setReloadMcp(p?.reloadMcp);
   sidebar.setSleep(p?.sleepMinutes);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
   applyThemeChoice();

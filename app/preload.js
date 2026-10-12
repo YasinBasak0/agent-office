@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     onExit: listen('pty:exit'),
     restart: (id) => ipcRenderer.send('pty:restart', id),
     wake: (id) => ipcRenderer.send('pty:wake', id),     // the tab is shown: a sleeping claude starts
+    onReloaded: listen('pty:reloaded'),                 // v3.11: restarted in its session because its MCP servers changed
     onSleep: listen('pty:sleep'),                       // an idle background claude was ended to save memory
   },
   work: {
@@ -60,7 +61,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     install: () => ipcRenderer.send('update:install'),
   },
   prefs: {
-    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, shareMcp: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7, shareMcp: v3.9)
+    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, shareMcp: boolean, reloadMcp: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7, shareMcp: v3.9, reloadMcp: v3.11)
     set: (p) => ipcRenderer.invoke('prefs:set', p),
   },
   language: {

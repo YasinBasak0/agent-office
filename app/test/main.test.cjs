@@ -1673,6 +1673,93 @@ test('office directory: written 0600 and atomically; pruned like the MCP files',
   assert.deepEqual(SC.pruneMcpFiles(pathT.dirname(file)), ['p1.json']);
 });
 
+// --- Enter-restart keeps the conversation; tabs reload when their MCP servers change (contract v3.11)
+const MR = require('../src/mcp-reload.js');
+
+test('Enter-restart: the session the tab was in, else --continue for main/worktree tabs, else fresh; argv follows', () => {
+  assert.deepEqual(MR.restartOptions({ sessionId: 'abc-123', continues: false }), { sessionId: 'abc-123' });
+  assert.deepEqual(MR.restartOptions({ sessionId: null, continues: true }), { resume: true });
+  assert.deepEqual(MR.restartOptions({ sessionId: 'bad id; rm', continues: false }), {});
+  assert.deepEqual(MR.restartOptions(), {});
+  // the start's argv (startPty: sessionId → --resume <id>)
+  assert.deepEqual(require('../src/resume.js').claudeArgs(['--plugin-dir', '/p'], ['--resume', 'abc-123'], ''), ['--plugin-dir', '/p', '--resume', 'abc-123']);
+});
+
+test('MCP reload: watched files, stat key, a change acts once it has settled', () => {
+  const files = MR.watchFiles({ home: '/h', configDirs: [null, '/acc', '/acc'], dirs: ['/p', '/p', '/q'] });
+  assert.deepEqual(files, [
+    pathT.join('/h', '.claude.json'), pathT.join('/h', '.claude', 'settings.json'),
+    pathT.join('/acc', '.claude.json'), pathT.join('/acc', 'settings.json'),
+    pathT.join('/p', '.mcp.json'), pathT.join('/p', '.claude', 'settings.local.json'),
+    pathT.join('/q', '.mcp.json'), pathT.join('/q', '.claude', 'settings.local.json'),
+  ]);
+  assert.equal(MR.statKey(['a', 'b'], (f) => (f === 'a' ? { size: 3, mtimeMs: 7 } : null)), '3:7|-');
+  let st = { seen: '', pending: '' };
+  let r = MR.settle(st, 'k1'); assert.equal(r.settled, false); st = r.state;
+  r = MR.settle(st, 'k1'); assert.equal(r.settled, true); st = r.state;
+  r = MR.settle(st, 'k1'); assert.equal(r.settled, false); st = r.state; // nothing new
+  r = MR.settle(st, 'k2'); assert.equal(r.settled, false); st = r.state; // still being written
+  r = MR.settle(st, 'k3'); assert.equal(r.settled, false); st = r.state;
+  r = MR.settle(st, 'k3'); assert.equal(r.settled, true);
+});
+
+test('MCP reload: a changed idle tab reloads, a busy one waits, an unchanged one or the setting off does nothing', () => {
+  const base = { enabled: true, running: true, started: 'a', current: 'b', blocker: '' };
+  assert.equal(MR.reloadAction(base), 'reload');
+  for (const blocker of ['busy', 'agents', 'shells', 'waiting', 'draft', 'unknown']) assert.equal(MR.reloadAction({ ...base, blocker }), 'wait');
+  assert.equal(MR.reloadAction({ ...base, current: 'a' }), 'none');
+  assert.equal(MR.reloadAction({ ...base, current: null }), 'none');
+  assert.equal(MR.reloadAction({ ...base, enabled: false }), 'none');
+  assert.equal(MR.reloadAction({ ...base, running: false }), 'none');
+  // the idle rule is the export rule (busy, agents, shells, permission prompt, unsent text)
+  const claude = { sessionId: 's', status: 'idle' };
+  const office = { stats: {}, workers: [], shells: [] };
+  assert.equal(TR.exportBlocker({ running: true, claude, office }), '');
+  assert.equal(TR.exportBlocker({ running: true, claude, office, hasDraft: true }), 'draft');
+  assert.equal(TR.exportBlocker({ running: true, claude: { ...claude, status: 'busy' }, office }), 'busy');
+  assert.equal(TR.exportBlocker({ running: true, claude, office: { ...office, workers: [{ id: 'w' }] } }), 'agents');
+  assert.equal(TR.exportBlocker({ running: true, claude, office: { ...office, shells: [{ id: 'x' }] } }), 'shells');
+});
+
+test('MCP fingerprint: changes only with the servers a tab loads, never with unrelated ~/.claude.json edits', (t) => {
+  const root = fsT.realpathSync(fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-mcp-print-')));
+  t.after(() => fsT.rmSync(root, { recursive: true, force: true }));
+  const j = (...p) => pathT.join(root, ...p);
+  const w = (p, v) => { fsT.mkdirSync(pathT.dirname(p), { recursive: true }); fsT.writeFileSync(p, JSON.stringify(v)); };
+  const home = j('home'); const a = j('a'); const b = j('b');
+  fsT.mkdirSync(a); fsT.mkdirSync(b);
+  const cfg = { numStartups: 1, tipsHistory: {}, mcpServers: { u: { url: 'u' } }, projects: { [a]: { mcpServers: { la: { url: 'la' } }, lastCost: 1 }, [b]: { mcpServers: { lb: { url: 'lb' } } } } };
+  w(pathT.join(home, '.claude.json'), cfg);
+  const office = { share: true, current: a, projects: [{ name: 'a', dir: a, configDir: null, share: false }, { name: 'b', dir: b, configDir: null, share: false }] };
+  const print = (o = office) => SC.mcpFingerprint(SC.mcpPlan({ account: { id: 'default', configDir: null }, home, cwd: a, office: o }));
+  const p0 = print();
+  assert.match(p0, /^[0-9a-f]{64}$/);
+  // unrelated edits: startups, tips, costs, history
+  w(pathT.join(home, '.claude.json'), { ...cfg, numStartups: 9, tipsHistory: { x: 3 }, projects: { ...cfg.projects, [a]: { ...cfg.projects[a], lastCost: 5, history: ['hi'] } } });
+  assert.equal(print(), p0);
+  // a user server added (claude mcp add --scope user)
+  w(pathT.join(home, '.claude.json'), { ...cfg, mcpServers: { ...cfg.mcpServers, v: { url: 'v' } } });
+  const p1 = print();
+  assert.notEqual(p1, p0);
+  w(pathT.join(home, '.claude.json'), cfg);
+  assert.equal(print(), p0);
+  // another project's local server (shared in, v3.9) and a token change count too
+  w(pathT.join(home, '.claude.json'), { ...cfg, projects: { ...cfg.projects, [b]: { mcpServers: { lb: { url: 'lb', headers: { Authorization: 'Bearer 2' } } } } } });
+  assert.notEqual(print(), p0);
+  w(pathT.join(home, '.claude.json'), cfg);
+  // the folder's .mcp.json and its approval
+  w(pathT.join(a, '.mcp.json'), { mcpServers: { pm: { command: 'x' } } });
+  const p2 = print();
+  assert.notEqual(p2, p0);
+  w(pathT.join(a, '.claude', 'settings.local.json'), { enabledMcpjsonServers: ['pm'], permissions: { allow: [] } });
+  const p3 = print();
+  assert.notEqual(p3, p2);
+  w(pathT.join(a, '.claude', 'settings.local.json'), { enabledMcpjsonServers: ['pm'], permissions: { allow: ['Bash(ls)'] } });
+  assert.equal(print(), p3); // permissions are not MCP
+  // the sharing setting
+  assert.notEqual(print({ ...office, share: false }), p3);
+});
+
 // --- interrupted work (src/resume.js)
 test('yarım iş: işaretler state.json\'dan okunur, garip olanlar ve olmayan sekmeler atılır', () => {
   const R = require('../src/resume.js');

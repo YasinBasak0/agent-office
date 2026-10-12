@@ -130,11 +130,12 @@ let resumeSetting = true;
 let resumeWorkSetting = true;
 let managerSetting = true;
 let shareMcpSetting = true;
+let reloadMcpSetting = true;
 let sleepSetting = 30;
 // "Resume unfinished work" (v3.8): the first click finds two projects with unfinished work (?unfinished=0: none);
 // a stopped one starts, as main starts a lazy tab with --resume
 let mockUnfinished = q.get('unfinished') !== '0';
-const prefsNow = () => ({ resume: resumeSetting, resumeWork: resumeWorkSetting, theme: themeSetting, manager: managerSetting, shareMcp: shareMcpSetting, sleepMinutes: sleepSetting });
+const prefsNow = () => ({ resume: resumeSetting, resumeWork: resumeWorkSetting, theme: themeSetting, manager: managerSetting, shareMcp: shareMcpSetting, reloadMcp: reloadMcpSetting, sleepMinutes: sleepSetting });
 
 window.agentOffice = {
   platform: q.get('platform') || 'darwin',
@@ -246,6 +247,7 @@ window.agentOffice = {
       if (typeof p?.resumeWork === 'boolean') resumeWorkSetting = p.resumeWork;
       if (typeof p?.manager === 'boolean') managerSetting = p.manager;
       if (typeof p?.shareMcp === 'boolean') shareMcpSetting = p.shareMcp;
+      if (typeof p?.reloadMcp === 'boolean') reloadMcpSetting = p.reloadMcp;
       if (typeof p?.theme === 'string') themeSetting = p.theme.trim() || 'auto';
       if ([0, 15, 30, 60].includes(p?.sleepMinutes)) sleepSetting = p.sleepMinutes;
       return prefsNow();
