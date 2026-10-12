@@ -220,6 +220,17 @@ function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null
   return data
 }
 
+// ---------- one session ----------
+// A session's file by its id (sleeping, see src/sleep.js); undefined if it is missing, unreadable or the id is odd.
+function readSession(id, root = rootDir()) {
+  if (typeof id !== 'string' || !/^[\w-]+$/.test(id)) return undefined
+  try {
+    return JSON.parse(readFileSync(join(root, 'sessions', `${id}.json`), 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
 // ---------- end-of-day summary (contract v2.9) ----------
 // Today's deliveries: each session's stats.today.log (kept even after a worker leaves the office), with project, newest first.
 // If projects is given, only those. untracked: number of deliveries without a log (old plugin).
@@ -267,4 +278,4 @@ function readToday(projects, now = Date.now(), root = rootDir(), aliases = null)
   return out
 }
 
-module.exports = { readOffice, readToday, readThemes, themesError, dayKey, forgetMs, LIVE_MS, FORMAT }
+module.exports = { readOffice, readToday, readSession, readThemes, themesError, dayKey, forgetMs, LIVE_MS, FORMAT }

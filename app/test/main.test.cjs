@@ -696,6 +696,85 @@ test('terminal: ⌘Enter (macOS) ve Ctrl+Enter claude\'a ctrl+enter (hemen gönd
   assert.equal(K.translateKey({ key: 's', ctrlKey: true }, true), null);
 });
 
+test('uyku: ayar seçenekleri, varsayılan 30 dk, claude\'un pid dosyası hesabın klasöründe', () => {
+  const Z = require('../src/sleep.js');
+  assert.deepEqual(Z.SLEEP_CHOICES, [0, 15, 30, 60]);
+  assert.equal(Z.normalizeSleep(undefined), 30);
+  assert.equal(Z.normalizeSleep(0), 0);
+  assert.equal(Z.normalizeSleep(60), 60);
+  assert.equal(Z.normalizeSleep(7), 30);
+  assert.equal(Z.normalizeSleep('15'), 30);
+  assert.equal(Z.claudePidFile(null, '/h', 42), '/h/.claude/sessions/42.json');
+  assert.equal(Z.claudePidFile('/u/accounts/a', '/h', 42), '/u/accounts/a/sessions/42.json');
+});
+
+test('uyku: gönderilmemiş yazı (Enter gönderir, Ctrl+C siler, kaçış dizileri saymaz)', () => {
+  const { draftAfter } = require('../src/sleep.js');
+  assert.equal(draftAfter(false, 'merhaba'), true);
+  assert.equal(draftAfter(true, '\r'), false);
+  assert.equal(draftAfter(false, 'fix the bug\r'), false);
+  assert.equal(draftAfter(false, 'a\rb'), true);
+  assert.equal(draftAfter(true, '\x03'), false);
+  // arrows, focus in/out, SS3 keys, Alt+key and paste brackets alone are not text
+  assert.equal(draftAfter(false, '\x1b[A\x1b[B\x1b[I\x1b[O\x1bOP\x1bb'), false);
+  assert.equal(draftAfter(false, '\x1b[200~\x1b[201~'), false);
+  // pasted text is a draft; a trailing Enter sends it
+  assert.equal(draftAfter(false, '\x1b[200~long paste\x1b[201~'), true);
+  assert.equal(draftAfter(false, '\x1b[200~long paste\x1b[201~\r'), false);
+  // backspace and Escape keep what was there (safe side)
+  assert.equal(draftAfter(true, '\x7f\x7f'), true);
+  assert.equal(draftAfter(false, '\x7f'), false);
+  assert.equal(draftAfter(true, '\x1b'), true);
+  assert.equal(draftAfter(false, ''), false);
+});
+
+test('uyku: yalnız hiçbir şey kaybolmayacaksa (boşta, ajan/kabuk/onay/zamanlama yok, etkin proje değil)', () => {
+  const { sleepBlocker, hasScheduleTool } = require('../src/sleep.js');
+  const now = 10_000_000;
+  const idle = {
+    now, idleMs: 30 * 60000, lastActivityAt: now - 31 * 60000,
+    claude: { pid: 1, sessionId: 's1', status: 'idle' },
+    office: { format: 2, project: 'p', updatedAt: now, workers: [{ id: 'w', doneAt: now - 1 }], shells: [{ id: 'b', endAt: now - 1 }], stats: { isBossBusy: false } },
+  };
+  assert.equal(sleepBlocker(idle), '');
+  assert.equal(sleepBlocker({ ...idle, idleMs: 0 }), 'off');
+  assert.equal(sleepBlocker({ ...idle, isActive: true }), 'active');
+  assert.equal(sleepBlocker({ ...idle, lastActivityAt: now - 29 * 60000 }), 'recent');
+  assert.equal(sleepBlocker({ ...idle, hasDraft: true }), 'draft');
+  // unknown session (no pid file, an odd one, no office file, an ended one): stays awake
+  assert.equal(sleepBlocker({ ...idle, claude: undefined }), 'unknown');
+  assert.equal(sleepBlocker({ ...idle, claude: { status: 'idle' } }), 'unknown');
+  assert.equal(sleepBlocker({ ...idle, office: undefined }), 'unknown');
+  assert.equal(sleepBlocker({ ...idle, office: { ...idle.office, endedAt: now } }), 'unknown');
+  assert.equal(sleepBlocker({ ...idle, claude: { ...idle.claude, status: 'busy' } }), 'busy');
+  assert.equal(sleepBlocker({ ...idle, claude: { ...idle.claude, status: undefined } }), 'busy');
+  assert.equal(sleepBlocker({ ...idle, office: { ...idle.office, stats: { isBossBusy: true } } }), 'busy');
+  assert.equal(sleepBlocker({ ...idle, office: { ...idle.office, stats: { waiting: { kind: 'permission', tool: 'Bash', since: now } } } }), 'waiting');
+  assert.equal(sleepBlocker({ ...idle, office: { ...idle.office, workers: [{ id: 'w2' }] } }), 'agents');
+  assert.equal(sleepBlocker({ ...idle, office: { ...idle.office, shells: [{ id: 'b2', status: 'running' }] } }), 'shells');
+  assert.equal(sleepBlocker({ ...idle, hasSchedule: true }), 'scheduled');
+  assert.equal(hasScheduleTool('{"type":"tool_use","name":"CronCreate","input":{}}'), true);
+  assert.equal(hasScheduleTool('{"type":"tool_use","name":"ScheduleWakeup"}'), true);
+  assert.equal(hasScheduleTool('{"type":"tool_use","name":"Bash"} CronCreate in prose'), false);
+  assert.equal(hasScheduleTool(undefined), false);
+});
+
+test('uyku: readSession oturum dosyasını kimliğiyle okur, garip kimlik ya da bozuk dosya undefined', () => {
+  const fsT = require('fs');
+  const pathT = require('path');
+  const S = require('../src/sessions.js');
+  const root = fsT.mkdtempSync(pathT.join(require('os').tmpdir(), 'ao-sleep-'));
+  fsT.mkdirSync(pathT.join(root, 'sessions'));
+  fsT.writeFileSync(pathT.join(root, 'sessions', 'abc-1.json'), '{"format":2,"stats":{"isBossBusy":false}}');
+  fsT.writeFileSync(pathT.join(root, 'sessions', 'bad.json'), '{');
+  assert.deepEqual(S.readSession('abc-1', root), { format: 2, stats: { isBossBusy: false } });
+  assert.equal(S.readSession('bad', root), undefined);
+  assert.equal(S.readSession('missing', root), undefined);
+  assert.equal(S.readSession('../sessions/abc-1', root), undefined);
+  assert.equal(S.readSession(undefined, root), undefined);
+  fsT.rmSync(root, { recursive: true, force: true });
+});
+
 // ---- Windows (decisions are pure and take the platform/env as arguments, so they run on any OS)
 const W = require('path').win32;
 const filesAt = (...files) => (f) => files.includes(f);
@@ -858,4 +937,13 @@ test('terminal: macOS Option ile klavye düzeninin ürettiği ASCII işaret yaz�
   assert.equal(K.translateKey(opt('@', 'KeyQ'), false), null);
   assert.equal(K.translateKey(opt('@', 'KeyQ', { metaKey: true }), true), null);
   assert.equal(K.translateKey(opt('@', 'KeyQ', { ctrlKey: true }), true), null);
+});
+
+test('uyku: uyanış seçenekleri (kendi oturumu, açılışta "son oturumdan devam et" o anki ayarı, hesap değişince temiz)', () => {
+  const { wakeOptions } = require('../src/sleep.js');
+  assert.deepEqual(wakeOptions({ sessionId: 's1' }, false), { sessionId: 's1' });
+  assert.deepEqual(wakeOptions({ resume: true }, true), { resume: true });
+  assert.deepEqual(wakeOptions({ resume: true }, false), { resume: false });
+  assert.deepEqual(wakeOptions({}, true), { resume: false });
+  assert.deepEqual(wakeOptions(undefined, true), { resume: false });
 });

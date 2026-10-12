@@ -126,6 +126,8 @@ body.sidebar-collapsed #sidebar { display: none; }
   opacity: .25;
 }
 .sb-dot.live { background: var(--accent); opacity: 1; box-shadow: 0 0 4px var(--accent); }
+/* asleep (src/sleep.js): a hollow dot, starts again when the project is opened */
+.sb-dot.asleep { background: transparent; box-shadow: inset 0 0 0 1px var(--status-text); opacity: .6; }
 .sb-boss { color: var(--accent); }
 /* project waiting on you: approval (hand, blinking) or done (dot) */
 .sb-attn { flex-shrink: 0; font-size: 11px; line-height: 1; cursor: help; }
@@ -380,6 +382,7 @@ body.dragging, body.dragging * { cursor: row-resize !important; }
 }
 .tab:hover { opacity: .85; }
 .tab.active { opacity: 1; background: var(--status-bg); box-shadow: inset 0 2px 0 var(--accent); }
+.tab.asleep .tab-label { opacity: .6; font-style: italic; }
 .tab.stopped .tab-label { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--status-text) 50%, transparent); }
 .tab-n {
   flex: 0 0 auto;

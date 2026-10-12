@@ -163,12 +163,21 @@ function syncPanes() {
   for (const id of ids) if (!panes.has(id)) createPane(id);
 }
 
+/** Is the tab's claude asleep (not started yet, or ended while idle in the background; see main's src/sleep.js)? */
+function isAsleep(id) {
+  const [projectId, n] = String(id).split(':');
+  const st = status.find((x) => x.id === projectId);
+  return Boolean(n ? st?.tabs?.find((x) => x.n === Number(n))?.isAsleep : st?.isAsleep);
+}
+
 let shownId; // visible terminal; focus/resize only when it changes
 function showActive() {
   const visible = activePty();
   for (const [id, p] of panes) p.el.hidden = id !== visible;
   $('empty').hidden = projects.length > 0;
   renderTabs();
+  // the shown tab always runs: a sleeping claude starts (and continues its session)
+  if (visible && isAsleep(visible)) api.pty.wake?.(visible);
   if (shownId === visible) return;
   shownId = visible;
   const p = panes.get(visible);
@@ -182,9 +191,10 @@ function tabButton(p, tab, active, running) {
   const n = tab?.n ?? MAIN_TAB;
   const dir = tab?.dir || p.dir;
   const b = document.createElement('div');
-  b.className = 'tab' + (n === active ? ' active' : '') + (running ? '' : ' stopped') + (tab?.worktree ? ' worktree' : '');
+  const sleeping = !running && isAsleep(tabPtyId(p.id, n));
+  b.className = 'tab' + (n === active ? ' active' : '') + (running ? '' : sleeping ? ' asleep' : ' stopped') + (tab?.worktree ? ' worktree' : '');
   b.dataset.n = String(n);
-  b.title = (tab?.worktree ? t('app.worktreeTab', { branch: tab.worktree.branch, dir }) : n === MAIN_TAB ? t('app.mainTab', { dir }) : t('app.sameTab', { dir })) + (running ? '' : t('app.stopped'));
+  b.title = (tab?.worktree ? t('app.worktreeTab', { branch: tab.worktree.branch, dir }) : n === MAIN_TAB ? t('app.mainTab', { dir }) : t('app.sameTab', { dir })) + (running ? '' : sleeping ? t('app.asleep') : t('app.stopped'));
   const num = document.createElement('span');
   num.className = 'tab-n';
   num.textContent = String(n);
@@ -272,6 +282,10 @@ api.pty.onData((id, d) => {
   buf.data = (buf.data + d).slice(-BUFFER_MAX);
   buf.exited = false;
   pending.set(id, buf);
+});
+api.pty.onSleep?.((id) => {
+  panes.get(id)?.term.sleep();
+  pending.delete(id);
 });
 api.pty.onExit((id, code) => {
   if (isLoginId(id)) return login?.exit(id, code);
@@ -416,6 +430,7 @@ sidebar = mountSidebar($('sidebar'), {
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
   setResume: (on) => api.prefs?.set({ resume: on }).then((p) => sidebar.setResume(p?.resume)).catch((e) => console.error(e)),
   setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
+  setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
 });
 
@@ -483,6 +498,7 @@ applyStaticText();
 api.prefs?.get().then((p) => {
   sidebar.setResume(p?.resume);
   sidebar.setManager(p?.manager);
+  sidebar.setSleep(p?.sleepMinutes);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
   applyThemeChoice();
 }).catch((e) => console.error(e));

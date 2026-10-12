@@ -128,7 +128,8 @@ const mockThemes = mergeThemes(galleryThemes(galleryFiles), {});
 let themeSetting = q.get('theme') || 'auto';
 let resumeSetting = true;
 let managerSetting = true;
-const prefsNow = () => ({ resume: resumeSetting, theme: themeSetting, manager: managerSetting });
+let sleepSetting = 30;
+const prefsNow = () => ({ resume: resumeSetting, theme: themeSetting, manager: managerSetting, sleepMinutes: sleepSetting });
 
 window.agentOffice = {
   platform: q.get('platform') || 'darwin',
@@ -216,6 +217,8 @@ window.agentOffice = {
     onData: ev.data.add,
     onExit: ev.exit.add,
     restart: (id) => boot(id),
+    wake: () => {},
+    onSleep: () => {},
   },
   prefs: {
     get: async () => prefsNow(),
@@ -223,6 +226,7 @@ window.agentOffice = {
       if (typeof p?.resume === 'boolean') resumeSetting = p.resume;
       if (typeof p?.manager === 'boolean') managerSetting = p.manager;
       if (typeof p?.theme === 'string') themeSetting = p.theme.trim() || 'auto';
+      if ([0, 15, 30, 60].includes(p?.sleepMinutes)) sleepSetting = p.sleepMinutes;
       return prefsNow();
     },
   },

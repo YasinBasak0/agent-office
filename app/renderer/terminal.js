@@ -54,6 +54,7 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
   let dead = false;
   let needSize = false; // report the size again when the new pty sends its first data
   let quietExit = false; // account switch: the old pty's exit message is not shown
+  let asleep = false; // claude was put to sleep: the banner stays until the resumed claude draws
   const visible = () => el.getClientRects().length > 0 && el.clientWidth > 0 && el.clientHeight > 0;
   const resize = () => {
     if (!visible()) return; // hidden terminal: resized once visible
@@ -135,6 +136,7 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
     write(d) {
       dead = false;
       quietExit = false;
+      if (asleep) { asleep = false; term.reset(); }
       if (needSize) { needSize = false; resize(); }
       term.write(d);
     },
@@ -143,6 +145,14 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
       dead = true;
       if (!restartable || quietExit) { quietExit = false; return; }
       term.write(`\r\n\x1b[2m${t('terminal.exited')}\x1b[0m\r\n`);
+    },
+    /** claude was ended to save memory: the history is dropped too (it is the biggest part of a terminal's memory;
+     * the resumed claude draws the conversation again) and a dim line says so. */
+    sleep() {
+      term.reset();
+      term.write(`\x1b[2m${t('terminal.asleep')}\x1b[0m\r\n`);
+      asleep = true;
+      needSize = true;
     },
     setTheme(t) { term.options.theme = xtermTheme(t); },
     focus() { term.focus(); },

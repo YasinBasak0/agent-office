@@ -33,7 +33,8 @@
     "mainTab": "Ana terminal (kapatılamaz)\n{dir}",
     "sameTab": "Proje klasöründe terminal\n{dir}",
     "worktreeTab": "Git worktree, dal {branch}\n{dir}",
-    "stopped": " (Claude kapalı)"
+    "stopped": " (Claude kapalı)",
+    "asleep": " (uykuda: açınca başlar)"
   },
   "sidebar": {
     "idle": "boşta",
@@ -68,6 +69,10 @@
     "resumeTitle": "Uygulama açılınca her proje son Claude oturumundan devam eder (claude --continue)",
     "manager": "Müdür modu — işleri ajanlara dağıt",
     "managerTitle": "Müdür işi ajanlara böler, görevler bitene kadar devam eder ve yalnız sana gereken şeyler için durur (onaylar, girişler, senin kararların). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
+    "sleep": "Boştaki oturumları uyut",
+    "sleepTitle": "Bellek tasarrufu: bir proje Claude'unu ilk açıldığında başlatır; arka planda bu kadar süre boş kalan Claude kapatılır ve projeyi yeniden açınca oturumundan devam eder (claude --resume). Çalışırken, onay beklerken, ajan, arka plan kabuğu ya da zamanlanmış görev varken veya gönderilmemiş yazı varken asla.",
+    "sleepOff": "Kapalı",
+    "sleepAfter": "{n} dk sonra",
     "languageTitle": "Arayüz dili (Otomatik sistem dilini izler)",
     "auto": "Otomatik",
     "theme": "Tema",
@@ -86,6 +91,7 @@
     "noLoginTitle": "“{label}” hesabında giriş yapılmamış; Claude bu projede çalışamaz.\nTıkla: giriş yap",
     "claudeRunning": "Claude çalışıyor",
     "claudeStopped": "Claude kapalı",
+    "claudeAsleep": "Bellek için uykuda: bu projeyi açınca Claude kaldığı yerden yeniden başlar",
     "bossBusy": "Patron meşgul",
     "attnPermission": "Claude bu projede onayını bekliyor",
     "attnDone": "Claude burada işini bitirdi, seni bekliyor",
@@ -213,7 +219,8 @@
     "checking": "giriş denetleniyor…"
   },
   "terminal": {
-    "exited": "— Claude kapandı — yeniden başlatmak için Enter —"
+    "exited": "— Claude kapandı — yeniden başlatmak için Enter —",
+    "asleep": "— Bellek için uykuda: açınca kaldığı yerden devam eder —"
   },
   "main": {
     "defaultAccount": "Varsayılan",

@@ -12,6 +12,7 @@ const OS = require('./src/platform.js');
 const L = require('./src/locales.js');
 const UP = require('./src/updates.js');
 const M = require('./src/memory.js');
+const Z = require('./src/sleep.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -29,6 +30,9 @@ const sizes = new Map();     // pty id → { cols, rows } (last pty:resize)
 const auths = new Map();     // accountId → AccountAuth (in memory only)
 const usages = new Map();    // accountId → AccountUsage (also kept in usage/<accountId>/last.json)
 const ptyOf = (id) => terms.get(id) || logins.get(id);
+// Sleeping tabs (see src/sleep.js): pty id → how to start it again ({ resume } at launch, { sessionId } after a sleep).
+const asleep = new Map();
+const activity = new Map(); // pty id → { at: last start/input/output, draft: prompt text typed but unsent }
 let lastSize = { cols: 100, rows: 16 };
 
 // If sessions.js fails to load, the office carries on with empty data.
@@ -60,8 +64,8 @@ const snapshot = () => ({
   projects: state.projects,
   activeId: state.activeId,
   status: state.projects.map((p) => ({
-    id: p.id, isRunning: terms.has(p.id), attention: attention.get(p.id) || null,
-    tabs: P.tabsOf(p).map((t) => ({ n: t.n, isRunning: terms.has(P.tabPtyId(p.id, t.n)) })),
+    id: p.id, isRunning: terms.has(p.id), isAsleep: asleep.has(p.id), attention: attention.get(p.id) || null,
+    tabs: P.tabsOf(p).map((t) => ({ n: t.n, isRunning: terms.has(P.tabPtyId(p.id, t.n)), isAsleep: asleep.has(P.tabPtyId(p.id, t.n)) })),
   })),
 });
 const broadcast = () => send('projects:changed', snapshot());
@@ -215,6 +219,7 @@ function killPty(id) {
   const t = map.get(id);
   if (!t) return;
   map.delete(id);
+  activity.delete(id);
   try { t.kill(); } catch {}
 }
 function killAll() { for (const id of [...terms.keys(), ...logins.keys()]) killPty(id); }
@@ -468,11 +473,13 @@ const RESUME_GRACE_MS = 8000; // if --continue ends with an error within this ti
 // (Re)starts a tab's claude; the id is projectId for the main tab, `<projectId>:<n>` for an extra tab.
 // The size is that tab's last pty:resize. resume: continue the last session (--continue). The tab starts in its own
 // folder (worktree) with the same account, plugin and status line rules. An extra tab in the same folder gets no
-// --continue: so a second claude doesn't open the session the main tab is resuming.
-function startPty(id, { resume = false } = {}) {
+// --continue: so a second claude doesn't open the session the main tab is resuming. sessionId: wake from sleep with
+// --resume <id>, the tab's own session.
+function startPty(id, { resume = false, sessionId = null } = {}) {
   killPty(id);
   const r = P.resolvePty(state, id);
   if (!r || !win || !isLoaded) return broadcast();
+  asleep.delete(id);
   const { project, tab, dir: cwd } = r;
   const { configDir } = A.accountOf(state, project);
   if (configDir) try { fs.mkdirSync(configDir, { recursive: true }); } catch {}
@@ -484,9 +491,10 @@ function startPty(id, { resume = false } = {}) {
   const dir = pluginDir();
   const sl = usageStatusLine(project, configDir, cwd, usageKey(id));
   const settings = M.withMemorySetting(sl?.settings, isDir(cwd) ? projectMemoryDir(cwd, configDir) : null);
-  const isResume = resume && (!tab || Boolean(tab.worktree)) && hasHistory(cwd, configDir);
+  const isResume = Boolean(sessionId) || (resume && (!tab || Boolean(tab.worktree)) && hasHistory(cwd, configDir));
+  const resumeArgs = sessionId ? ['--resume', sessionId] : isResume ? ['--continue'] : [];
   const settingsArg = IS_WIN && settings ? settingsFile(usageKey(id), settings) : settings;
-  const args = [...(dir ? ['--plugin-dir', dir] : []), ...(settingsArg ? ['--settings', settingsArg] : []), ...(isResume ? ['--continue'] : [])];
+  const args = [...(dir ? ['--plugin-dir', dir] : []), ...(settingsArg ? ['--settings', settingsArg] : []), ...resumeArgs];
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
   let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: state.manager !== false });
@@ -510,12 +518,19 @@ function startPty(id, { resume = false } = {}) {
     return broadcast();
   }
   terms.set(id, t);
-  t.onData((d) => { if (terms.get(id) === t) send('pty:data', id, d); });
+  activity.set(id, { at: startedAt, draft: false });
+  t.onData((d) => {
+    if (terms.get(id) !== t) return;
+    const a = activity.get(id);
+    if (a) a.at = Date.now();
+    send('pty:data', id, d);
+  });
   t.onExit(({ exitCode }) => {
     if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
     terms.delete(id);
     // the session to resume was not found or could not be opened: start fresh without showing the exit to the user
     if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) return startPty(id);
+    activity.delete(id);
     send('pty:exit', id, exitCode);
     broadcast();
   });
@@ -523,25 +538,80 @@ function startPty(id, { resume = false } = {}) {
 }
 
 // After loading, start the claude of every project that isn't running (on reload, leave running ones alone).
-// At startup (if the setting is on) every project continues from its last session.
+// At startup (if the setting is on) every project continues from its last session. With sleeping on, a tab is only
+// marked asleep: it starts when the renderer first shows it (pty:wake).
 function startMissing() {
   for (const p of state.projects) {
-    for (const id of P.ptyIdsOf(p)) if (!terms.has(id)) startPty(id, { resume: state.resume !== false });
+    for (const id of P.ptyIdsOf(p)) {
+      if (terms.has(id) || asleep.has(id)) continue;
+      if (sleepMinutes()) asleep.set(id, { resume: true });
+      else startPty(id, { resume: state.resume !== false });
+    }
   }
+  broadcast();
+}
+function wake(id) {
+  const how = asleep.get(id);
+  if (how && !terms.has(id)) startPty(id, Z.wakeOptions(how, state.resume !== false));
+}
+
+// --- sleeping idle background tabs (see src/sleep.js)
+const sleepMinutes = () => Z.normalizeSleep(state.sleepMinutes);
+const scheduleSeen = new Map(); // transcript path → { key: "size|mtime", has }
+function hasSchedule(file) {
+  let st;
+  try { st = fs.statSync(file); } catch { return false; }
+  const key = `${st.size}|${st.mtimeMs}`;
+  const old = scheduleSeen.get(file);
+  if (old?.key === key) return old.has;
+  let has = false;
+  try { has = Z.hasScheduleTool(fs.readFileSync(file, 'utf8')); } catch {}
+  scheduleSeen.set(file, { key, has });
+  return has;
+}
+function sleepIdle() {
+  const minutes = sleepMinutes();
+  if (!minutes || !win || win.isDestroyed()) return;
+  const now = Date.now();
+  const home = app.getPath('home');
+  let slept = false;
+  for (const [id, t] of [...terms]) {
+    const r = P.resolvePty(state, id);
+    if (!r) continue;
+    const { configDir } = A.accountOf(state, r.project);
+    const a = activity.get(id) || { at: now, draft: false };
+    const base = { now, idleMs: minutes * 60000, lastActivityAt: a.at, hasDraft: a.draft, isActive: r.project.id === state.activeId };
+    // cheap checks first: files are read only for a tab that is otherwise ready to sleep
+    if (Z.sleepBlocker({ ...base, claude: { sessionId: '-', status: 'idle' }, office: {} })) continue;
+    const claude = readJson(Z.claudePidFile(configDir, home, t.pid));
+    const sid = typeof claude?.sessionId === 'string' && /^[\w-]+$/.test(claude.sessionId) ? claude.sessionId : '';
+    const session = sid ? office()?.readSession(sid) : undefined;
+    const schedule = sid ? hasSchedule(path.join(P.historyDir(r.dir, configDir, home), `${sid}.jsonl`)) : false;
+    if (Z.sleepBlocker({ ...base, claude, office: session, hasSchedule: schedule })) continue;
+    killPty(id);
+    asleep.set(id, { sessionId: sid });
+    send('pty:sleep', id);
+    slept = true;
+  }
+  if (slept) broadcast();
 }
 // Restarts all of the project's tabs (account change).
+// A sleeping tab stays asleep and starts fresh when shown (its session belongs to the old account).
 const restartProject = (projectId) => {
   const p = P.findProject(state, projectId);
-  if (p) for (const id of P.ptyIdsOf(p)) startPty(id);
+  if (p) for (const id of P.ptyIdsOf(p)) if (asleep.has(id)) asleep.set(id, {}); else startPty(id);
 };
 // Worktree session names → project name (see projects.js sessionAliases): the office and notifications count them toward the project.
 const sessionAliases = () => P.sessionAliases(state.projects);
 
 let usagePoll = null;
+let sleepPoll = null;
 function startPolling() {
   clearInterval(poll);
   clearInterval(usagePoll);
+  clearInterval(sleepPoll);
   usagePoll = setInterval(scanUsage, 3000);
+  sleepPoll = setInterval(sleepIdle, 30000);
   let tick = 0;
   poll = setInterval(() => {
     const s = office();
@@ -576,12 +646,19 @@ ipcMain.handle('projects:remove', (_e, id) => {
   const p = P.findProject(state, id);
   for (const pid of p ? P.ptyIdsOf(p) : [id]) {
     killPty(pid);
+    asleep.delete(pid);
     sizes.delete(pid);
     if (p) try { fs.rmSync(path.join(usageRoot(), p.accountId, `${usageKey(pid)}.json`), { force: true }); } catch {}
   }
   commit(P.removeProject(state, id));
 });
-ipcMain.handle('projects:setActive', (_e, id) => { commit(P.setActive(state, id)); updateAttention(); });
+// the project left in the background starts its idle time now: it was in view until this moment (src/sleep.js)
+ipcMain.handle('projects:setActive', (_e, id) => {
+  const left = P.findProject(state, state.activeId);
+  if (left && left.id !== id) for (const pid of P.ptyIdsOf(left)) { const a = activity.get(pid); if (a) a.at = Date.now(); }
+  commit(P.setActive(state, id));
+  updateAttention();
+});
 ipcMain.handle('projects:setAccount', (_e, id, accountId) => {
   const p = P.findProject(state, id);
   if (!p || p.accountId === accountId) return;
@@ -686,6 +763,7 @@ async function addWorktreeTab(project) {
 function dropTab(project, n) {
   const id = P.tabPtyId(project.id, n);
   killPty(id);
+  asleep.delete(id);
   sizes.delete(id);
   try { fs.rmSync(path.join(usageRoot(), project.accountId, `${usageKey(id)}.json`), { force: true }); } catch {}
   commit(P.removeTab(state, project.id, n));
@@ -735,7 +813,14 @@ ipcMain.handle('tabs:close', async (_e, projectId, n) => {
 
 // --- pty (each message carries a tab's pty id — projectId or `<projectId>:<n>` — or 'login:<accountId>')
 
-ipcMain.on('pty:write', (_e, id, d) => ptyOf(id)?.write(d));
+ipcMain.on('pty:write', (_e, id, d) => {
+  if (!terms.has(id)) wake(id);
+  const a = activity.get(id);
+  if (a) { a.at = Date.now(); a.draft = Z.draftAfter(a.draft, d); }
+  ptyOf(id)?.write(d);
+});
+// the renderer shows a tab: a sleeping one starts (lazy start, wake from sleep)
+ipcMain.on('pty:wake', (_e, id) => wake(id));
 ipcMain.on('pty:resize', (_e, id, cols, rows) => {
   if (!(cols > 0 && rows > 0)) return;
   // the login window's size must not change the projects' default size
@@ -883,7 +968,7 @@ async function createWindow() {
   win.once('ready-to-show', () => win.show());
   win.on('focus', onFocus);
   if (IS_WIN) win.on('focus', () => win?.flashFrame(false));
-  win.on('closed', () => { killAll(); clearInterval(poll); clearInterval(usagePoll); isLoaded = false; win = null; });
+  win.on('closed', () => { killAll(); asleep.clear(); clearInterval(poll); clearInterval(usagePoll); clearInterval(sleepPoll); isLoaded = false; win = null; });
 
   // The folder from the command line is added/activated; if there are no projects, ask for a folder.
   const arg = argProject();
@@ -985,14 +1070,20 @@ function buildMenu() {
 }
 
 // --- preferences: resume = continue from the last session at startup; theme = 'auto' or a theme name (v3.1);
-// manager = the boss delegates to agents (plugin manager mode, AGENT_OFFICE_MANAGER), for sessions started afterwards
+// manager = the boss delegates to agents (plugin manager mode, AGENT_OFFICE_MANAGER), for sessions started afterwards;
+// sleepMinutes = end idle background claudes after this long (0 = off, see src/sleep.js)
 const themeSetting = (v) => (TH ? TH.normalizeThemeSetting(v) : 'auto');
-const prefs = () => ({ resume: state.resume !== false, theme: themeSetting(state.theme), manager: state.manager !== false });
+const prefs = () => ({ resume: state.resume !== false, theme: themeSetting(state.theme), manager: state.manager !== false, sleepMinutes: sleepMinutes() });
 ipcMain.handle('prefs:get', () => prefs());
 ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.resume === 'boolean' && p.resume !== prefs().resume) commit({ ...state, resume: p.resume });
   if (p && typeof p.manager === 'boolean' && p.manager !== prefs().manager) commit({ ...state, manager: p.manager });
   if (p && typeof p.theme === 'string' && themeSetting(p.theme) !== prefs().theme) commit({ ...state, theme: themeSetting(p.theme) });
+  if (p && Z.SLEEP_CHOICES.includes(p.sleepMinutes) && p.sleepMinutes !== prefs().sleepMinutes) {
+    commit({ ...state, sleepMinutes: p.sleepMinutes });
+    // turned off: every sleeping tab starts again, as if the app had started without sleeping
+    if (!p.sleepMinutes) for (const id of [...asleep.keys()]) wake(id);
+  }
   return prefs();
 });
 
@@ -1010,7 +1101,7 @@ app.whenReady().then(async () => {
   await loadI18n();
   await loadThemesLib();
   const raw = loadState();
-  state = { ...P.normalizeState(raw), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, manager: raw.manager !== false, theme: themeSetting(raw.theme) };
+  state = { ...P.normalizeState(raw), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, manager: raw.manager !== false, theme: themeSetting(raw.theme), sleepMinutes: Z.normalizeSleep(raw.sleepMinutes) };
   app.setAboutPanelOptions({ applicationName: app.getName(), applicationVersion: app.getVersion() });
   buildMenu();
   setupUpdates();

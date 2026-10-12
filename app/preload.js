@@ -38,6 +38,8 @@ contextBridge.exposeInMainWorld('agentOffice', {
     onData: listen('pty:data'),
     onExit: listen('pty:exit'),
     restart: (id) => ipcRenderer.send('pty:restart', id),
+    wake: (id) => ipcRenderer.send('pty:wake', id),     // the tab is shown: a sleeping claude starts
+    onSleep: listen('pty:sleep'),                       // an idle background claude was ended to save memory
   },
   clipboard: {
     hasImage: () => ipcRenderer.invoke('clipboard:hasImage'),
@@ -52,7 +54,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     install: () => ipcRenderer.send('update:install'),
   },
   prefs: {
-    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, theme: 'auto' | name, manager: boolean } (theme: v3.1, manager: v3.2)
+    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, theme: 'auto' | name, manager: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3)
     set: (p) => ipcRenderer.invoke('prefs:set', p),
   },
   language: {
