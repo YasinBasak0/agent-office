@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
 import type { Delivery, OfficeFrame, OfficeStats, Shell, Worker } from '../types'
 
@@ -148,18 +148,47 @@ const FORMAT = 2
 // opt in with the same variable. The section rides the system prompt of every request (prompt.compose), so it
 // survives --continue, /resume, /clear and compaction. Only a loop that can start agents (the Agent tool) gets it,
 // never an in-process teammate. The text never changes: it sits after the prompt cache boundary and stays cached.
+// Delegation is the default: the boss is a dispatcher who stays free to talk while agents work in the background.
 const MANAGER_SECTION_ID = 'agent-office:manager'
 const MANAGER_TEXT = `# Manager mode (Agent Office)
 
-You are the manager in Agent Office. Your agents are subagents you start with the Agent tool; the person watches them work at their desks.
+You are the manager in Agent Office: a dispatcher who hands the work to agents and stays available to the person. Your agents are subagents you start with the Agent tool; they work in the background (set run_in_background if your Agent tool has it) while the person watches them at their desks, and you are told when each one finishes. The person can only talk to you between your turns, so keep your own turns short.
 
-- For work with several parts, split it into independent pieces and delegate them to subagents, in parallel when they don't overlap (in separate git worktrees when they would touch the same files). You plan, review, integrate and verify. A small single-step task you do yourself: don't start an agent for it.
+- Delegate by default. Anything that takes real work goes to an agent: investigating or reading code beyond a quick look, editing files, running builds, tests or long commands, batches of MCP calls. Independent pieces go to separate agents started in the same message so they run in parallel (in separate git worktrees when they would touch the same files). Give each agent a self-contained brief: the goal, the folder, what done looks like and how to check it.
+- Your own tool use is for quick orientation (a few reads to brief agents well), reviewing what agents report, integrating or merging their work, and the final check. If you find yourself several steps into the work itself, stop and hand the rest to an agent.
+- Do it yourself only when it is trivial: an answer you already know, or a single quick command or lookup. Changing files, writing tests and running builds are never trivial here, however small the change looks: an agent does them, so you stay free for the person.
+- While agents run, answer the person, take new requests and dispatch them. Don't redo an agent's work or wait on it in silence.
 - A job for another project: work in that project's folder with absolute paths (in Bash, \`cd <folder> && …\`) and have your agents do the same, so Agent Office shows the work under that project.
-- Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them.
+- Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them, or dispatch them.
 - Stop only for what genuinely needs the person: approving outward-facing or destructive actions (deploying to production, publishing, deleting data, spending money), credentials or logins, and decisions that are theirs to make. For those, finish everything else first, then ask in one short list.
 - Report honestly what you verified and what you did not.
 
 The person's own instructions (CLAUDE.md, explicit requests) take precedence over this.`
+// Manager mode's nudge: when the main loop has made NUDGE_AFTER tool calls of its own in a row this turn without
+// handing anything off, the reminder rides that call's result (tool.call `context`, read like a PostToolUse
+// hook's additionalContext). It is a message in the conversation, not system prompt text, so the cached prompt
+// stays as it is. At most once per turn; a turn's start and a delegating call reset the count, and calls that
+// neither do work nor delegate (planning, tool search, questions to the person) leave it alone. Never for a
+// subagent or a teammate (their calls carry agentId).
+const NUDGE_AFTER = 6
+const NUDGE_TEXT = `Agent Office manager mode: you've done ${NUDGE_AFTER} steps of this turn yourself without handing any off. Hand the rest of the work to background agents (Agent tool), in parallel where the pieces are independent, and stay available to the person; keep your own steps to orientation, reviewing results and the final check. If the person asked you to do this yourself, carry on.`
+// calls that hand work off
+const DELEGATING_TOOLS = new Set(['Agent', 'Task', 'SendMessage'])
+// bookkeeping calls: neither the work itself nor a hand-off
+const NEUTRAL_TOOLS = new Set([
+  'TodoWrite',
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'TaskGet',
+  'TaskOutput',
+  'TaskStop',
+  'ToolSearch',
+  'AskUserQuestion',
+  'ExitPlanMode',
+  'EnterPlanMode',
+  'ListAgents',
+])
 const AGENT_TOOLS = ['Agent', 'Task']
 // work across projects (app contract v3.5): longer paths are not recorded
 const PLACE_MAX = 1024
@@ -193,6 +222,10 @@ let kittyListenOn = ''
 let kittyWindowId = ''
 let weztermPane = ''
 let isInApp = false // AGENT_OFFICE_APP: the session runs inside the Agent Office app
+let isManager = false // AGENT_OFFICE_MANAGER=1: manager mode, with its nudge
+// manager mode's nudge (NUDGE_AFTER): the main loop's own calls in a row this turn, and whether it was nudged
+let ownSteps = 0
+let isNudged = false
 let isWindows = false // OS=Windows_NT: no /bin/mv or /bin/rm, cmd.exe's move/del/rmdir instead
 let homeDir = ''
 // work across projects (app contract v3.5): the folder the main loop runs in (where its relative paths point; a
@@ -861,6 +894,29 @@ async function statsText($: EngineInterface) {
   return lines.join('\n')
 }
 
+// manager mode's nudge: counts one main-loop call; true when this call is the one the reminder rides on
+function countStep(tool: string) {
+  if (!isManager) return false
+  if (DELEGATING_TOOLS.has(tool)) {
+    ownSteps = 0
+    return false
+  }
+  if (NEUTRAL_TOOLS.has(tool)) return false
+  ownSteps++
+  if (isNudged || ownSteps < NUDGE_AFTER) return false
+  isNudged = true
+  return true
+}
+
+// the call's answer with the nudge after its result; a refused call has no result to carry it, so the next one does
+function withNudge(answer: ToolCallResult): ToolCallResult {
+  if (answer.deny !== undefined) {
+    isNudged = false
+    return answer
+  }
+  return { ...answer, context: [...(answer.context ?? []), NUDGE_TEXT] }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // Windows: the user profile, as Node's os.homedir() there (the app reads the office from it); HOME is often unset
@@ -877,6 +933,7 @@ export const register: Register = on => {
     weztermPane = (await $.env.get('WEZTERM_PANE')) ?? ''
     // inside the Agent Office app the app itself is the office: /office only gives today's summary
     isInApp = Boolean(await $.env.get('AGENT_OFFICE_APP'))
+    isManager = (await $.env.get('AGENT_OFFICE_MANAGER')) === '1'
     await $.command.register(
       isInApp
         ? { name: 'office', description: t.appDescription, argumentHint: t.appArgumentHint }
@@ -994,11 +1051,12 @@ export const register: Register = on => {
       )
       await publishSoon($)
     } else if (!e.agentId) await placeBoss($, placeOf(e, sessionCwd)).catch(() => undefined)
+    const isNudging = !e.agentId && countStep(e.tool)
     if (e.tool !== 'Bash' && e.tool !== 'Monitor' && e.tool !== 'TaskStop') {
       const answered = await next(e)
       // allowed and run, or denied: its permission dialog is closed (a failure here must not rerun the tool)
       await clearWaiting($, e.tool).catch(() => undefined)
-      return answered
+      return isNudging ? withNudge(answered) : answered
     }
     const startAt = Date.now()
     const done = await next(e)
@@ -1019,7 +1077,7 @@ export const register: Register = on => {
       // the shell is not recorded; the call's answer stands
     }
 
-    return done
+    return isNudging ? withNudge(done) : done
   }).catch(($, e, next) => next(e))
 
   // background tasks end with a notification the engine submits as a prompt (origin task-notification)
@@ -1077,6 +1135,8 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('turn.start', async ($, e, next) => {
+    ownSteps = 0
+    isNudged = false
     // a new turn starts where the main loop runs, not where the last one ended
     const bossDir = sessionCwd !== sessionRoot ? sessionCwd : undefined
     if (!stats.isBossBusy || stats.bossDir !== bossDir)

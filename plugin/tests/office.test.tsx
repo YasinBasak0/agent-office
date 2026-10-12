@@ -1155,3 +1155,79 @@ test("CwdChanged moves the main loop (bossDir, relative paths) and a subagent's 
   await clock.advance(PUBLISH_MS)
   expect(stateOf(writes).stats.bossDir).toBe('/work/shop')
 })
+
+// manager mode's nudge: the main loop's own calls in a row this turn; the reminder rides the sixth call's result
+function setUpNudge(on: Harness, env: Record<string, string> = { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' }) {
+  setUp(on, env)
+  on('tool.call', (_$, e) => (e.tool === 'Write' ? ({ deny: 'no' }) : ({ result: 'ok' })) as never)
+  answerTurns(on)
+}
+const nudgeOf = (answer: unknown) => ((answer as { context?: string[] }).context ?? []).filter(text => text.includes('Agent Office manager mode'))
+const mainCall = ($: Engine, tool: string, args: Record<string, unknown> = {}) => $.tool.call({ tool, ...args } as never)
+
+test('manager mode nudges the main loop on its sixth own call in a row this turn, once per turn', async ($, on) => {
+  setUpNudge(on)
+  await $.session.start(start)
+  await $.turn.start({ text: 'build it', turnId: 'turn-1' })
+  for (let i = 1; i <= 5; i++) expect(nudgeOf(await mainCall($, i % 2 ? 'Bash' : 'Read', { command: 'ls', file_path: '/a' }))).toEqual([])
+  const sixth = await mainCall($, 'mcp__shop__list_orders')
+  expect(nudgeOf(sixth)).toHaveLength(1)
+  expect(nudgeOf(sixth)[0]).toContain('6 steps')
+  expect((sixth as { result?: unknown }).result).toBe('ok')
+  // once per turn
+  for (let i = 0; i < 8; i++) expect(nudgeOf(await mainCall($, 'Bash', { command: 'ls' }))).toEqual([])
+  // a new turn counts afresh
+  await completeTurn($, 'answer')
+  await $.turn.start({ text: 'more', turnId: 'turn-2' })
+  for (let i = 1; i <= 5; i++) expect(nudgeOf(await mainCall($, 'Edit', { file_path: '/a' }))).toEqual([])
+  expect(nudgeOf(await mainCall($, 'Edit', { file_path: '/a' }))).toHaveLength(1)
+})
+
+test('handing work off resets the count; bookkeeping calls neither count nor reset it', async ($, on) => {
+  setUpNudge(on)
+  await $.session.start(start)
+  await $.turn.start({ text: 'build it', turnId: 'turn-1' })
+  const run = async (tools: string[]) => {
+    const nudges: number[] = []
+    for (const [i, tool] of tools.entries()) if (nudgeOf(await mainCall($, tool, { command: 'ls' })).length) nudges.push(i)
+    return nudges
+  }
+  expect(await run(['Bash', 'Bash', 'Bash', 'Bash', 'Bash', 'Agent', 'Bash', 'Bash', 'Bash', 'Bash', 'Bash'])).toEqual([])
+  expect(await run(['SendMessage', 'Read', 'Read', 'TodoWrite', 'ToolSearch', 'Read', 'TaskOutput', 'Read', 'AskUserQuestion'])).toEqual([])
+  expect(await run(['Task', 'Read', 'Read', 'Read', 'Read', 'Read', 'Read'])).toEqual([6])
+})
+
+test("a refused call passes the nudge to the next; subagents' and teammates' calls never count", async ($, on) => {
+  setUpNudge(on)
+  await $.session.start(start)
+  await $.turn.start({ text: 'build it', turnId: 'turn-1' })
+  for (let i = 0; i < 10; i++) expect(nudgeOf(await $.tool.call({ tool: 'Bash', command: 'ls', agentId: 'agent-1' } as never))).toEqual([])
+  for (let i = 0; i < 5; i++) await mainCall($, 'Read', { file_path: '/a' })
+  // the sixth is refused: its answer stays a plain deny, and the next call carries the nudge
+  const refused = await mainCall($, 'Write', { file_path: '/a', content: 'x' })
+  expect(refused).toEqual({ deny: 'no' })
+  expect(nudgeOf(await mainCall($, 'Read', { file_path: '/a' }))).toHaveLength(1)
+  expect(nudgeOf(await mainCall($, 'Read', { file_path: '/a' }))).toEqual([])
+})
+
+for (const [name, env] of [
+  ['manager mode off', { HOME: '/home/tester', AGENT_OFFICE_APP: '1' }],
+  ['AGENT_OFFICE_MANAGER=0', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '0' }],
+] as const) {
+  test(`with ${name} the main loop is never nudged`, async ($, on) => {
+    setUpNudge(on, env)
+    await $.session.start(start)
+    await $.turn.start({ text: 'build it', turnId: 'turn-1' })
+    for (let i = 0; i < 12; i++) expect(nudgeOf(await mainCall($, 'Bash', { command: 'ls' }))).toEqual([])
+  })
+}
+
+test('the manager text makes delegation the default and keeps trivial work as the only exception', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_MANAGER: '1' })
+  const text = (await $.prompt.compose(mainLoop)).sections[1]?.text ?? ''
+  expect(text).toContain('Delegate by default')
+  expect(text).toContain('stays available to the person')
+  expect(text).toContain('run_in_background')
+  expect(text).toContain('Do it yourself only when it is trivial')
+  expect(text).not.toContain('A small single-step task you do yourself')
+})

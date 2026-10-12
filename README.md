@@ -99,15 +99,18 @@ The **Default** account is your normal Claude Code login in `~/.claude`. Every o
 
 ## The boss delegates
 
-Each project's Claude is the boss of its office. With **Manager mode — delegate to agents** on (the default), every Claude session the app starts gets a short extra section in its system prompt that tells it to act as a manager:
+Each project's Claude is the boss of its office. With **Manager mode — delegate to agents** on (the default), every Claude session the app starts gets a short extra section in its system prompt that tells it to act as a manager, a dispatcher who stays available to you:
 
-- split work with several parts into independent pieces and hand them to subagents, in parallel when they don't overlap (in separate git worktrees when they would touch the same files), while it plans, reviews, integrates and verifies; a small one-step task it still does itself;
+- delegate by default: anything that takes real work (investigating code, editing files, builds, tests, long commands, batches of MCP calls) goes to subagents running in the background, independent pieces to separate agents in parallel (in separate git worktrees when they would touch the same files); its own tool use is kept to quick orientation, reviewing what agents report, integrating their work and the final check, and only trivial requests (an answer it knows, one quick command) it does itself;
+- while agents work, answer you and take new requests instead of making you wait;
 - for a job that belongs to another project, work in that project's folder with absolute paths (and have its agents do the same), so the sidebar and the office show the work under that project (see [Work across projects](#work-across-projects));
 - keep going until the task list is done instead of ending with a "remaining / next steps" list of work it could do now;
 - stop only for what needs you: approving outward-facing or destructive actions (production deploys, publishing, deleting data, spending money), credentials or logins, and decisions that are yours, asked together in one short list once everything else is done;
 - report honestly what it verified.
 
 Your own instructions (`CLAUDE.md`, what you ask for) come first. Being part of the system prompt, the section stays through `--continue`, `/resume`, `/clear` and compaction; subagents don't get it.
+
+If the boss still makes six tool calls of its own in a row within one turn without handing anything off, the plugin adds a one-line reminder after that call's result (hand the rest to background agents and stay available; carry on if you asked it to do the work itself). It comes at most once per turn and never for subagents; starting an agent resets the count.
 
 To turn it off, untick **Manager mode** in the sidebar. The change applies to Claude sessions started afterwards (a new tab, a restart, the next launch); running ones keep what they started with. Plain Claude Code with the plugin gets it only when you set `AGENT_OFFICE_MANAGER=1` yourself.
 
