@@ -640,6 +640,7 @@ test('terminal: ⌘Enter (macOS) ve Ctrl+Enter claude\'a ctrl+enter (hemen gönd
   assert.equal(K.translateKey(enter(), true), null);
   assert.equal(K.translateKey(enter({ shiftKey: true }), true), null);
   assert.equal(K.translateKey(enter({ altKey: true }), true), null);
+  assert.equal(K.translateKey(enter({ ctrlKey: true, isComposing: true }), false), null);
   assert.equal(K.translateKey(enter({ metaKey: true }), false), null);
   assert.equal(K.translateKey(enter({ metaKey: true, ctrlKey: true }), true), null);
   assert.equal(K.translateKey({ key: 's', ctrlKey: true }, true), null);
