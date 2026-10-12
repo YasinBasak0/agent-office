@@ -16,6 +16,7 @@ const Z = require('./src/sleep.js');
 const TR = require('./src/transfer.js');
 const TIO = require('./src/transfer-io.js');
 const SC = require('./src/shared-config.js');
+const R = require('./src/resume.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -223,8 +224,10 @@ function removeMcpFile(id) {
   try { fs.rmSync(path.join(mcpDir(), SC.mcpFileName(usageKey(id))), { force: true }); } catch {}
 }
 
+// Killed on purpose (restart, removal, sleep, account change): its interrupted mark goes too, except while quitting.
 function killPty(id) {
   if (terms.has(id)) removeMcpFile(id);
+  if (!quitting) setMarks(R.clearInterrupted(marks(), [id]));
   const map = terms.has(id) ? terms : logins;
   const t = map.get(id);
   if (!t) return;
@@ -232,7 +235,39 @@ function killPty(id) {
   activity.delete(id);
   try { t.kill(); } catch {}
 }
-function killAll() { for (const id of [...terms.keys(), ...logins.keys()]) killPty(id); }
+// Quitting (window closed, Quit, the updater's quitAndInstall): one last look at which tabs are mid-turn, so they
+// resume at the next launch; then the ptys go without clearing their marks.
+function killAll() {
+  if (!quitting && state) checkTurns();
+  quitting = true;
+  for (const id of [...terms.keys(), ...logins.keys()]) killPty(id);
+}
+
+// --- interrupted work (see src/resume.js): state.interrupted = { ptyId: sessionId | '' } for tabs mid-turn
+let quitting = false;
+const marks = () => state?.interrupted || {};
+// saved at once (no broadcast: the renderer does not show it), so an ungraceful end still finds it
+function setMarks(next) {
+  if (!state || next === marks()) return;
+  state = { ...state, interrupted: next };
+  saveState();
+}
+// Every running tab: is its claude mid-turn? (Claude Code's pid file status, else the office file's isBossBusy.)
+function checkTurns() {
+  if (quitting || !state) return;
+  let next = marks();
+  const home = app.getPath('home');
+  for (const [id, t] of terms) {
+    const r = P.resolvePty(state, id);
+    if (!r) continue;
+    const { configDir } = A.accountOf(state, r.project);
+    const claude = readJson(Z.claudePidFile(configDir, home, t.pid));
+    const sid = validSid(claude?.sessionId);
+    const busy = R.isTurnBusy({ claude, office: sid ? office()?.readSession(sid) : undefined });
+    next = R.nextInterrupted(next, id, { busy, sessionId: sid });
+  }
+  setMarks(next);
+}
 
 // --- account login
 const shell = () => OS.defaultShell();
@@ -501,7 +536,8 @@ const RESUME_GRACE_MS = 8000; // if --continue ends with an error within this ti
 // --continue: so a second claude doesn't open the session the main tab is resuming. sessionId: wake from sleep with
 // --resume <id>, the tab's own session. imported: a session just moved here from another computer (contract v3.4):
 // if --resume fails it does not fall back to a fresh session; the user is told and the imported files stay.
-function startPty(id, { resume = false, sessionId = null, imported = false } = {}) {
+// prompt: submitted as claude's positional prompt, only when the start resumes a session (interrupted work).
+function startPty(id, { resume = false, sessionId = null, imported = false, prompt = '' } = {}) {
   killPty(id);
   const r = P.resolvePty(state, id);
   if (!r || !win || !isLoaded) return broadcast();
@@ -523,7 +559,7 @@ function startPty(id, { resume = false, sessionId = null, imported = false } = {
   const settingsArg = IS_WIN && settings ? settingsFile(usageKey(id), settings) : settings;
   // Default's plugins and MCP servers for other accounts (--plugin-dir each, --mcp-config <file>; see shared-config.js)
   const shared = SC.sharedArgs(sharedConfig(account, cwd, usageKey(id)));
-  const args = [...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : []), ...resumeArgs];
+  const args = R.claudeArgs([...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
   let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: state.manager !== false });
@@ -557,6 +593,7 @@ function startPty(id, { resume = false, sessionId = null, imported = false } = {
   t.onExit(({ exitCode }) => {
     if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
     terms.delete(id);
+    setMarks(R.clearInterrupted(marks(), [id])); // claude ended while the app runs: nothing to resume later
     removeMcpFile(id);
     // the session to resume was not found or could not be opened: start fresh without showing the exit to the user
     if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) {
@@ -573,7 +610,19 @@ function startPty(id, { resume = false, sessionId = null, imported = false } = {
 // After loading, start the claude of every project that isn't running (on reload, leave running ones alone).
 // At startup (if the setting is on) every project continues from its last session. With sleeping on, a tab is only
 // marked asleep: it starts when the renderer first shows it (pty:wake).
+// Tabs whose claude was mid-turn when the app went away start right away and are told to carry on (src/resume.js),
+// once per launch; marks left over (a setting off, a tab that cannot resume) are dropped.
+let launched = false;
 function startMissing() {
+  if (!launched) {
+    launched = true;
+    const ids = state.projects.flatMap((p) => P.ptyIdsOf(p));
+    const at = marks();
+    for (const id of R.resumeTargets(at, ids, { resume: state.resume !== false, resumeWork: state.resumeWork !== false })) {
+      if (!terms.has(id)) startPty(id, { sessionId: at[id] || null, resume: true, prompt: R.RESUME_PROMPT });
+    }
+    setMarks(R.clearInterrupted(marks(), Object.keys(at)));
+  }
   for (const p of state.projects) {
     for (const id of P.ptyIdsOf(p)) {
       if (terms.has(id) || asleep.has(id)) continue;
@@ -639,12 +688,15 @@ const sessionAliases = () => P.sessionAliases(state.projects);
 
 let usagePoll = null;
 let sleepPoll = null;
+let turnPoll = null;
 function startPolling() {
   clearInterval(poll);
   clearInterval(usagePoll);
   clearInterval(sleepPoll);
+  clearInterval(turnPoll);
   usagePoll = setInterval(scanUsage, 3000);
   sleepPoll = setInterval(sleepIdle, 30000);
+  turnPoll = setInterval(checkTurns, 1500);
   let tick = 0;
   poll = setInterval(() => {
     const s = office();
@@ -1236,7 +1288,7 @@ async function createWindow() {
   win.once('ready-to-show', () => win.show());
   win.on('focus', onFocus);
   if (IS_WIN) win.on('focus', () => win?.flashFrame(false));
-  win.on('closed', () => { killAll(); asleep.clear(); clearInterval(poll); clearInterval(usagePoll); clearInterval(sleepPoll); isLoaded = false; win = null; });
+  win.on('closed', () => { killAll(); asleep.clear(); clearInterval(poll); clearInterval(usagePoll); clearInterval(sleepPoll); clearInterval(turnPoll); isLoaded = false; win = null; });
 
   // The folder from the command line is added/activated; if there are no projects, ask for a folder.
   const arg = argProject();
@@ -1344,12 +1396,14 @@ function buildMenu() {
 
 // --- preferences: resume = continue from the last session at startup; theme = 'auto' or a theme name (v3.1);
 // manager = the boss delegates to agents (plugin manager mode, AGENT_OFFICE_MANAGER), for sessions started afterwards;
-// sleepMinutes = end idle background claudes after this long (0 = off, see src/sleep.js)
+// sleepMinutes = end idle background claudes after this long (0 = off, see src/sleep.js);
+// resumeWork = at startup, tabs interrupted mid-turn carry on by themselves (needs resume; see src/resume.js)
 const themeSetting = (v) => (TH ? TH.normalizeThemeSetting(v) : 'auto');
-const prefs = () => ({ resume: state.resume !== false, theme: themeSetting(state.theme), manager: state.manager !== false, sleepMinutes: sleepMinutes() });
+const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, sleepMinutes: sleepMinutes() });
 ipcMain.handle('prefs:get', () => prefs());
 ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.resume === 'boolean' && p.resume !== prefs().resume) commit({ ...state, resume: p.resume });
+  if (p && typeof p.resumeWork === 'boolean' && p.resumeWork !== prefs().resumeWork) commit({ ...state, resumeWork: p.resumeWork });
   if (p && typeof p.manager === 'boolean' && p.manager !== prefs().manager) commit({ ...state, manager: p.manager });
   if (p && typeof p.theme === 'string' && themeSetting(p.theme) !== prefs().theme) commit({ ...state, theme: themeSetting(p.theme) });
   if (p && Z.SLEEP_CHOICES.includes(p.sleepMinutes) && p.sleepMinutes !== prefs().sleepMinutes) {
@@ -1392,7 +1446,8 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   await loadI18n();
   await loadThemesLib();
   const raw = loadState();
-  state = { ...P.normalizeState(raw), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, manager: raw.manager !== false, theme: themeSetting(raw.theme), sleepMinutes: Z.normalizeSleep(raw.sleepMinutes) };
+  const base = P.normalizeState(raw);
+  state = { ...base, interrupted: R.normalizeInterrupted(raw.interrupted, base.projects.flatMap((p) => P.ptyIdsOf(p))), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, resumeWork: raw.resumeWork !== false, manager: raw.manager !== false, theme: themeSetting(raw.theme), sleepMinutes: Z.normalizeSleep(raw.sleepMinutes) };
   app.setAboutPanelOptions({ applicationName: app.getName(), applicationVersion: app.getVersion() });
   buildMenu();
   setupUpdates();

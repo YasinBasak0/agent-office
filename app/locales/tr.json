@@ -68,6 +68,8 @@
     "language": "Dil",
     "resume": "Son oturumdan devam et",
     "resumeTitle": "Uygulama açılınca her proje son Claude oturumundan devam eder (claude --continue)",
+    "resumeWork": "Yarım kalan işlere devam et",
+    "resumeWorkTitle": "Claude çalışırken uygulama kapandıysa (güncelleme, yeniden başlatma, çökme), uygulama yeniden açılınca o proje hemen başlar ve Claude'a neyin bittiğine bakıp kaldığı yerden devam etmesi söylenir. \"Son oturumdan devam et\" açık olmalı.",
     "manager": "Müdür modu — işleri ajanlara dağıt",
     "managerTitle": "Müdür işi ajanlara böler, görevler bitene kadar devam eder ve yalnız sana gereken şeyler için durur (onaylar, girişler, senin kararların). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
     "shareDefault": "Varsayılan hesabın eklentilerini, skill'lerini ve MCP sunucularını kullan",

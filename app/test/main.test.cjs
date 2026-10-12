@@ -1478,3 +1478,97 @@ test('shared config: MCP files with tokens live only while their tab runs; Defau
   assert.deepEqual(SC.prepareShared({ account: { id: 'default', configDir: null }, home: root, cwd: null, stageRoot: pathT.join(root, 'st'), mcpFile }), { pluginDirs: [], mcpConfig: null });
   assert.equal(fsT.existsSync(mcpFile), false);
 });
+
+// --- interrupted work (src/resume.js)
+test('yarım iş: işaretler state.json\'dan okunur, garip olanlar ve olmayan sekmeler atılır', () => {
+  const R = require('../src/resume.js');
+  assert.deepEqual(R.normalizeInterrupted(undefined), {});
+  assert.deepEqual(R.normalizeInterrupted([]), {});
+  assert.deepEqual(R.normalizeInterrupted('x'), {});
+  assert.deepEqual(R.normalizeInterrupted({ a: 'sid-1', 'a:2': 42, b: '../x' }), { a: 'sid-1', 'a:2': '', b: '' });
+  assert.deepEqual(R.normalizeInterrupted({ a: 'sid-1', gone: 's' }, ['a', 'a:2']), { a: 'sid-1' });
+});
+
+test('yarım iş: meşgul mü (claude pid dosyası önce, yoksa ofis dosyasının isBossBusy\'si)', () => {
+  const { isTurnBusy } = require('../src/resume.js');
+  assert.equal(isTurnBusy({ claude: { status: 'busy' } }), true);
+  assert.equal(isTurnBusy({ claude: { status: 'waiting' } }), true);
+  assert.equal(isTurnBusy({ claude: { status: 'idle' }, office: { stats: { isBossBusy: true } } }), false, 'a killed claude\'s stale office file does not count');
+  assert.equal(isTurnBusy({ claude: {}, office: { stats: { isBossBusy: true } } }), true);
+  assert.equal(isTurnBusy({ claude: undefined, office: { stats: { isBossBusy: false } } }), false);
+  assert.equal(isTurnBusy({ office: { endedAt: 1, stats: { isBossBusy: true } } }), false);
+  assert.equal(isTurnBusy({}), false);
+});
+
+test('yarım iş: meşgulken işaretlenir, tur bitince silinir; değişiklik yoksa aynı nesne', () => {
+  const { nextInterrupted, clearInterrupted } = require('../src/resume.js');
+  const none = {};
+  assert.equal(nextInterrupted(none, 'p', { busy: false }), none);
+  const a = nextInterrupted(none, 'p', { busy: true });
+  assert.deepEqual(a, { p: '' });
+  assert.deepEqual(none, {}, 'not mutated');
+  const b = nextInterrupted(a, 'p', { busy: true, sessionId: 'abc-1' });
+  assert.deepEqual(b, { p: 'abc-1' });
+  assert.equal(nextInterrupted(b, 'p', { busy: true, sessionId: 'abc-1' }), b);
+  assert.equal(nextInterrupted(b, 'p', { busy: true }), b, 'a known session id is kept');
+  assert.deepEqual(nextInterrupted(b, 'p', { busy: true, sessionId: '$(rm)' }), { p: 'abc-1' }, 'odd ids are ignored');
+  const c = nextInterrupted(b, 'p:2', { busy: true, sessionId: 'def' });
+  assert.deepEqual(c, { p: 'abc-1', 'p:2': 'def' });
+  assert.deepEqual(nextInterrupted(c, 'p', { busy: false }), { 'p:2': 'def' });
+  assert.deepEqual(clearInterrupted(c, ['p', 'p:2', 'x']), {});
+  assert.equal(clearInterrupted(c, ['x']), c);
+});
+
+test('yarım iş: açılışta yalnız iki ayar da açıkken ve var olan sekmeler devam eder', () => {
+  const { resumeTargets } = require('../src/resume.js');
+  const m = { a: 's1', 'a:2': '', gone: 's3' };
+  assert.deepEqual(resumeTargets(m, ['a', 'a:2', 'b'], { resume: true, resumeWork: true }), ['a', 'a:2']);
+  assert.deepEqual(resumeTargets(m, ['a', 'b'], {}), ['a'], 'both default on');
+  assert.deepEqual(resumeTargets(m, ['a'], { resume: false, resumeWork: true }), []);
+  assert.deepEqual(resumeTargets(m, ['a'], { resume: true, resumeWork: false }), []);
+  assert.deepEqual(resumeTargets({}, ['a'], {}), []);
+});
+
+test('yarım iş: istem tek satır, cmd.exe özel karakterleri yok, - ile başlamaz', () => {
+  const { promptArg, RESUME_PROMPT } = require('../src/resume.js');
+  assert.equal(promptArg(RESUME_PROMPT), RESUME_PROMPT, 'the real prompt needs no change');
+  assert.ok(RESUME_PROMPT.length > 80 && !/["%!^\n]/.test(RESUME_PROMPT));
+  assert.equal(promptArg('a\nb\r\n\tc'), 'a b c');
+  assert.equal(promptArg('say "hi" 100% now! ^x'), 'say hi 100 now x');
+  assert.equal(promptArg('--help me'), 'help me');
+  assert.equal(promptArg(' - x'), 'x');
+  assert.equal(promptArg(undefined), '');
+});
+
+test('yarım iş: istem yalnız devam ederken, devam argümanlarından sonra en sona eklenir', () => {
+  const { claudeArgs, RESUME_PROMPT } = require('../src/resume.js');
+  const base = ['--plugin-dir', '/p', '--mcp-config', '/m.json', '--settings', '{"a":1}'];
+  assert.deepEqual(claudeArgs(base, [], RESUME_PROMPT), base, 'a fresh start gets no prompt');
+  assert.deepEqual(claudeArgs(base, ['--continue']), [...base, '--continue']);
+  assert.deepEqual(claudeArgs(base, ['--continue'], RESUME_PROMPT), [...base, '--continue', RESUME_PROMPT]);
+  assert.deepEqual(claudeArgs(base, ['--resume', 'abc'], RESUME_PROMPT), [...base, '--resume', 'abc', RESUME_PROMPT]);
+  assert.deepEqual(claudeArgs(base, ['--resume', 'abc'], '"%!'), [...base, '--resume', 'abc'], 'nothing left: no empty argument');
+});
+
+test('yarım iş: macOS/Linux kabuğu istemi tek argüman olarak aynen geçirir ("$@")', { skip: process.platform === 'win32' }, () => {
+  const { execFileSync } = require('child_process');
+  const { claudeArgs, RESUME_PROMPT } = require('../src/resume.js');
+  const args = claudeArgs(['--settings', '{"statusLine":{"command":"x $HOME `id`"}}'], ['--resume', 'abc-1'], RESUME_PROMPT);
+  // the same shape as startPty: $SHELL -c '<cmd>' claude ...args; printf stands in for claude
+  const out = execFileSync('/bin/sh', ['-c', 'exec printf "%s\\0" "$@"', 'claude', ...args], { encoding: 'utf8' });
+  assert.deepEqual(out.split('\0').slice(0, -1), args);
+});
+
+test('yarım iş: Windows — claude.exe argümanları olduğu gibi, claude.cmd satırında istem tırnak içinde tek parça', () => {
+  const OSw = require('../src/platform.js');
+  const { claudeArgs, RESUME_PROMPT } = require('../src/resume.js');
+  const args = claudeArgs(['--settings', 'C:\\u\\s.json'], ['--resume', 'abc-1'], RESUME_PROMPT);
+  const exe = OSw.windowsCommand('C:\\bin\\claude.exe', args, {});
+  assert.equal(exe.verbatim, false);
+  assert.deepEqual(exe.args, args);
+  const cmd = OSw.windowsCommand('C:\\npm\\claude.cmd', args, { ComSpec: 'C:\\Windows\\system32\\cmd.exe' });
+  assert.equal(cmd.verbatim, true);
+  assert.equal(cmd.args[3], `"C:\\npm\\claude.cmd --settings C:\\u\\s.json --resume abc-1 "${RESUME_PROMPT}""`);
+  // inside the quotes cmd.exe leaves (), &, | alone; the prompt has no " % ! ^ that it would still act on
+  assert.ok(!/["%!^]/.test(RESUME_PROMPT));
+});

@@ -754,6 +754,10 @@ body.no-office #terminal { flex: 1 1 auto; max-height: none; border-top: 2px sol
 .sb-langrow { padding-bottom: 0; }
 label.sb-langrow { cursor: pointer; }
 .sb-check { accent-color: var(--accent); margin: 0; cursor: pointer; }
+/* a setting that depends on the one above it: indented, greyed while that one is off */
+.sb-subpref span { padding-left: 10px; }
+.sb-subpref.is-disabled { opacity: .45; cursor: default; }
+.sb-subpref.is-disabled .sb-check { cursor: default; }
 .sb-lang { flex: 0 0 auto; }
 .sb-theme { max-width: 165px; }
 

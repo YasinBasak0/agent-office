@@ -393,3 +393,21 @@ type Account = { …; shareDefault?: false }   // absent = on; stored in state.j
 - **Never shared.** Logins (`.credentials.json`, keychain, `oauthAccount`/`primaryApiKey` in `.claude.json`), `settings.json` (hooks, permissions, env, status line), claude.ai-synced skills and plugins, history, `projects/` transcripts, policy and remote settings. Project memory follows its own rule (v2: always `~/.claude`).
 - **Off.** The account's links made by the app, the marker and the tab's MCP file are removed at the next start; no `--plugin-dir`/`--mcp-config` is added.
 - **MCP file lifetime.** `userData/mcp/<tab>.json` holds tokens, so it exists only while its tab's claude runs: removed when the pty exits or is killed (restart, sleep, tab or project removal, quit), when the tab starts under Default or with the setting off, and at app start every file is removed (`pruneMcpFiles(dir, runningTabKeys)`; none runs yet).
+
+## Resume interrupted work (v3.7)
+
+If the app goes away while a tab's claude is mid-turn (in-app update via `quitAndInstall`, a crash, the user quitting, a reboot), `--continue` alone brings the conversation back but leaves it sitting there. `src/resume.js` (pure functions; no Electron).
+
+```ts
+agentOffice.prefs.get(): Promise<{ …; resumeWork: boolean }>   // default true
+agentOffice.prefs.set(p: { resumeWork?: boolean }): Promise<…>
+// state.json
+interrupted?: { [ptyId: string]: string }                     // session id, or '' when not known yet
+```
+
+- **Mark.** Every 1.5 s main looks at each running tab: busy is Claude Code's pid file `status` (`<config>/sessions/<pid>.json`, anything but `idle`); without a status, the office file's `stats.isBossBusy` (not when `endedAt`). A pid file status wins because an office file left by a killed claude can still say busy. Busy sets `interrupted[ptyId] = sessionId`, not busy clears it; state.json is written at once on each change (no broadcast), so a kill -9 or a power cut still finds it.
+- **Cleared** when the turn ends, when the tab's claude exits while the app runs, and when the tab is killed on purpose (restart, removal, sleep, account change). **Kept** on quit: `killAll` (window closed, `before-quit`, `update:install` before `quitAndInstall`) takes one last look, then kills the ptys without clearing.
+- **Launch.** On the first `did-finish-load` only (a renderer reload does nothing), with `resume` and `resumeWork` both on, each marked tab that still exists starts at once, even with sleeping on (lazy start): `startPty(id, { sessionId, resume: true, prompt: RESUME_PROMPT })` → `claude … --resume <id> "<prompt>"` (or `--continue "<prompt>"` without a session id). The positional prompt opens the interactive session and submits it. Then every mark is dropped (settings off, or a tab that cannot resume); the resumed turn marks itself again while it runs. If `--resume` fails within 8 s the tab starts fresh without the prompt (v2.7 rule).
+- **Prompt** (English, it goes to the model): *Agent Office restarted (app update or restart) while you were working, which interrupted your last turn and any sub-agents you had running. Check what was finished (git status, files, your task list), then continue the unfinished work from where it stopped. Restart sub-agents that were cut off.*
+- **Argv.** The prompt is added only when the start resumes, as the last argument after the resume arguments (`claudeArgs`), so a variadic option (`--mcp-config <configs...>`) cannot take it. `promptArg` makes it one line without `"`, `%`, `!`, `^` and never starting with `-`. macOS/Linux: it reaches claude through `$SHELL -l -i -c '… exec claude "$@"' claude …args` untouched; Windows: `claude.exe` gets it as one argv entry from ConPTY, `claude.cmd` gets it quoted in the `cmd.exe /d /s /c "…"` line (`platform.js` `cmdQuote`).
+- **Sidebar.** "Resume interrupted work" / "Yarım kalan işlere devam et" under "Continue last session", indented; disabled and greyed while that one is off.

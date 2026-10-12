@@ -68,6 +68,8 @@
     "language": "Language",
     "resume": "Continue last session",
     "resumeTitle": "When the app starts, each project continues its last Claude session (claude --continue)",
+    "resumeWork": "Resume interrupted work",
+    "resumeWorkTitle": "If the app closed while Claude was working (an update, a restart, a crash), that project starts right away when the app opens again and Claude is told to check what was finished and carry on. Needs \"Continue last session\".",
     "manager": "Manager mode — delegate to agents",
     "managerTitle": "The boss splits the work across agents, keeps going until the tasks are done and stops only for what needs you (approvals, logins, your decisions). Applies to Claude sessions started afterwards.",
     "shareDefault": "Use Default's plugins, skills and MCP servers",
