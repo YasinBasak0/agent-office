@@ -591,13 +591,43 @@ const pathT = require('path');
 test('hafıza: slug Claude Code gibi, worktree ana klasörün hafızasını kullanır', () => {
   assert.equal(M.memorySlug('/Users/a/My Proj.x'), '-Users-a-My-Proj-x');
   assert.equal(M.memorySlug('/' + 'a'.repeat(250)), null);
-  assert.equal(M.memoryBase('/r/sub', '/r\n/r/.git\n'), '/r');
-  assert.equal(M.memoryBase('/r-wt-2', '/r-wt-2\n/r/.git\n'), '/r');
-  assert.equal(M.memoryBase('/x', ''), '/x');
-  assert.equal(M.memoryBase('/s', '/s\n/r/.git/modules/s\n'), '/s');
+  assert.equal(M.memorySlug('/a/s\u0327'), M.memorySlug('/a/\u015f')); // NFD path: same slug as NFC
   assert.equal(M.sharedMemoryDir({ configDir: null, home: '/h', base: '/r' }), null);
   assert.equal(M.sharedMemoryDir({ configDir: '/acc/w', home: '/h', base: '/r' }), '/h/.claude/projects/-r/memory');
   assert.equal(M.accountMemoryDir({ configDir: '/acc/w', base: '/r' }), '/acc/w/projects/-r/memory');
+});
+
+test('hafıza: anahtar klasör diskten bulunur (git root, worktree → ana kopya, symlink çözülür)', () => {
+  const root = fsT.realpathSync(fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-base-')));
+  const j = (...p) => pathT.join(root, ...p);
+  const w = (p, txt) => { fsT.mkdirSync(pathT.dirname(p), { recursive: true }); fsT.writeFileSync(p, txt); };
+  // main working copy and a linked worktree, laid out as git writes them
+  fsT.mkdirSync(j('r', '.git', 'worktrees', 'r-wt'), { recursive: true });
+  fsT.mkdirSync(j('r', 'sub'));
+  w(j('r-wt', '.git'), `gitdir: ${j('r', '.git', 'worktrees', 'r-wt')}\n`);
+  w(j('r', '.git', 'worktrees', 'r-wt', 'commondir'), '../..\n');
+  w(j('r', '.git', 'worktrees', 'r-wt', 'gitdir'), `${j('r-wt', '.git')}\n`);
+  fsT.mkdirSync(j('r-wt', 'deep', 'er'), { recursive: true });
+  assert.equal(M.memoryBase(j('r')), j('r'));
+  assert.equal(M.memoryBase(j('r', 'sub')), j('r'));
+  assert.equal(M.memoryBase(j('r-wt', 'deep', 'er')), j('r'));
+  // submodule: .git file into .git/modules (no commondir) → its own root
+  w(j('r', 'mod', '.git'), 'gitdir: ../.git/modules/mod\n');
+  fsT.mkdirSync(j('r', '.git', 'modules', 'mod'), { recursive: true });
+  assert.equal(M.memoryBase(j('r', 'mod')), j('r', 'mod'));
+  // worktree of a bare repository → the bare repository folder
+  fsT.mkdirSync(j('b.git', 'worktrees', 'bw'), { recursive: true });
+  w(j('bw', '.git'), `gitdir: ${j('b.git', 'worktrees', 'bw')}\n`);
+  w(j('b.git', 'worktrees', 'bw', 'commondir'), '../..\n');
+  assert.equal(M.memoryBase(j('bw')), j('b.git'));
+  // not a repository; reached through a symlink → the real path, as Claude Code's cwd
+  fsT.mkdirSync(j('plain'));
+  fsT.symlinkSync(j('plain'), j('link'));
+  if (!fsT.existsSync(pathT.join(pathT.parse(root).root, '.git'))) {
+    assert.equal(M.memoryBase(j('link')), j('plain'));
+    assert.equal(M.memoryBase(j('missing')), j('missing'));
+  }
+  fsT.rmSync(root, { recursive: true, force: true });
 });
 
 test('hafıza: --settings JSON\'una autoMemoryDirectory eklenir', () => {
@@ -620,10 +650,17 @@ test('hafıza: hesabın hafızası ~/.claude\'a birleşir, mevcut olan ezilmez',
   assert.equal(fsT.readFileSync(pathT.join(to, 'commit.md'), 'utf8'), 'home');
   assert.equal(fsT.readFileSync(pathT.join(to, 'new.md'), 'utf8'), 'new');
   assert.equal(fsT.readFileSync(pathT.join(to, 'MEMORY.md'), 'utf8'), '# Memory Index\n\n- [Commit](commit.md) — no attribution\n- [New](new.md) — x\n');
-  // idempotent; a missing source or target folder is fine
+  // idempotent; a memory deleted from ~/.claude is not copied back; a new account memory still is
   assert.deepEqual(M.mergeMemory(from, to), []);
+  fsT.rmSync(pathT.join(to, 'new.md'));
+  fsT.writeFileSync(pathT.join(from, 'later.md'), 'later');
+  assert.deepEqual(M.mergeMemory(from, to), ['later.md']);
+  assert.equal(fsT.existsSync(pathT.join(to, 'new.md')), false);
+  fsT.rmSync(pathT.join(from, 'later.md'));
+  // a missing source or target folder is fine
   assert.deepEqual(M.mergeMemory(pathT.join(root, 'none'), to), []);
   const fresh = pathT.join(root, 'fresh', 'memory');
+  fsT.rmSync(pathT.join(from, '.agent-office-merged.json'));
   assert.deepEqual(M.mergeMemory(from, fresh).sort(), ['commit.md', 'new.md']);
   assert.equal(fsT.readFileSync(pathT.join(fresh, 'MEMORY.md'), 'utf8'), '- [New](new.md) — x\n- [Commit](commit.md) — old\n');
   fsT.rmSync(root, { recursive: true, force: true });
@@ -640,6 +677,7 @@ test('terminal: ⌘Enter (macOS) ve Ctrl+Enter claude\'a ctrl+enter (hemen gönd
   assert.equal(K.translateKey(enter(), true), null);
   assert.equal(K.translateKey(enter({ shiftKey: true }), true), null);
   assert.equal(K.translateKey(enter({ altKey: true }), true), null);
+  assert.equal(K.translateKey(enter({ ctrlKey: true, isComposing: true }), false), null);
   assert.equal(K.translateKey(enter({ metaKey: true }), false), null);
   assert.equal(K.translateKey(enter({ metaKey: true, ctrlKey: true }), true), null);
   assert.equal(K.translateKey({ key: 's', ctrlKey: true }, true), null);
