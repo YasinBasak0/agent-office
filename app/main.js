@@ -15,6 +15,7 @@ const M = require('./src/memory.js');
 const Z = require('./src/sleep.js');
 const TR = require('./src/transfer.js');
 const TIO = require('./src/transfer-io.js');
+const SC = require('./src/shared-config.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -466,6 +467,21 @@ function projectMemoryDir(cwd, configDir) {
   return shared;
 }
 
+// Default's plugins, skills, MCP servers and CLAUDE.md for an account's session (see src/shared-config.js): links in
+// the account folder, plugin stages in userData/shared-plugins, the tab's MCP file in userData/mcp/<tab>.json.
+function sharedConfig(account, cwd, key) {
+  try {
+    return SC.prepareShared({
+      account, home: app.getPath('home'), cwd: isDir(cwd) ? cwd : null,
+      stageRoot: path.join(app.getPath('userData'), 'shared-plugins'),
+      mcpFile: path.join(app.getPath('userData'), 'mcp', `${key}.json`),
+    });
+  } catch (e) {
+    console.error('varsayılan hesabın ayarları paylaşılamadı:', e.message);
+    return { pluginDirs: [], mcpConfig: null };
+  }
+}
+
 // Is there a Claude session in the folder to resume with this account (see projects.js historyDir).
 function hasHistory(dir, configDir) {
   try { return fs.readdirSync(P.historyDir(dir, configDir, app.getPath('home'))).some((f) => f.endsWith('.jsonl')); } catch { return false; }
@@ -484,7 +500,8 @@ function startPty(id, { resume = false, sessionId = null, imported = false } = {
   if (!r || !win || !isLoaded) return broadcast();
   asleep.delete(id);
   const { project, tab, dir: cwd } = r;
-  const { configDir } = A.accountOf(state, project);
+  const account = A.accountOf(state, project);
+  const { configDir } = account;
   if (configDir) try { fs.mkdirSync(configDir, { recursive: true }); } catch {}
   const { cols, rows } = sizes.get(id) || lastSize;
   // the plugin path is passed as $1: paths with spaces (Application Support) cause no quoting trouble.
@@ -497,7 +514,9 @@ function startPty(id, { resume = false, sessionId = null, imported = false } = {
   const isResume = Boolean(sessionId) || (resume && (!tab || Boolean(tab.worktree)) && hasHistory(cwd, configDir));
   const resumeArgs = sessionId ? ['--resume', sessionId] : isResume ? ['--continue'] : [];
   const settingsArg = IS_WIN && settings ? settingsFile(usageKey(id), settings) : settings;
-  const args = [...(dir ? ['--plugin-dir', dir] : []), ...(settingsArg ? ['--settings', settingsArg] : []), ...resumeArgs];
+  // Default's plugins and MCP servers for other accounts (--plugin-dir each, --mcp-config <file>; see shared-config.js)
+  const shared = SC.sharedArgs(sharedConfig(account, cwd, usageKey(id)));
+  const args = [...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : []), ...resumeArgs];
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
   let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: state.manager !== false });
@@ -684,6 +703,8 @@ ipcMain.handle('accounts:add', (_e, label) => {
   return A.withAuth([r.account], (id) => auths.get(id))[0];
 });
 ipcMain.handle('accounts:rename', (_e, id, label) => { commit(A.renameAccount(state, id, label), { accounts: true }); });
+// "Use Default's plugins, skills and MCP servers": applies when the account's sessions start next (nothing restarts).
+ipcMain.handle('accounts:setShare', (_e, id, on) => { commit(A.setAccountShare(state, id, on), { accounts: true }); });
 // The folder is not deleted: its login and history are not lost if an account is deleted by mistake.
 ipcMain.handle('accounts:remove', (_e, id) => {
   const r = A.removeAccount(state, id);

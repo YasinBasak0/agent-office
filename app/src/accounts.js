@@ -9,8 +9,9 @@
 // - Not kept apart: ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_PROFILE
 //   in the environment take precedence over the login in every account; a Console login made without an API key
 //   (Anthropic profile, ~/.config/anthropic) lives outside the folder, so it isn't kept apart.
-// - A new folder starts empty: the settings, plugins, MCP servers and CLAUDE.md in ~/.claude are not in that account.
-//   Project auto-memory is the exception: it stays in ~/.claude (see memory.js).
+// - A new folder starts empty: settings.json and logins in ~/.claude are not in that account. Project auto-memory
+//   stays in ~/.claude (see memory.js); plugins, skills, MCP servers and CLAUDE.md are shared by default
+//   (see shared-config.js; per account `shareDefault`, absent = on).
 const path = require('path');
 
 const DEFAULT_ID = 'default';
@@ -24,7 +25,7 @@ function normalizeAccounts(list) {
     if (!a || typeof a.id !== 'string' || !a.id || seen.has(a.id)) continue;
     if (typeof a.configDir !== 'string' || !a.configDir) continue;
     seen.add(a.id);
-    out.push({ id: a.id, label: cleanLabel(a.label, a.id), configDir: a.configDir });
+    out.push({ id: a.id, label: cleanLabel(a.label, a.id), configDir: a.configDir, ...(a.shareDefault === false ? { shareDefault: false } : {}) });
   }
   return out;
 }
@@ -41,6 +42,21 @@ function renameAccount(state, id, label) {
   const l = typeof label === 'string' ? label.trim() : '';
   if (!l || id === DEFAULT_ID) return state;
   return { ...state, accounts: state.accounts.map((a) => (a.id === id ? { ...a, label: l } : a)) };
+}
+
+// "Use Default's plugins, skills and MCP servers": stored only when off; applies at the next session start.
+function setAccountShare(state, id, on) {
+  if (id === DEFAULT_ID || typeof on !== 'boolean') return state;
+  const a = state.accounts.find((x) => x.id === id);
+  if (!a || (a.shareDefault !== false) === on) return state;
+  return {
+    ...state,
+    accounts: state.accounts.map((x) => {
+      if (x.id !== id) return x;
+      const { shareDefault: _, ...rest } = x;
+      return on ? rest : { ...rest, shareDefault: false };
+    }),
+  };
 }
 
 // When an account is deleted its projects move to the default; `moved` holds the ids of projects to restart.
@@ -178,6 +194,6 @@ const loginAccountId = (ptyId) =>
   typeof ptyId === 'string' && ptyId.startsWith(LOGIN_PREFIX) ? ptyId.slice(LOGIN_PREFIX.length) : null;
 
 module.exports = {
-  DEFAULT_ID, DEFAULT_ACCOUNT, normalizeAccounts, addAccount, renameAccount, removeAccount, accountOf, ptyEnv, sessionEnv,
+  DEFAULT_ID, DEFAULT_ACCOUNT, normalizeAccounts, addAccount, renameAccount, setAccountShare, removeAccount, accountOf, ptyEnv, sessionEnv,
   lastJsonObject, authFromStatus, authFromRun, localizeAuth, claudeCommand, withAuth, loginPtyId, loginAccountId,
 };

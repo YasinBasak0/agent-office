@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     list: () => ipcRenderer.invoke('accounts:list'),
     add: (label) => ipcRenderer.invoke('accounts:add', label),
     rename: (id, label) => ipcRenderer.invoke('accounts:rename', id, label),
+    setShare: (id, on) => ipcRenderer.invoke('accounts:setShare', id, on),   // use Default's plugins, skills, MCP servers (v3.6)
     remove: (id) => ipcRenderer.invoke('accounts:remove', id),
     onChange: listen('accounts:changed'),
     refreshAuth: (id) => ipcRenderer.invoke('accounts:refreshAuth', id),

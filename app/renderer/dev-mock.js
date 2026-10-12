@@ -190,6 +190,10 @@ window.agentOffice = {
       return { ...a, auth: { ...a.auth } };
     },
     rename: async (id, label) => { const a = accounts.find((x) => x.id === id); if (a) a.label = label; },
+    setShare: async (id, on) => {
+      const a = accounts.find((x) => x.id === id);
+      if (a && a.id !== 'default') { if (on) delete a.shareDefault; else a.shareDefault = false; }
+    },
     remove: async (id) => {
       if (id === 'default') return;
       const i = accounts.findIndex((a) => a.id === id);

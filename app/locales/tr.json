@@ -70,6 +70,8 @@
     "resumeTitle": "Uygulama açılınca her proje son Claude oturumundan devam eder (claude --continue)",
     "manager": "Müdür modu — işleri ajanlara dağıt",
     "managerTitle": "Müdür işi ajanlara böler, görevler bitene kadar devam eder ve yalnız sana gereken şeyler için durur (onaylar, girişler, senin kararların). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
+    "shareDefault": "Varsayılan hesabın eklentilerini, skill'lerini ve MCP sunucularını kullan",
+    "shareDefaultTitle": "Varsayılan hesap (~/.claude) için kurduğun eklentiler, kişisel skill'ler, ajanlar, komutlar, çıktı stilleri, MCP sunucuları (token'larıyla) ve CLAUDE.md bu hesapta da kullanılır. Bu hesabın kendi girişi, ayarları ve claude.ai'den eşitlenen skill'leri kendisinde kalır. Bu hesabın Claude oturumları bir sonraki başlayışta geçerli olur.",
     "sleep": "Boştaki oturumları uyut",
     "sleepTitle": "Bellek tasarrufu: bir proje Claude'unu ilk açıldığında başlatır; arka planda bu kadar süre boş kalan Claude kapatılır ve projeyi yeniden açınca oturumundan devam eder (claude --resume). Çalışırken, onay beklerken, ajan, arka plan kabuğu ya da zamanlanmış görev varken veya gönderilmemiş yazı varken asla.",
     "sleepOff": "Kapalı",

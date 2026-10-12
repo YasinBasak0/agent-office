@@ -292,6 +292,16 @@ export function mountSidebar(el, on) {
       row(t('sidebar.week'), t('sidebar.weekName'), u.sevenDay));
   }
 
+  /** "Use Default's plugins, skills and MCP servers" (default on); applies when the account's sessions start next. */
+  function shareRow(a) {
+    return h('label', { class: 'sb-share', title: t('sidebar.shareDefaultTitle') },
+      h('input', {
+        type: 'checkbox', class: 'sb-check', checked: a.shareDefault !== false,
+        onchange: (e) => on.setShare?.(a.id, e.target.checked),
+      }),
+      h('span', {}, t('sidebar.shareDefault')));
+  }
+
   function renderAccounts() {
     const rows = accounts.map((a) => {
       const isDefault = a.id === 'default';
@@ -317,6 +327,7 @@ export function mountSidebar(el, on) {
         ),
         authRow(a, isDefault),
         usageRows(a),
+        isDefault ? null : shareRow(a),
       );
     });
     if (editing && editing.id === null) {
