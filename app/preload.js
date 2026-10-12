@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     remove: (id) => ipcRenderer.invoke('projects:remove', id),
     setActive: (id) => ipcRenderer.invoke('projects:setActive', id),
     setAccount: (id, accountId) => ipcRenderer.invoke('projects:setAccount', id, accountId),
+    menu: (id) => ipcRenderer.invoke('projects:menu', id),   // right click: native menu (move the session to another computer, v3.4)
     onChange: listen('projects:changed'),
   },
   tabs: {

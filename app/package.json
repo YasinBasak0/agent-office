@@ -57,6 +57,15 @@
       "node_modules/node-pty/**"
     ],
     "npmRebuild": false,
+    "fileAssociations": [
+      {
+        "ext": "agentoffice",
+        "name": "Agent Office session",
+        "description": "Agent Office session",
+        "mimeType": "application/x-agentoffice-session",
+        "role": "Editor"
+      }
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
