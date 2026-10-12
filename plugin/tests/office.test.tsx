@@ -7,19 +7,19 @@ type RunResult = { exitCode: number; stdout: string; stderr: string; isStdoutTru
 
 const ran = (exitCode: number, stdout = ''): RunResult => ({ exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 
-// a session in /work/my-app with the given environment; process.run answers from `run`, fs.read from `files`.
+// a session in /work/my-app (or `root`) with the given environment; process.run answers from `run`, fs.read from `files`.
 // `isTicking`: a mocked clock drives the plugin's ticker (advance it to run a tick)
 function setUp(
   on: Harness,
   env: Record<string, string>,
   run: (argv: readonly string[]) => RunResult = () => ran(1),
-  { files = {}, isTicking = false }: { files?: Record<string, string>; isTicking?: boolean } = {},
+  { files = {}, isTicking = false, root = '/work/my-app' }: { files?: Record<string, string>; isTicking?: boolean; root?: string } = {},
 ) {
   const writes: { path: string; text: string }[] = []
   const runs: (readonly string[])[] = []
   on('env.get', (_$, e) => ({ value: env[e.name] }))
   on('session.id', () => ({ value: 'session-1' }))
-  on('session.root', () => ({ value: '/work/my-app' }))
+  on('session.root', () => ({ value: root }))
   const commands: string[] = []
   const registered: { name: string; description?: string; argumentHint?: string }[] = []
   on('command.register', (_$, e) => {
@@ -126,6 +126,40 @@ test('inside the Agent Office app /office şerit answers in Turkish and opens no
   expect((reply as { text: string }).text).toContain('Ofis zaten Agent Ofis penceresinde görünüyor')
   expect((reply as { text: string }).text).toContain('/office istatistik')
   expect(runs).toEqual([])
+})
+
+// USERPROFILE is a POSIX-looking path in the Windows tests: the engine running them on macOS/Linux would resolve
+// C:\... as a relative path
+test('on Windows the state file goes under USERPROFILE and the project is the folder name', async ($, on) => {
+  const env = { OS: 'Windows_NT', USERPROFILE: '/win/Users/tester', HOME: '/home/other', AGENT_OFFICE_APP: '1' }
+  const { writes } = setUp(on, env, undefined, { root: 'C:\\work\\my-app' })
+  on('agent.spawn', () => ({ model: 'test-model', agentId: 'agent-1' }))
+
+  await $.session.start({ ...start, cwd: 'C:\\work\\my-app' })
+  const spawn = { prompt: 'scan', description: 'Scan the code', subagentType: 'Explore' }
+  await $.agent.spawn(spawn as Parameters<typeof $.agent.spawn>[0])
+
+  const last = writes[writes.length - 1]
+  expect(last?.path).toBe('/win/Users/tester/.claude/agent-office/sessions/session-1.json')
+  expect(JSON.parse(last?.text ?? '{}').project).toBe('my-app')
+})
+
+test('on Windows old session files are removed with cmd.exe, not /bin/rm', async ($, on) => {
+  const root = '/win/Users/tester/.claude/agent-office'
+  const old = Date.now() - 48 * 60 * 60_000
+  const files = { [`${root}/sessions/ended.json`]: JSON.stringify({ updatedAt: old, endedAt: old }) }
+  const { runs } = setUp(on, { OS: 'Windows_NT', USERPROFILE: '/win/Users/tester' }, undefined, { files, root: 'C:\\work\\my-app' })
+  const listing: Record<string, unknown[]> = {
+    [`${root}/sessions`]: [{ name: 'ended.json', kind: 'file', size: 0, mtimeMs: old, isLink: false }],
+  }
+  on('fs.list', (_$, e) => ({ value: (listing[e.path ?? ''] ?? []) as never }))
+
+  await $.session.start({ ...start, cwd: 'C:\\work\\my-app' })
+
+  const target = '\\win\\Users\\tester\\.claude\\agent-office\\sessions\\ended.json'
+  expect(runs.some(argv => argv[0] === '/bin/rm')).toBe(false)
+  expect(runs).toContainEqual(['cmd.exe', '/d', '/c', 'rmdir', '/s', '/q', target])
+  expect(runs).toContainEqual(['cmd.exe', '/d', '/c', 'del', '/f', '/q', target])
 })
 
 test('a spawned agent is written to the session state file', async ($, on) => {

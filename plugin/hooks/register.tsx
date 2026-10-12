@@ -173,6 +173,7 @@ let kittyListenOn = ''
 let kittyWindowId = ''
 let weztermPane = ''
 let isInApp = false // AGENT_OFFICE_APP: the session runs inside the Agent Office app
+let isWindows = false // OS=Windows_NT: no /bin/mv or /bin/rm, cmd.exe's move/del/rmdir instead
 
 async function publish($: EngineInterface, endedAt?: number) {
   if (!stateFile) return
@@ -403,7 +404,8 @@ async function readInbox($: EngineInterface) {
   // every row is submitted now: the viewer only appends, so move the file aside (atomic) and a task
   // typed meanwhile starts a new one; rows that landed in the old file before the move are still sent
   const aside = `${inboxFile}.${Date.now()}.old`
-  const moved = await $.process.run(['/bin/mv', '-f', '--', inboxFile, aside]).catch(() => undefined)
+  const mv = isWindows ? ['cmd.exe', '/d', '/c', 'move', '/y', winPath(inboxFile), winPath(aside)] : ['/bin/mv', '-f', '--', inboxFile, aside]
+  const moved = await $.process.run(mv).catch(() => undefined)
   if (moved?.exitCode !== 0) return
   try {
     await submitTasks($, await $.fs.read(aside))
@@ -436,10 +438,23 @@ async function submitTasks($: EngineInterface, raw: string) {
 async function remove($: EngineInterface, paths: string[]) {
   if (paths.length === 0) return
   try {
-    await $.process.run(['/bin/rm', '-rf', '--', ...paths])
+    if (!isWindows) {
+      await $.process.run(['/bin/rm', '-rf', '--', ...paths])
+      return
+    }
+    // Windows: rmdir for a folder (frames), del when that fails (a file)
+    for (const path of paths) {
+      const dir = await $.process.run(['cmd.exe', '/d', '/c', 'rmdir', '/s', '/q', winPath(path)])
+      if (dir.exitCode !== 0) await $.process.run(['cmd.exe', '/d', '/c', 'del', '/f', '/q', winPath(path)])
+    }
   } catch {
     // no rm here: nothing is removed
   }
+}
+
+// cmd.exe reads '/' as a switch: its commands get backslashes
+function winPath(path: string) {
+  return path.replace(/\//g, '\\')
 }
 
 // drops other sessions' state, inbox and frames once that session ended before today or went quiet for STALE_MS
@@ -767,7 +782,9 @@ async function statsText($: EngineInterface) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    const home = (await $.env.get('HOME')) ?? ''
+    // Windows: the user profile, as Node's os.homedir() there (the app reads the office from it); HOME is often unset
+    isWindows = (await $.env.get('OS')) === 'Windows_NT'
+    const home = (isWindows ? (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) : await $.env.get('HOME')) ?? ''
     const settings = await readSettings($, home)
     forgetMs = settings.forgetMinutes * 60_000
     const locale = (await $.env.get('LC_ALL')) || (await $.env.get('LC_MESSAGES')) || (await $.env.get('LANG')) || ''
@@ -784,7 +801,7 @@ export const register: Register = on => {
         : { name: 'office', description: t.description, argumentHint: t.argumentHint },
     )
     const id = await $.session.id()
-    project = (await $.session.root()).split('/').pop() ?? ''
+    project = (await $.session.root()).split(/[\\/]/).pop() ?? ''
     const root = `${home}/.claude/agent-office`
     rootDir = root
     sessionId = id
