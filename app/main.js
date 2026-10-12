@@ -1,6 +1,6 @@
 // Agent Office shell: window, projects, accounts, one claude pty per project (several with tabs), and office data.
 const { app, BrowserWindow, ipcMain, dialog, clipboard, Menu, Notification, shell: eShell } = require('electron');
-const { execFile, execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -371,23 +371,18 @@ function scanUsage() {
   if (changed) sendAccounts();
 }
 
-// Is there a Claude session in the folder to resume with this account (see projects.js historyDir).
 // Accounts other than default use the project's ~/.claude memory (see src/memory.js): the account's own memories
 // are merged into it first, then the session gets autoMemoryDirectory pointing there. null: Claude Code's default.
 function projectMemoryDir(cwd, configDir) {
   if (!configDir) return null;
-  let git = '';
-  try {
-    git = execFileSync('git', ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'],
-      { cwd, timeout: 2000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch {}
-  const base = M.memoryBase(cwd, git);
+  const base = M.memoryBase(cwd);
   const shared = M.sharedMemoryDir({ configDir, home: app.getPath('home'), base });
   if (!shared) return null;
   try { M.mergeMemory(M.accountMemoryDir({ configDir, base }), shared); } catch (e) { console.error('hafıza birleştirilemedi:', e.message); }
   return shared;
 }
 
+// Is there a Claude session in the folder to resume with this account (see projects.js historyDir).
 function hasHistory(dir, configDir) {
   try { return fs.readdirSync(P.historyDir(dir, configDir, app.getPath('home'))).some((f) => f.endsWith('.jsonl')); } catch { return false; }
 }
