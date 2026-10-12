@@ -81,6 +81,8 @@
     "resumeUnfinishedSkipped": "Left alone (unsent text in its input): {names}",
     "manager": "Manager mode — delegate to agents",
     "managerTitle": "The boss splits the work across agents, keeps going until the tasks are done and stops only for what needs you (approvals, logins, your decisions). Applies to Claude sessions started afterwards.",
+    "shareMcp": "Share MCP servers between projects",
+    "shareMcpTitle": "Each project's Claude also gets the MCP servers the other projects in the office have (their local and approved .mcp.json servers, with their tokens), so you can work on one project from another's tab. A server whose name is already taken with another setup gets the project's name added (server-project). Applies to Claude sessions started afterwards.",
     "shareDefault": "Use Default's plugins, skills and MCP servers",
     "shareDefaultTitle": "Plugins, personal skills, agents, commands, output styles, MCP servers (with their tokens) and CLAUDE.md you installed for the Default account (~/.claude) are available in this account too. This account's own login, settings and claude.ai-synced skills stay its own. Applies when this account's Claude sessions start next.",
     "sleep": "Sleep idle sessions",

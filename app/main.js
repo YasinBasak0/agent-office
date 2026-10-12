@@ -16,6 +16,7 @@ const Z = require('./src/sleep.js');
 const TR = require('./src/transfer.js');
 const TIO = require('./src/transfer-io.js');
 const SC = require('./src/shared-config.js');
+const OD = require('./src/office-directory.js');
 const R = require('./src/resume.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
@@ -219,9 +220,12 @@ function pluginDir() {
 }
 
 // A tab's MCP file (Default's servers with their tokens, see shared-config.js) lives only while its claude runs.
+// Its office directory (contract v3.9, src/office-directory.js) lives as long, in userData/directory/<tab>.json.
 const mcpDir = () => path.join(app.getPath('userData'), 'mcp');
+const directoryDir = () => path.join(app.getPath('userData'), 'directory');
 function removeMcpFile(id) {
   try { fs.rmSync(path.join(mcpDir(), SC.mcpFileName(usageKey(id))), { force: true }); } catch {}
+  try { fs.rmSync(path.join(directoryDir(), SC.mcpFileName(usageKey(id))), { force: true }); } catch {}
 }
 
 // Killed on purpose (restart, removal, sleep, account change): its interrupted mark goes too, except while quitting.
@@ -509,19 +513,39 @@ function projectMemoryDir(cwd, configDir) {
   return shared;
 }
 
-// Default's plugins, skills, MCP servers and CLAUDE.md for an account's session (see src/shared-config.js): links in
-// the account folder, plugin stages in userData/shared-plugins, the tab's MCP file in userData/mcp/<tab>.json.
-function sharedConfig(account, cwd, key) {
+// Default's plugins, skills, MCP servers and CLAUDE.md for an account's session, and the other office projects' MCP
+// servers for every session (see src/shared-config.js, contract v3.6 and v3.9): links in the account folder, plugin
+// stages in userData/shared-plugins, the tab's MCP file in userData/mcp/<tab>.json.
+function sharedConfig(account, project, cwd, key) {
+  const office = {
+    share: state.shareMcp !== false,
+    current: project.dir,
+    projects: state.projects.map((p) => {
+      const a = A.accountOf(state, p);
+      return { name: p.name, dir: p.dir, configDir: a.configDir || null, share: SC.shareEnabled(a) };
+    }),
+  };
   try {
     return SC.prepareShared({
-      account, home: app.getPath('home'), cwd: isDir(cwd) ? cwd : null,
+      account, home: app.getPath('home'), cwd: isDir(cwd) ? cwd : null, office,
       stageRoot: path.join(app.getPath('userData'), 'shared-plugins'),
       mcpFile: path.join(mcpDir(), SC.mcpFileName(key)),
     });
   } catch (e) {
     console.error('varsayılan hesabın ayarları paylaşılamadı:', e.message);
-    return { pluginDirs: [], mcpConfig: null };
+    return { pluginDirs: [], mcpConfig: null, mcpNames: {} };
   }
+}
+
+// The tab's office directory (contract v3.9): the projects, their folders and accounts and the MCP servers this
+// session sees for each. → the file for AGENT_OFFICE_DIRECTORY, or null.
+function officeDirectoryFile(project, key, mcpNames) {
+  const data = OD.officeDirectory({
+    projects: state.projects.map((p) => ({ name: p.name, dir: p.dir, account: OD.accountName(A.accountOf(state, p)) })),
+    current: project.dir,
+    mcp: mcpNames || {},
+  });
+  return OD.writeDirectory(path.join(directoryDir(), SC.mcpFileName(key)), data);
 }
 
 // Is there a Claude session in the folder to resume with this account (see projects.js historyDir).
@@ -557,13 +581,18 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   const isResume = Boolean(sessionId) || (resume && (!tab || Boolean(tab.worktree)) && hasHistory(cwd, configDir));
   const resumeArgs = sessionId ? ['--resume', sessionId] : isResume ? ['--continue'] : [];
   const settingsArg = IS_WIN && settings ? settingsFile(usageKey(id), settings) : settings;
-  // Default's plugins and MCP servers for other accounts (--plugin-dir each, --mcp-config <file>; see shared-config.js)
-  const shared = SC.sharedArgs(sharedConfig(account, cwd, usageKey(id)));
+  // Default's plugins and MCP servers for other accounts, other projects' MCP servers (--plugin-dir each,
+  // --mcp-config <file>; see shared-config.js) and the office directory naming them (contract v3.9)
+  const prepared = sharedConfig(account, project, cwd, usageKey(id));
+  const shared = SC.sharedArgs(prepared);
+  const directory = officeDirectoryFile(project, usageKey(id), prepared.mcpNames);
   const args = R.claudeArgs([...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
   let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: state.manager !== false });
   delete env.AGENT_OFFICE_STATUSLINE;
+  delete env.AGENT_OFFICE_DIRECTORY;
+  if (directory) env.AGENT_OFFICE_DIRECTORY = directory;
   if (sl?.userCommand) env.AGENT_OFFICE_STATUSLINE = sl.userCommand;
   if (IS_WIN) env = windowsStatusLineEnv(env, sl);
   let t;
@@ -1466,14 +1495,16 @@ function buildMenu() {
 // --- preferences: resume = continue from the last session at startup; theme = 'auto' or a theme name (v3.1);
 // manager = the boss delegates to agents (plugin manager mode, AGENT_OFFICE_MANAGER), for sessions started afterwards;
 // sleepMinutes = end idle background claudes after this long (0 = off, see src/sleep.js);
-// resumeWork = at startup, tabs interrupted mid-turn carry on by themselves (needs resume; see src/resume.js)
+// resumeWork = at startup, tabs interrupted mid-turn carry on by themselves (needs resume; see src/resume.js);
+// shareMcp = each session also gets the other office projects' MCP servers (contract v3.9), for sessions started afterwards
 const themeSetting = (v) => (TH ? TH.normalizeThemeSetting(v) : 'auto');
-const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, sleepMinutes: sleepMinutes() });
+const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, shareMcp: state.shareMcp !== false, sleepMinutes: sleepMinutes() });
 ipcMain.handle('prefs:get', () => prefs());
 ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.resume === 'boolean' && p.resume !== prefs().resume) commit({ ...state, resume: p.resume });
   if (p && typeof p.resumeWork === 'boolean' && p.resumeWork !== prefs().resumeWork) commit({ ...state, resumeWork: p.resumeWork });
   if (p && typeof p.manager === 'boolean' && p.manager !== prefs().manager) commit({ ...state, manager: p.manager });
+  if (p && typeof p.shareMcp === 'boolean' && p.shareMcp !== prefs().shareMcp) commit({ ...state, shareMcp: p.shareMcp });
   if (p && typeof p.theme === 'string' && themeSetting(p.theme) !== prefs().theme) commit({ ...state, theme: themeSetting(p.theme) });
   if (p && Z.SLEEP_CHOICES.includes(p.sleepMinutes) && p.sleepMinutes !== prefs().sleepMinutes) {
     commit({ ...state, sleepMinutes: p.sleepMinutes });
@@ -1516,13 +1547,14 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   await loadThemesLib();
   const raw = loadState();
   const base = P.normalizeState(raw);
-  state = { ...base, interrupted: R.normalizeInterrupted(raw.interrupted, base.projects.flatMap((p) => P.ptyIdsOf(p))), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, resumeWork: raw.resumeWork !== false, manager: raw.manager !== false, theme: themeSetting(raw.theme), sleepMinutes: Z.normalizeSleep(raw.sleepMinutes) };
+  state = { ...base, interrupted: R.normalizeInterrupted(raw.interrupted, base.projects.flatMap((p) => P.ptyIdsOf(p))), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, resumeWork: raw.resumeWork !== false, manager: raw.manager !== false, shareMcp: raw.shareMcp !== false, theme: themeSetting(raw.theme), sleepMinutes: Z.normalizeSleep(raw.sleepMinutes) };
   app.setAboutPanelOptions({ applicationName: app.getName(), applicationVersion: app.getVersion() });
   buildMenu();
   setupUpdates();
   saveState();
   // MCP files left by an earlier run (a crash, a forced quit): no tab is running yet, so none belongs to one
   SC.pruneMcpFiles(mcpDir(), [...terms.keys()].map(usageKey));
+  SC.pruneMcpFiles(directoryDir(), [...terms.keys()].map(usageKey));
   loadUsageCache();
   lastFocusCheck = Date.now();
   checkAllAuth();

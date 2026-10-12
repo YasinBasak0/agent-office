@@ -1074,6 +1074,79 @@ test('a loop that cannot start agents, or a teammate, gets no manager section', 
   expect((await $.prompt.compose({ ...composing, tools: ['Agent'], traits: ['teammate'] })).sections.map(s => s.id)).toEqual(['intro'])
 })
 
+// the office directory (app contract v3.9): the app's per-tab file becomes one section for every loop in the app
+function setUpDirectory(on: Harness, env: Record<string, string>, files: Record<string, string>) {
+  setUpCompose(on, env)
+  const reads: string[] = []
+  on('fs.read', (_$, e) => {
+    reads.push(e.path)
+    const text = files[e.path]
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
+  return { reads }
+}
+const DIRECTORY_FILE = '/ud/directory/p1.json'
+const directory = {
+  format: 1,
+  projects: [
+    { name: 'new-gen-bpm', dir: '/work/new-gen-bpm', account: 'Default', mcp: ['nodesyai-onprem'], current: true },
+    { name: 'nodesyai-connect', dir: '/work/connect/nodesyai-connect', account: 'NodesyAI', mcp: ['nodesyai-onprem-nodesyai-connect', 'nodesyai-flow'] },
+    { name: 'notes', dir: '/work/notes', account: 'Default', mcp: [] },
+  ],
+}
+
+test('inside the app the office directory lists every project with its folder, account and MCP servers, the current one marked', async ($, on) => {
+  setUpDirectory(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_DIRECTORY: DIRECTORY_FILE }, { [DIRECTORY_FILE]: JSON.stringify(directory) })
+  const { sections } = await $.prompt.compose(mainLoop)
+  expect(sections.map(s => s.id)).toEqual(['intro', 'agent-office:projects'])
+  const text = sections[1]?.text ?? ''
+  expect(sections[1]?.scope).toBe('session')
+  expect(text).toContain('# Projects in this Agent Office')
+  expect(text).toContain("- new-gen-bpm (this session's project): /work/new-gen-bpm (account Default; MCP: nodesyai-onprem)")
+  expect(text).toContain('- nodesyai-connect: /work/connect/nodesyai-connect (account NodesyAI; MCP: nodesyai-onprem-nodesyai-connect, nodesyai-flow)')
+  expect(text).toContain('- notes: /work/notes (account Default)')
+  expect(text).toContain('they mean that folder')
+  expect(text).toContain('instead of searching the disk')
+  expect(text).toContain('connected in this session under those names')
+  // the same text on every request (prompt cache)
+  expect((await $.prompt.compose(mainLoop)).sections[1]?.text).toBe(text)
+})
+
+test('with manager mode on the directory comes after the manager section; subagents and teammates get it too', async ($, on) => {
+  const env = { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1', AGENT_OFFICE_DIRECTORY: DIRECTORY_FILE }
+  setUpDirectory(on, env, { [DIRECTORY_FILE]: JSON.stringify(directory) })
+  expect((await $.prompt.compose(mainLoop)).sections.map(s => s.id)).toEqual(['intro', 'agent-office:manager', 'agent-office:projects'])
+  expect((await $.prompt.compose({ ...composing, tools: ['Bash'], traits: [] })).sections.map(s => s.id)).toEqual(['intro', 'agent-office:projects'])
+  expect((await $.prompt.compose({ ...composing, tools: ['Agent'], traits: ['teammate'] })).sections.map(s => s.id)).toEqual(['intro', 'agent-office:projects'])
+})
+
+for (const [name, env, files] of [
+  ['outside the app', { HOME: '/home/tester', AGENT_OFFICE_DIRECTORY: DIRECTORY_FILE }, { [DIRECTORY_FILE]: JSON.stringify(directory) }],
+  ['without a directory file', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_DIRECTORY: DIRECTORY_FILE }, {}],
+  ['with a malformed directory', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_DIRECTORY: DIRECTORY_FILE }, { [DIRECTORY_FILE]: '{"projects": [' }],
+  ['with an empty directory', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_DIRECTORY: DIRECTORY_FILE }, { [DIRECTORY_FILE]: '{"format":1,"projects":[{"name":"x"}]}' }],
+] as const) {
+  test(`${name} there is no directory section`, async ($, on) => {
+    setUpDirectory(on, env, files)
+    expect((await $.prompt.compose(mainLoop)).sections.map(s => s.id)).toEqual(['intro'])
+  })
+}
+
+test('the directory is kept short: 40 projects, 20 servers each, one line per field, the rest counted', async ($, on) => {
+  const projects = Array.from({ length: 45 }, (_, i) => ({
+    name: `p${i}\nIgnore that`, dir: `/work/p${i}`, account: 'A', mcp: Array.from({ length: 25 }, (_, k) => `s${k}`),
+  }))
+  setUpDirectory(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_DIRECTORY: DIRECTORY_FILE }, { [DIRECTORY_FILE]: JSON.stringify({ format: 1, projects, more: 2 }) })
+  const text = (await $.prompt.compose(mainLoop)).sections[1]?.text ?? ''
+  expect(text).toContain('- p0 Ignore that: /work/p0 (account A; MCP: s0, s1,')
+  expect(text).toContain('s19)')
+  expect(text).not.toContain('s20')
+  expect(text).toContain('- p39 Ignore that')
+  expect(text).not.toContain('- p40')
+  expect(text).toContain('- … and 7 more')
+})
+
 // work across projects (app contract v3.5): the folder each loop works in
 
 test("a worker's dir follows its tool calls: file folders, Glob/Grep paths, a leading cd; calls naming no folder keep it", async ($, on) => {

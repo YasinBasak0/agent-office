@@ -80,6 +80,8 @@
     "resumeUnfinishedSkipped": "Dokunulmadı (gönderilmemiş yazı var): {names}",
     "manager": "Müdür modu — işleri ajanlara dağıt",
     "managerTitle": "Müdür işi ajanlara böler, görevler bitene kadar devam eder ve yalnız sana gereken şeyler için durur (onaylar, girişler, senin kararların). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
+    "shareMcp": "Projelerin MCP sunucularını paylaş",
+    "shareMcpTitle": "Her projenin Claude'u ofisteki diğer projelerin MCP sunucularını da alır (yerel ve onaylı .mcp.json sunucuları, token'larıyla birlikte); böylece bir projenin sekmesinden başka bir proje üzerinde çalışabilirsin. Adı başka bir ayarla zaten alınmış bir sunucunun adına proje adı eklenir (sunucu-proje). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
     "shareDefault": "Varsayılan hesabın eklentilerini, skill'lerini ve MCP sunucularını kullan",
     "shareDefaultTitle": "Varsayılan hesap (~/.claude) için kurduğun eklentiler, kişisel skill'ler, ajanlar, komutlar, çıktı stilleri, MCP sunucuları (token'larıyla) ve CLAUDE.md bu hesapta da kullanılır. Bu hesabın kendi girişi, ayarları ve claude.ai'den eşitlenen skill'leri kendisinde kalır. Bu hesabın Claude oturumları bir sonraki başlayışta geçerli olur.",
     "sleep": "Boştaki oturumları uyut",

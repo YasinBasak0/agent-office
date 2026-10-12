@@ -439,6 +439,7 @@ sidebar = mountSidebar($('sidebar'), {
   resumeUnfinished,
   setResumeWork: (on) => api.prefs?.set({ resumeWork: on }).then((p) => sidebar.setResumeWork(p?.resumeWork)).catch((e) => console.error(e)),
   setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
+  setShareMcp: (on) => api.prefs?.set({ shareMcp: on }).then((p) => sidebar.setShareMcp(p?.shareMcp)).catch((e) => console.error(e)),
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
 });
@@ -516,6 +517,7 @@ api.prefs?.get().then((p) => {
   sidebar.setResume(p?.resume);
   sidebar.setResumeWork(p?.resumeWork);
   sidebar.setManager(p?.manager);
+  sidebar.setShareMcp(p?.shareMcp);
   sidebar.setSleep(p?.sleepMinutes);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
   applyThemeChoice();

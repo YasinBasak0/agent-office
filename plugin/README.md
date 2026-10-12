@@ -171,6 +171,8 @@ AGENT_OFFICE_MANAGER=1 claude
 
 In manager mode a `tool.call` hook also counts the main loop's own tool calls in a turn: on the sixth in a row without an Agent, Task or SendMessage call (bookkeeping such as TodoWrite or ToolSearch doesn't count), it adds a short reminder after that call's result, at most once per turn and never for subagents or teammates. The reminder is a message in the conversation, not system-prompt text, so the cached prompt is untouched.
 
+Inside the Agent Office app, every loop also gets a short **Projects in this Agent Office** section: the app passes each session a list of the office's projects (name, folder, account and the names of the MCP servers the session has for each) in a file named by `AGENT_OFFICE_DIRECTORY`, so a project you name is read and worked on in its folder rather than searched for on disk. Plain Claude Code gets nothing.
+
 ## Privacy
 
 Everything stays on your machine, under `~/.claude/agent-office/`:
@@ -260,5 +262,7 @@ Her projenin kendi ofisi vardır: duvardaki tabela proje klasörünün adını g
 İsteğe bağlı ayarlar `~/.claude/agent-office/settings.json` dosyasındadır; eklenti de görüntüleyici de okur: `{ "language": "tr", "forgetMinutes": 5 }`. `language`: `"tr"`, `"en"` ya da `"auto"` (varsayılan; yerel ayara göre). `forgetMinutes`: teslim eden botun ofiste kalma süresi, 1-60 dakika (varsayılan 5); bu sürenin 30 saniye eksiği parti yapar, sonra çıkar. `botColor`: botların rengi, `"#rrggbb"` (uygulamada kenar çubuğundaki **Bot rengi** ile seçilir). Dosya yoksa ya da geçersizse varsayılanlar kullanılır. Değiştirdikten sonra oturumu yeniden başlatıp ofisi yeniden aç.
 
 Müdür modu: ortamda `AGENT_OFFICE_MANAGER=1` varsa eklenti Claude'un sistem istemine kısa bir bölüm ekler; ana Claude dağıtıcı gibi çalışır ve sana açık kalır: gerçek iş (kod inceleme, dosya düzenleme, derleme, test, uzun komutlar) varsayılan olarak arka planda çalışan alt agent'lara gider (birbirine değmeyen parçalar paralel), kendisi yalnız kısa bakış, gözden geçirme, birleştirme ve son kontrolü yapar; bir turda devretmeden üst üste altı araç çağrısı yaparsa eklenti turda bir kez kısa bir hatırlatma ekler; görev listesi bitene kadar devam eder, "kalanlar" listesiyle durmaz ve yalnız sana gereken şeyler (yayına alma, silme gibi onaylar, giriş bilgileri, senin kararların) için, en sonda tek listede sorar. `CLAUDE.md` ve açık isteklerin önce gelir. Agent Office uygulaması bunu kenar çubuğundaki **Müdür modu** açıkken (varsayılan) ayarlar; düz Claude Code'da kendin ayarlamadıkça eklenmez.
+
+Agent Office uygulamasında her oturum ayrıca kısa bir **Projects in this Agent Office** bölümü alır: uygulama ofisteki projelerin listesini (ad, klasör, hesap ve oturumun her proje için gördüğü MCP sunucularının adları) `AGENT_OFFICE_DIRECTORY` ile verilen bir dosyada geçirir; böylece adını verdiğin proje diskte aranmaz, kendi klasöründe çalışılır.
 
 Gereksinimler: Claude Code 2.1.295+, Node.js 18+, tam pencere için macOS'ta Ghostty, uzaktan kontrolü açık kitty ya da WezTerm.

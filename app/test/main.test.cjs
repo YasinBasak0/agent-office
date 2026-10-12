@@ -1478,7 +1478,7 @@ test('shared config: a session start links, stages and writes the MCP file; neve
   assert.equal(fsT.existsSync(stage), true);
 
   // off: the app's links, marker and MCP file go; the account's own entries and every source stay
-  assert.deepEqual(SC.prepareShared(opts({ ...account, shareDefault: false })), { pluginDirs: [], mcpConfig: null });
+  assert.deepEqual(SC.prepareShared(opts({ ...account, shareDefault: false })), { pluginDirs: [], mcpConfig: null, mcpNames: {} });
   assert.equal(fsT.existsSync(pathT.join(acc, 'agents', 'r.md')), false);
   assert.equal(fsT.existsSync(pathT.join(acc, 'CLAUDE.md')), false);
   assert.equal(fsT.existsSync(pathT.join(acc, SC.MARKER)), false);
@@ -1488,7 +1488,7 @@ test('shared config: a session start links, stages and writes the MCP file; neve
   assert.equal(fsT.readFileSync(pathT.join(cd, 'CLAUDE.md'), 'utf8'), 'rules');
   assert.equal(fsT.readFileSync(pathT.join(cache('lsp'), 'README.md'), 'utf8'), 'readme');
   // Default: nothing at all
-  assert.deepEqual(SC.prepareShared(opts({ id: 'default', configDir: null })), { pluginDirs: [], mcpConfig: null });
+  assert.deepEqual(SC.prepareShared(opts({ id: 'default', configDir: null })), { pluginDirs: [], mcpConfig: null, mcpNames: {} });
   // a plugin uninstalled from Default: its stage is removed, its source untouched
   w(pathT.join(cd, 'settings.json'), JSON.stringify({ enabledPlugins: { 'fd@m': true } }));
   SC.prepareShared(opts(account));
@@ -1510,8 +1510,167 @@ test('shared config: MCP files with tokens live only while their tab runs; Defau
   // a tab whose project moved to Default: its old file goes at the next start
   const mcpFile = pathT.join(dir, 'p.json');
   fsT.writeFileSync(mcpFile, '{"mcpServers":{"s":{"headers":{"Authorization":"Bearer t"}}}}');
-  assert.deepEqual(SC.prepareShared({ account: { id: 'default', configDir: null }, home: root, cwd: null, stageRoot: pathT.join(root, 'st'), mcpFile }), { pluginDirs: [], mcpConfig: null });
+  assert.deepEqual(SC.prepareShared({ account: { id: 'default', configDir: null }, home: root, cwd: null, stageRoot: pathT.join(root, 'st'), mcpFile }), { pluginDirs: [], mcpConfig: null, mcpNames: {} });
   assert.equal(fsT.existsSync(mcpFile), false);
+});
+
+// --- the other office projects' MCP servers and the office directory (contract v3.9)
+test('office MCP: Default\'s local servers for the folder are shared too, minus names the account or the project has', () => {
+  const defaultConfig = { mcpServers: { u: { url: 'u' } }, projects: { '/p': { mcpServers: { loc: { url: 'dl' }, own: { url: 'x' }, u: { url: 'local wins' } } } } };
+  const accountConfig = { projects: { '/p': { mcpServers: { own: { url: 'mine' } } } } };
+  assert.deepEqual(SC.sharedMcpServers({ defaultConfig, accountConfig, cwd: '/p', projectMcp: null }),
+    { mcpServers: { u: { url: 'local wins' }, loc: { url: 'dl' } } });
+  assert.deepEqual(SC.sharedMcpServers({ defaultConfig, accountConfig, cwd: '/q', projectMcp: null }), { mcpServers: { u: { url: 'u' } } });
+});
+
+test('office MCP: a project\'s .mcp.json servers count only when approved and not disabled', () => {
+  const projectMcp = { mcpServers: { a: { command: 'a' }, b: { command: 'b' }, c: { command: 'c' }, bad: 'x' } };
+  assert.deepEqual(SC.approvedProjectServers(projectMcp, []), {});
+  assert.deepEqual(Object.keys(SC.approvedProjectServers(projectMcp, [null, { enabledMcpjsonServers: ['a', 'c'] }, { disabledMcpjsonServers: ['c'] }])), ['a']);
+  assert.deepEqual(Object.keys(SC.approvedProjectServers(projectMcp, [{ enableAllProjectMcpServers: true, disabledMcpjsonServers: ['b'] }])), ['a', 'c']);
+});
+
+test('office MCP: a project\'s own servers: account local, Default local when the account shares, approved .mcp.json', () => {
+  const accountConfig = { mcpServers: { top: {} }, projects: { '/b': { mcpServers: { onprem: { url: 'acc' } }, enabledMcpjsonServers: ['flow'] } } };
+  const defaultConfig = { projects: { '/b': { mcpServers: { onprem: { url: 'def' }, top: { url: 'def' }, live: { url: 'live' } } } } };
+  const projectMcp = { mcpServers: { flow: { command: 'f' }, onprem: { command: 'p' }, other: { command: 'o' } } };
+  const approvals = [accountConfig.projects['/b']];
+  assert.deepEqual(SC.projectServers({ dir: '/b', accountConfig, defaultConfig, projectMcp, approvals }),
+    { flow: { command: 'f' }, live: { url: 'live' }, onprem: { url: 'acc' } });
+  assert.deepEqual(SC.projectServers({ dir: '/b', accountConfig, defaultConfig: null, projectMcp, approvals }), { flow: { command: 'f' }, onprem: { url: 'acc' } });
+  // Default: its own .claude.json is the account's
+  assert.deepEqual(SC.projectServers({ dir: '/b', accountConfig: defaultConfig }), defaultConfig.projects['/b'].mcpServers);
+});
+
+test('office MCP: identical configs are not added again, a clash is renamed <server>-<project>, every name is valid', () => {
+  const have = { onprem: { type: 'http', url: 'https://a', headers: { Authorization: 'Bearer 1' } }, nodesyai: { url: 'n' } };
+  const others = [
+    { key: '/b', name: 'nodesyai connect', servers: {
+      onprem: { type: 'http', url: 'https://b' }, // same name, other config → renamed
+      flow: { command: 'f' },
+      nodes: { url: 'n' }, // another name, the same config as nodesyai → listed as nodesyai
+    } },
+    { key: '/c', name: 'c.d', servers: {
+      onprem: { headers: { Authorization: 'Bearer 1' }, url: 'https://a', type: 'http' }, // same config, keys reordered
+      flow: { command: 'f' }, // the same as /b's: added once
+      'onprem-nodesyai-connect': { url: 'z' }, // taken by /b's renamed one
+    } },
+  ];
+  const r = SC.officeMcpServers({ have, others });
+  assert.deepEqual(r.servers, {
+    'onprem-nodesyai-connect': { type: 'http', url: 'https://b' },
+    flow: { command: 'f' },
+    'onprem-nodesyai-connect-c-d': { url: 'z' },
+  });
+  assert.deepEqual(r.names, { '/b': ['onprem-nodesyai-connect', 'flow', 'nodesyai'], '/c': ['onprem', 'flow', 'onprem-nodesyai-connect-c-d'] });
+  for (const n of Object.keys(r.servers)) assert.match(n, /^[A-Za-z0-9_-]+$/);
+  assert.equal(SC.slugOf('çok güzel/proje'), 'ok-g-zel-proje');
+  assert.equal(SC.slugOf('...'), 'project');
+  const twice = SC.officeMcpServers({ have: { s: { a: 1 }, 's-p': { a: 2 } }, others: [{ key: 'k', name: 'p', servers: { s: { a: 3 } } }] });
+  assert.deepEqual(Object.keys(twice.servers), ['s-p-2']);
+  assert.equal(SC.canonical({ b: [1, { d: 1, c: 2 }], a: null }), SC.canonical({ a: null, b: [1, { c: 2, d: 1 }] }));
+});
+
+test('office MCP: a session start adds the other projects\' servers from each project\'s account; sources untouched', (t) => {
+  const root = fsT.realpathSync(fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-office-mcp-')));
+  t.after(() => fsT.rmSync(root, { recursive: true, force: true }));
+  const j = (...p) => pathT.join(root, ...p);
+  const w = (p, v) => { fsT.mkdirSync(pathT.dirname(p), { recursive: true }); fsT.writeFileSync(p, typeof v === 'string' ? v : JSON.stringify(v)); };
+  const home = j('home'); const acc = j('acc'); const bpm = j('bpm'); const conn = j('conn'); const notes = j('notes');
+  for (const d of [bpm, conn, notes]) fsT.mkdirSync(d, { recursive: true });
+  const onpremBpm = { type: 'http', url: 'https://onprem/bpm', headers: { Authorization: 'Bearer bpm' } };
+  const onpremConn = { type: 'http', url: 'https://onprem/conn', headers: { Authorization: 'Bearer conn' } };
+  w(pathT.join(home, '.claude.json'), {
+    mcpServers: { nodesyai: { type: 'http', url: 'https://n' } },
+    projects: { [bpm]: { mcpServers: { onprem: onpremBpm } }, [conn]: { mcpServers: { onprem: onpremConn, live: { type: 'http', url: 'https://live' } } } },
+  });
+  w(pathT.join(acc, '.claude.json'), { mcpServers: { odoo: { url: 'o' } }, projects: { [conn]: { mcpServers: { accsrv: { url: 'acc' } } } } });
+  w(pathT.join(conn, '.mcp.json'), { mcpServers: { flow: { command: 'node', args: ['flow.js'] }, unapproved: { command: 'evil' } } });
+  w(pathT.join(conn, '.claude', 'settings.local.json'), { enabledMcpjsonServers: ['flow'] });
+  w(pathT.join(notes, '.mcp.json'), { mcpServers: { nodes: { type: 'http', url: 'https://n' } } }); // = Default's nodesyai
+  w(pathT.join(notes, '.claude', 'settings.local.json'), { enableAllProjectMcpServers: true });
+  const sources = [pathT.join(home, '.claude.json'), pathT.join(acc, '.claude.json'), pathT.join(conn, '.mcp.json'), pathT.join(notes, '.mcp.json')];
+  const before = sources.map((f) => fsT.readFileSync(f, 'utf8'));
+  const nodesy = { id: 'n', label: 'NodesyAI', configDir: acc };
+  const office = (share = true) => ({ share, current: bpm, projects: [
+    { name: 'bpm', dir: bpm, configDir: null, share: false },
+    { name: 'nodesyai-connect', dir: conn, configDir: acc, share: true },
+    { name: 'notes', dir: notes, configDir: null, share: false },
+  ] });
+  const mcpFile = j('ud', 'mcp', 'bpm.json');
+  const opts = (account, o, cwd = bpm) => ({ account, home, cwd, stageRoot: j('ud', 'st'), mcpFile, office: o });
+  const dflt = { id: 'default', configDir: null };
+
+  // Default's session in bpm
+  let r = SC.prepareShared(opts(dflt, office()));
+  assert.equal(r.mcpConfig, mcpFile);
+  if (process.platform !== 'win32') assert.equal(fsT.statSync(mcpFile).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(fsT.readFileSync(mcpFile, 'utf8')).mcpServers, {
+    accsrv: { url: 'acc' }, flow: { command: 'node', args: ['flow.js'] }, live: { type: 'http', url: 'https://live' }, 'onprem-nodesyai-connect': onpremConn,
+  });
+  assert.deepEqual(r.mcpNames, { [bpm]: ['onprem'], [conn]: ['flow', 'onprem-nodesyai-connect', 'live', 'accsrv'], [notes]: ['nodesyai'] });
+  assert.deepEqual(sources.map((f) => fsT.readFileSync(f, 'utf8')), before);
+
+  // the setting off: nothing from other projects, no file; the own project's names stay listed
+  r = SC.prepareShared(opts(dflt, office(false)));
+  assert.deepEqual(r, { pluginDirs: [], mcpConfig: null, mcpNames: { [bpm]: ['onprem'] } });
+  assert.equal(fsT.existsSync(mcpFile), false);
+
+  // the NodesyAI account's session in conn: Default's set (user + local for conn), plus bpm's onprem renamed
+  const o2 = { ...office(), current: conn };
+  r = SC.prepareShared(opts(nodesy, o2, conn));
+  const servers = JSON.parse(fsT.readFileSync(mcpFile, 'utf8')).mcpServers;
+  assert.deepEqual(Object.keys(servers).sort(), ['live', 'nodesyai', 'onprem', 'onprem-bpm']);
+  assert.deepEqual(servers.onprem, onpremConn);
+  assert.deepEqual(servers['onprem-bpm'], onpremBpm);
+  assert.deepEqual(r.mcpNames[conn], ['flow', 'onprem', 'live', 'accsrv']);
+  assert.deepEqual(r.mcpNames[bpm], ['onprem-bpm']);
+  assert.deepEqual(r.mcpNames[notes], ['nodesyai']);
+  // an account that keeps apart from Default's set gets no other project's servers either
+  r = SC.prepareShared(opts({ ...nodesy, shareDefault: false }, o2, conn));
+  assert.equal(r.mcpConfig, null);
+  assert.deepEqual(r.mcpNames, { [conn]: ['flow', 'accsrv'] });
+  assert.deepEqual(sources.map((f) => fsT.readFileSync(f, 'utf8')), before);
+});
+
+test('office directory: the current project first and marked, account names, MCP names, short lists', () => {
+  const OD = require('../src/office-directory.js');
+  const projects = [
+    { name: 'a', dir: '/a', account: 'Default' },
+    { name: 'b', dir: '/b', account: 'NodesyAI' },
+    { name: '', dir: '/x/c', account: '' },
+    { name: 'bad' },
+  ];
+  assert.deepEqual(OD.officeDirectory({ projects, current: '/b', mcp: { '/b': ['onprem', 3, ''], '/a': ['onprem-b'] } }), {
+    format: 1,
+    projects: [
+      { name: 'b', dir: '/b', account: 'NodesyAI', mcp: ['onprem'], current: true },
+      { name: 'a', dir: '/a', account: 'Default', mcp: ['onprem-b'] },
+      { name: 'c', dir: '/x/c', account: 'Default', mcp: [] },
+    ],
+  });
+  const many = Array.from({ length: 45 }, (_, i) => ({ name: `p${i}`, dir: `/p${i}`, account: 'A' }));
+  const d = OD.officeDirectory({ projects: many, current: '/p44', mcp: { '/p44': Array.from({ length: 30 }, (_, i) => `s${i}`) } });
+  assert.equal(d.projects.length, OD.PROJECTS_MAX);
+  assert.equal(d.more, 5);
+  assert.equal(d.projects[0].name, 'p44');
+  assert.equal(d.projects[0].mcp.length, OD.MCP_MAX);
+  assert.equal(OD.accountName({ id: 'default', label: 'Varsayılan', configDir: null }), 'Default');
+  assert.equal(OD.accountName({ id: 'n', label: 'NodesyAI', configDir: '/acc' }), 'NodesyAI');
+  // no secret in the directory: only names, folders and server names
+  assert.equal(JSON.stringify(d).includes('Bearer'), false);
+});
+
+test('office directory: written 0600 and atomically; pruned like the MCP files', (t) => {
+  const OD = require('../src/office-directory.js');
+  const root = fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-dir-'));
+  t.after(() => fsT.rmSync(root, { recursive: true, force: true }));
+  const file = pathT.join(root, 'directory', 'p1.json');
+  assert.equal(OD.writeDirectory(file, { format: 1, projects: [] }), file);
+  assert.deepEqual(JSON.parse(fsT.readFileSync(file, 'utf8')), { format: 1, projects: [] });
+  if (process.platform !== 'win32') assert.equal(fsT.statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(fsT.readdirSync(pathT.dirname(file)), ['p1.json']);
+  assert.deepEqual(SC.pruneMcpFiles(pathT.dirname(file)), ['p1.json']);
 });
 
 // --- interrupted work (src/resume.js)

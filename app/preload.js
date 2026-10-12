@@ -60,7 +60,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     install: () => ipcRenderer.send('update:install'),
   },
   prefs: {
-    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7)
+    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, shareMcp: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7, shareMcp: v3.9)
     set: (p) => ipcRenderer.invoke('prefs:set', p),
   },
   language: {
