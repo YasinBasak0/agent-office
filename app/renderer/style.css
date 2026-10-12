@@ -195,6 +195,20 @@ body.sidebar-collapsed #sidebar { display: none; }
   opacity: .85;
 }
 .sb-add:hover { opacity: 1; border-style: solid; background: var(--accent); color: var(--status-bg); }
+/* "Resume unfinished work" (v3.8): under the add button, its result below it for a while */
+.sb-resume-all { margin-top: 0; text-wrap: balance; }
+.sb-resume-all:disabled { opacity: .45; cursor: progress; background: none; color: inherit; border-style: dashed; }
+.sb-note {
+  margin: 0 8px 6px;
+  padding: 4px 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.sb-note.is-none { opacity: .7; }
 
 .sb-accounts {
   margin-top: auto;

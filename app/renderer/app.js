@@ -436,6 +436,7 @@ sidebar = mountSidebar($('sidebar'), {
   refreshAuth,
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
   setResume: (on) => api.prefs?.set({ resume: on }).then((p) => sidebar.setResume(p?.resume)).catch((e) => console.error(e)),
+  resumeUnfinished,
   setResumeWork: (on) => api.prefs?.set({ resumeWork: on }).then((p) => sidebar.setResumeWork(p?.resumeWork)).catch((e) => console.error(e)),
   setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
@@ -503,6 +504,14 @@ async function applyLanguage(li) {
 }
 onLang(applyStaticText);
 applyStaticText();
+// "Resume unfinished work" (contract v3.8): the sidebar button; the app menu's item sends its result as work:resumed
+async function resumeUnfinished() {
+  sidebar.setResuming(true);
+  try { sidebar.showResumed(await api.work?.resumeUnfinished()); } catch (e) { console.error(e); }
+  finally { sidebar.setResuming(false); }
+}
+api.work?.onResumed?.((r) => sidebar.showResumed(r));
+
 api.prefs?.get().then((p) => {
   sidebar.setResume(p?.resume);
   sidebar.setResumeWork(p?.resumeWork);
