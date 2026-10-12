@@ -177,6 +177,10 @@ In manager mode, and with `AGENT_OFFICE_FINISH=1` (the app sets it when a projec
 
 Inside the Agent Office app, every loop also gets a short **Projects in this Agent Office** section: the app passes each session a list of the office's projects (name, folder, account and the names of the MCP servers the session has for each) in a file named by `AGENT_OFFICE_DIRECTORY`, so a project you name is read and worked on in its folder rather than searched for on disk. Plain Claude Code gets nothing.
 
+### Office journal
+
+At the end of each main turn that edited files, ran commands or started agents (or answered at some length), the plugin appends one line to `~/.claude/agent-office/journal.jsonl`: the time, session, project and account (from the app's directory, else the folder), the folders touched (worktrees mapped to their repository), the new git commits in them (hash, subject, branch), the prompt's first 150 characters, the first 400 of the answer without code, and the transcript's path. Obvious secrets (`Bearer …`, `sk-…`, `nsk_…`, `ghp_…`, `key=…`, URL passwords) are replaced by `[redacted]`. Inside the Agent Office app, each prompt you send gets the other sessions' new entries that concern its project (they touched its folder or name it) as context beside the prompt, never in the system prompt, each entry once, at most 8 or 2000 characters at a time; the **Projects in this Agent Office** section also tells Claude it can read the journal and the transcripts it lists when you mention another session's work. Set `AGENT_OFFICE_JOURNAL=0` to turn it off. The logic is in [`hooks/journal.ts`](hooks/journal.ts).
+
 ## Privacy
 
 Everything stays on your machine, under `~/.claude/agent-office/`:
@@ -186,6 +190,7 @@ Everything stays on your machine, under `~/.claude/agent-office/`:
 | `sessions/` | Office state per Claude Code session (agents, desks, deliveries) |
 | `inbox/` | Tasks typed into the office's task line, waiting for Claude |
 | `frames/` | Rendered frames for band mode |
+| `journal.jsonl` | The office journal (see [Office journal](#office-journal)); capped at 2 MB, then moved to `journal.1.jsonl` |
 
 These files clean up after themselves. Each submitted task is removed from the inbox right away. When a session starts, the plugin deletes the `sessions/`, `inbox/` and `frames/` files of other sessions that have ended or have not been updated for a day. It never deletes the files of the current session or of another session that is still running.
 
@@ -219,6 +224,7 @@ node viewer/office.mjs --snapshot out.png 1600x800     # render one demo frame t
 claude plugin validate .   # check the manifest and hooks module
 claude plugin test .       # run the tests in tests/
 node tests/viewer-smoke.mjs # render the viewer to PNG (needs Node 18+)
+node --test tests/journal-git.mjs # the office journal against real git (needs Node 23.6+)
 claude --plugin-dir .      # try your checkout in a real session
 ```
 

@@ -4,6 +4,8 @@ import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 import type { Delivery, OfficeFrame, OfficeStats, Shell, Worker } from '../types'
 import { finishCandidate, finishModeOf, finishPrompt, finishTurnComplete, finishTurnStart, finishVerdict, JUDGE_LABELS } from './finish'
 import type { StopInput } from './finish'
+import { appendEntry, directoryProjects, entryOf, JOURNAL_FILE, LOOKBACK_MS, newsText, parseJournal, placeOfDir, selectNews } from './journal'
+import type { Host, JournalSeen, OfficeProject } from './journal'
 
 // Claude Code side of Agent Office: writes agent arrivals, tools, deliveries and background shells to
 // ~/.claude/agent-office/sessions/<session>.json. The office itself is drawn by the
@@ -21,6 +23,8 @@ const statsAtom = atom(
 )
 
 const inboxAtom = atom({ plugin: 'agent-office', key: 'inboxSeen' } as const, 0)
+// the office journal (journal.ts, app contract v3.12): how far this session has read it and the ids it has seen
+const journalAtom = atom({ plugin: 'agent-office', key: 'journal' } as const, { cursor: 0, seen: [] } as JournalSeen)
 const isOpenAtom = atom({ plugin: 'agent-office', key: 'isOpen' } as const, false)
 const frameAtom = atom(
   { plugin: 'agent-office', key: 'frame' } as const,
@@ -181,7 +185,7 @@ const DIRECTORY_DIR_MAX = 1024
 const oneLine = (value: unknown, max: number) => (typeof value === 'string' ? clip(value.replace(/\s+/g, ' ').trim(), max) : '')
 
 /** The office directory section's text from the app's file; undefined when it lists no project. */
-function directoryText(raw: string): string | undefined {
+function directoryText(raw: string, journalFile = ''): string | undefined {
   let data: unknown
   try {
     data = JSON.parse(raw)
@@ -215,7 +219,11 @@ function directoryText(raw: string): string | undefined {
 The person has these projects open in Agent Office, each with its own folder and account:
 ${lines.join('\n')}
 
-When the person names one of these projects, they mean that folder: read and work there with absolute paths (in Bash, \`cd <folder> && …\`) instead of searching the disk for it. The MCP servers listed for a project are connected in this session under those names (tools \`mcp__<server>__…\`); use them for that project's work.`
+When the person names one of these projects, they mean that folder: read and work there with absolute paths (in Bash, \`cd <folder> && …\`) instead of searching the disk for it. The MCP servers listed for a project are connected in this session under those names (tools \`mcp__<server>__…\`); use them for that project's work.${
+    journalFile
+      ? `\n\nEvery session's turns are logged in the office journal \`${journalFile}\` (JSON lines: time, project, folders touched, new commits, the prompt, a short summary and the transcript path): when the person refers to work done in another project or session, read it, and the transcripts it lists, rather than guessing.`
+      : ''
+  }`
 }
 
 // Manager mode's nudge: when the main loop has made NUDGE_AFTER tool calls of its own in a row this turn without
@@ -287,6 +295,101 @@ let homeDir = ''
 let sessionCwd = ''
 let sessionRoot = ''
 const agentCwds = new Map<string, string>()
+// the office journal (journal.ts): folders touched and work done since the last main turn ended (subagents in the
+// background count towards the next), the prompt of the running turn, and what names this session in it
+let journalOn = false // AGENT_OFFICE_JOURNAL=0 turns it off
+let journalSince = 0 // commits after this count as this session's
+let journalTouched = new Set<string>()
+let journalActs = { edits: 0, commands: 0, agents: 0 }
+let turnPrompt = ''
+let transcriptPath = ''
+let officeProjects: OfficeProject[] = []
+let selfProject = { name: '', dir: '', account: '' }
+let selfBase = '' // this project's folder, normalized as journal entries are (placeOfDir), once known
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
+const COMMAND_TOOLS = new Set(['Bash', 'PowerShell', 'Monitor'])
+
+// journal.ts may not be handed `$` (a hooks module follows it only within this file): it gets these functions
+function hostOf($: EngineInterface): Host {
+  return {
+    run: (argv, init) => $.process.run(argv, init),
+    stat: (path, options) => $.fs.stat(path, options),
+    read: path => $.fs.read(path),
+    write: (path, text) => $.fs.write(path, text),
+  }
+}
+
+// a tool call of any loop: its folder (absolute, '' when it names none) and what kind of work it is
+function journalCall(tool: string, dir: string) {
+  if (!journalOn) return
+  if (dir && journalTouched.size < 64) journalTouched.add(dir)
+  if (EDIT_TOOLS.has(tool)) journalActs.edits++
+  else if (COMMAND_TOOLS.has(tool)) journalActs.commands++
+}
+
+// a main turn ended: its entry goes to the journal when it did or said something (journal.ts entryOf)
+async function journalTurn($: EngineInterface, turnId: string, answer: string) {
+  const touched = [...journalTouched]
+  const acts = journalActs
+  const since = journalSince
+  journalTouched = new Set()
+  journalActs = { edits: 0, commands: 0, agents: 0 }
+  journalSince = Date.now()
+  const host = hostOf($)
+  const entry = await entryOf(
+    host,
+    {
+      session: sessionId,
+      turnId,
+      project: { name: selfProject.name, dir: selfProject.dir },
+      account: selfProject.account,
+      prompt: turnPrompt,
+      answer,
+      touched,
+      sinceMs: since,
+      acts,
+      transcript: transcriptPath,
+      projects: officeProjects,
+    },
+    Date.now(),
+  )
+  if (entry) await appendEntry(host, rootDir, entry, isWindows)
+}
+
+// the journal at session start: this session's project (the office directory's current one, else its folder), the
+// transcript's likely path until a classic hook names it, and a fresh session's cursor a day back
+async function startJournal($: EngineInterface, home: string) {
+  journalOn = (await $.env.get('AGENT_OFFICE_JOURNAL')) !== '0'
+  if (!journalOn) return
+  journalSince = Date.now()
+  const directoryFile = await $.env.get('AGENT_OFFICE_DIRECTORY')
+  officeProjects = directoryFile ? directoryProjects(await $.fs.read(directoryFile).catch(() => '')) : []
+  const current = officeProjects.find(p => p.current)
+  selfProject = { name: current?.name ?? project, dir: current?.dir ?? sessionRoot, account: current?.account ?? '' }
+  // Claude Code keeps the transcript in <config>/projects/<the folder, every other character a '-'>/<session>.jsonl
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || (home ? `${home}/.claude` : '')
+  const slug = sessionRoot.replace(/[^a-zA-Z0-9]/g, '-')
+  if (!transcriptPath && config && slug.length <= 200) transcriptPath = `${config}/projects/${slug}/${sessionId}.jsonl`
+  if ((await read($, journalAtom)).cursor === 0) await update($, journalAtom, () => ({ cursor: Date.now() - LOOKBACK_MS, seen: [] }))
+}
+
+// a classic hook's envelope names the transcript
+function noteTranscript(e: { transcript_path?: unknown }) {
+  if (typeof e.transcript_path === 'string' && e.transcript_path) transcriptPath = e.transcript_path
+}
+
+// news for a prompt: other sessions' journal entries since this session last looked that concern its project
+async function journalNews($: EngineInterface): Promise<string> {
+  const file = `${rootDir}/${JOURNAL_FILE}`
+  const state = await read($, journalAtom)
+  const stat = await $.fs.stat(file).catch(() => undefined)
+  if (!stat || stat.mtimeMs <= state.cursor) return ''
+  if (!selfBase) selfBase = (await placeOfDir(hostOf($), selfProject.dir)).path
+  const now = Date.now()
+  const found = selectNews(parseJournal(await $.fs.read(file)), state, { session: sessionId, name: selfProject.name, base: selfBase })
+  await update($, journalAtom, () => found.state)
+  return newsText(found.news, file, now)
+}
 
 async function publish($: EngineInterface, endedAt?: number) {
   if (!stateFile) return
@@ -824,12 +927,12 @@ async function openViewer($: EngineInterface, node: string, splitter: Splitter):
   }
 }
 
-// ~/.claude/agent-office/settings.json: { language: "tr" | "en" | "auto", forgetMinutes }; anything missing
+// <data dir>/settings.json (~/.claude/agent-office): { language: "tr" | "en" | "auto", forgetMinutes }; anything missing
 // or invalid keeps the default (same rules as the viewer's readSettings)
-async function readSettings($: EngineInterface, home: string): Promise<{ language?: 'tr' | 'en'; forgetMinutes: number }> {
+async function readSettings($: EngineInterface, root: string): Promise<{ language?: 'tr' | 'en'; forgetMinutes: number }> {
   let raw: unknown
   try {
-    raw = JSON.parse(await $.fs.read(`${home}/.claude/agent-office/settings.json`))
+    raw = JSON.parse(await $.fs.read(`${root}/settings.json`))
   } catch {
     raw = undefined
   }
@@ -992,7 +1095,10 @@ export const register: Register = on => {
     isWindows = (await $.env.get('OS')) === 'Windows_NT'
     const home = (isWindows ? (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) : await $.env.get('HOME')) ?? ''
     homeDir = home
-    const settings = await readSettings($, home)
+    // the office's data folder; AGENT_OFFICE_DATA_DIR moves it (tests: the app and the viewer read the default)
+    const root = (await $.env.get('AGENT_OFFICE_DATA_DIR')) || `${home}/.claude/agent-office`
+    rootDir = root
+    const settings = await readSettings($, root)
     forgetMs = settings.forgetMinutes * 60_000
     const locale = (await $.env.get('LC_ALL')) || (await $.env.get('LC_MESSAGES')) || (await $.env.get('LANG')) || ''
     t = (settings.language ?? (locale.toLowerCase().startsWith('tr') ? 'tr' : 'en')) === 'tr' ? STRINGS.tr : STRINGS.en
@@ -1012,8 +1118,6 @@ export const register: Register = on => {
     sessionRoot = await $.session.root()
     project = sessionRoot.split(/[\\/]/).pop() ?? ''
     sessionCwd = (await $.session.cwd().catch(() => '')) || sessionRoot
-    const root = `${home}/.claude/agent-office`
-    rootDir = root
     sessionId = id
     stateFile = `${root}/sessions/${id}.json`
     viewerFile = `${$.plugin.root}/viewer/office.mjs`
@@ -1027,6 +1131,7 @@ export const register: Register = on => {
     inboxSeen = await read($, inboxAtom)
     if (inboxSeen === 0) inboxSeen = await update($, inboxAtom, () => Date.now())
     await publish($)
+    await startJournal($, home).catch(() => undefined)
     if (home) await cleanUp($, root, id).catch(() => undefined)
     startTicker($)
 
@@ -1044,7 +1149,8 @@ export const register: Register = on => {
     }
     const directoryFile = (await $.env.get('AGENT_OFFICE_APP')) ? await $.env.get('AGENT_OFFICE_DIRECTORY') : undefined
     if (directoryFile && !sections.some(section => section.id === PROJECTS_SECTION_ID)) {
-      const text = directoryText(await $.fs.read(directoryFile).catch(() => ''))
+      const journal = rootDir && (await $.env.get('AGENT_OFFICE_JOURNAL')) !== '0' ? `${rootDir}/${JOURNAL_FILE}` : ''
+      const text = directoryText(await $.fs.read(directoryFile).catch(() => ''), journal)
       if (text) sections.push({ id: PROJECTS_SECTION_ID, text, scope: 'session' as const })
     }
     return sections.length === result.sections.length ? result : { ...result, sections }
@@ -1098,6 +1204,8 @@ export const register: Register = on => {
       }
       // a subagent started in a folder of its own (cwd): it works there until its tool calls say otherwise
       const cwd = typeof e.cwd === 'string' ? absolutePath(e.cwd, sessionCwd) : ''
+      if (journalOn) journalActs.agents++
+      journalCall('Agent', cwd)
       if (cwd) {
         worker.dir = cwd
         agentCwds.set(worker.id, cwd)
@@ -1109,6 +1217,7 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('tool.call', async ($, e, next) => {
+    journalCall(e.tool, placeOf(e, (e.agentId && agentCwds.get(e.agentId)) || sessionCwd))
     if (e.agentId && workers.some(w => w.id === e.agentId)) {
       const call = { at: Date.now(), tool: e.tool, detail: detailOf(e) }
       const dir = placeOf(e, agentCwds.get(e.agentId) ?? sessionCwd)
@@ -1160,12 +1269,14 @@ export const register: Register = on => {
   // background tasks end with a notification the engine submits as a prompt (origin task-notification)
   // when the session is idle; one that arrives mid-turn is absorbed as an attachment row instead, so
   // session.append (same origin) sees both. Either ends the shell it names, the first one wins.
+  // the office journal's news ride a prompt as context (not the system prompt: the cached prompt stays as it is)
   on('prompt.submit', async ($, e, next) => {
     finishPrompt(e.origin?.kind, e.text)
     if (e.origin?.kind === 'task-notification') await endNotified($, e.text)
     else await clearWaiting($)
+    const news = journalOn && isInApp && e.origin?.kind !== 'task-notification' ? await journalNews($).catch(() => '') : ''
 
-    return next(e)
+    return next(news ? { ...e, context: [...(e.context ?? []), news] } : e)
   }).catch(($, e, next) => next(e))
 
   on('session.append', async ($, e, next) => {
@@ -1180,6 +1291,7 @@ export const register: Register = on => {
   // backstop: when the main loop stops, Stop lists the background work still in flight; a running
   // shell missing from it has ended without a notification we saw (exit code unknown)
   on('classic.Stop', async ($, e, next) => {
+    noteTranscript(e)
     const inFlight = e.background_tasks
     if (Array.isArray(inFlight)) {
       const ids = new Set(inFlight.map(task => task.id))
@@ -1190,8 +1302,16 @@ export const register: Register = on => {
     return guardStop($, e as StopInput, await next(e), true)
   }).catch(async ($, e, next) => guardStop($, e as StopInput, await next(e), false))
 
+  // the office journal names the transcript in each entry: the classic envelope has its path
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    noteTranscript(e)
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   // a permission dialog opens (main session or a subagent): the app tells the person (contract v2.6)
   on('classic.PermissionRequest', async ($, e, next) => {
+    noteTranscript(e)
     const tool = typeof e.tool_name === 'string' ? e.tool_name : ''
     await setStats($, s => ({ ...s, waiting: { kind: 'permission', tool, since: Date.now() } }))
 
@@ -1201,6 +1321,7 @@ export const register: Register = on => {
   // a loop's folder moved (a Bash `cd` that stays, /cd, a worktree): the main loop's relative paths and the boss's
   // place follow it; a subagent's too
   on('classic.CwdChanged', async ($, e, next) => {
+    noteTranscript(e)
     const dir = typeof e.new_cwd === 'string' ? absolutePath(e.new_cwd, '') : ''
     if (dir && e.agent_id === undefined) {
       sessionCwd = dir
@@ -1215,6 +1336,7 @@ export const register: Register = on => {
 
   on('turn.start', async ($, e, next) => {
     finishTurnStart()
+    turnPrompt = e.text
     ownSteps = 0
     isNudged = false
     // a new turn starts where the main loop runs, not where the last one ended
@@ -1228,8 +1350,11 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     finishTurnComplete(e)
     // the main turn is over: nothing is left waiting on a dialog
-    if (e.agentId === undefined) await setStats($, ({ waiting: _, bossDir: __, ...s }) => ({ ...s, isBossBusy: false }))
-    else {
+    if (e.agentId === undefined) {
+      await setStats($, ({ waiting: _, bossDir: __, ...s }) => ({ ...s, isBossBusy: false }))
+      // the office journal: what this turn did, for the other sessions (never fails the turn)
+      if (journalOn && rootDir) await journalTurn($, e.turnId, typeof e.answer === 'string' ? e.answer : '').catch(() => undefined)
+    } else {
       // the subagent's report (contract v2.2 `result`); "" when it gave none
       const answer = typeof e.answer === 'string' ? e.answer.trim() : ''
       if (answer && workers.some(w => w.id === e.agentId && w.result === undefined))
