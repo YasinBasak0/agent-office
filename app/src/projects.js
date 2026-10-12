@@ -143,6 +143,19 @@ function sessionAliases(projects) {
   return out;
 }
 
+/**
+  * Where the projects live (contract v3.5): { dir, name } for every project folder and every worktree tab's folder,
+  * so readOffice can place a path some session works in under the project that holds it.
+ */
+function projectPlaces(projects) {
+  const out = [];
+  for (const p of projects) {
+    out.push({ dir: p.dir, name: p.name });
+    for (const t of tabsOf(p)) if (t.dir && t.dir !== p.dir) out.push({ dir: t.dir, name: p.name });
+  }
+  return out;
+}
+
 const findProject = (state, id) => state.projects.find((p) => p.id === id) || null;
 const findByDir = (state, dir) => state.projects.find((p) => p.dir === dir) || null;
 
@@ -182,7 +195,7 @@ const historyDir = (projectDir, configDir, home) =>
 module.exports = {
   historyDir,
   MAIN_TAB, normalizeTabs, tabsOf, tabPtyId, parsePtyId, ptyIdsOf, tabDir, resolvePty,
-  nextTabNumber, worktreeRoot, worktreeBranch, worktreeDir, addTab, removeTab, sessionAliases,
+  nextTabNumber, worktreeRoot, worktreeBranch, worktreeDir, addTab, removeTab, sessionAliases, projectPlaces,
   newId, projectName, normalizeState, findProject, findByDir,
   addProject, removeProject, setActive, setProjectAccount,
 };

@@ -597,6 +597,7 @@ body.no-office #terminal { flex: 1 1 auto; max-height: none; border-top: 2px sol
   white-space: nowrap;
   min-width: 0;
 }
+.ap-from { font-size: 10px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ap-close {
   margin-left: auto;
   background: none;

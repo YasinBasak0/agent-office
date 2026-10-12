@@ -998,7 +998,11 @@ function projectsOf(data) {
   if (Array.isArray(data.projects))
     for (const p of data.projects)
       if (p && p.name != null && p.name !== '')
-        add({ name: String(p.name), delivered: Number(p.delivered) || 0, working: Number(p.working) || 0, isBossBusy: Boolean(p.isBossBusy), waiting: p.waiting ?? null })
+        add({
+          name: String(p.name), delivered: Number(p.delivered) || 0, working: Number(p.working) || 0, isBossBusy: Boolean(p.isBossBusy), waiting: p.waiting ?? null,
+          // the boss works in this project's folder from another project's session (app contract v3.5)
+          isBossHere: Boolean(p.isBossBusy || p.remote?.isBossBusy),
+        })
   for (const w of data.workers) if (w?.project) add({ name: String(w.project), delivered: 0, working: 0, isBossBusy: false })
   return out
 }
@@ -1028,7 +1032,7 @@ function projectBoard(x, y, maxW, projs, short, data, now) {
     text(short.get(p.name), cx, y + 3, projInk(p.name))
     const count = String(p.delivered)
     text(count, cx, y + 9, C.dark)
-    if (p.isBossBusy) rect(cx + textWidth(count) + 2, y + 10, 2, 2, blink ? projColor(p.name) : projInk(p.name))
+    if (p.isBossHere ?? p.isBossBusy) rect(cx + textWidth(count) + 2, y + 10, 2, 2, blink ? projColor(p.name) : projInk(p.name))
   }
   if (more > 0) {
     const cx = x + headW + n * colW + 2
@@ -1626,7 +1630,7 @@ function renderFrame(now, data, focus = '', selected = null) {
   const bossLines = [[T.boss, C.accent], status]
   if (isMulti && (isAsking || data.isBossBusy || isAgents)) {
     // projects waiting for approval, working or with agents working: at most two names, the rest +n
-    const busy = projs.filter(p => (isAsking ? p.waiting : data.isBossBusy ? p.isBossBusy : hasAgents(p)))
+    const busy = projs.filter(p => (isAsking ? p.waiting : data.isBossBusy ? p.isBossHere ?? p.isBossBusy : hasAgents(p)))
     busy.slice(0, 2).forEach(p => bossLines.push([short.get(p.name), projColor(p.name)]))
     if (busy.length > 2) bossLines.push([`+${busy.length - 2}`, C.dim])
   }

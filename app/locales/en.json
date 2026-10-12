@@ -40,6 +40,7 @@
     "idle": "idle",
     "working": "{n} working",
     "delivered": "{n} delivered",
+    "workedFrom": "worked on from {from}",
     "defaultLabel": "Default",
     "defaultNote": "The Default account is your normal Claude Code login on this Mac; you cannot log out of it here.",
     "authDot": {
@@ -208,6 +209,8 @@
     "noWorkers": "No agents working right now.",
     "agentTitle": "Agent",
     "project": "Project",
+    "from": "from {from}",
+    "fromTitle": "Worked on from the {from} session: approvals and notifications come from there",
     "close": "Close (Esc)",
     "toTerminal": "Terminal ›",
     "toTerminalTitle": "Go to this project's terminal",

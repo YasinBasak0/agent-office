@@ -114,10 +114,50 @@ function aliasOf(aliases) {
   return name => map.get(slugOf(name)) ?? name
 }
 
-function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null) {
+// ---------- work across projects (contract v3.5) ----------
+// A path in a comparable form: '/' between parts, no doubled or trailing '/', '.' and '..' resolved; Windows paths
+// (drive letter or UNC) lower-cased, as Windows compares them. '' when it is not absolute (nothing to place).
+function normPath(path) {
+  const raw = String(path ?? '').trim().replace(/\\/g, '/')
+  const isWin = /^[a-z]:(\/|$)/i.test(raw) || raw.startsWith('//')
+  if (!isWin && !raw.startsWith('/')) return ''
+  const parts = []
+  // a drive letter is the root: '..' never climbs above it
+  const floor = /^[a-z]:/i.test(raw) ? 1 : 0
+  for (const part of raw.split('/')) {
+    if (!part || part === '.') continue
+    if (part !== '..') parts.push(part)
+    else if (parts.length > floor) parts.pop()
+  }
+  const out = (raw.startsWith('//') ? '//' : isWin ? '' : '/') + parts.join('/')
+  return isWin ? out.toLowerCase() : out
+}
+
+// places: [{ dir, name }] (projects.js projectPlaces: every project folder and its worktree tabs' folders)
+// → path => the name of the project whose folder holds the path, the deepest one when folders nest;
+// undefined for a path outside every folder or not absolute
+function placeFinder(places) {
+  const list = (Array.isArray(places) ? places : [])
+    .map(p => ({ dir: normPath(p?.dir), name: String(p?.name ?? '') }))
+    .filter(p => p.dir && p.name)
+    .sort((a, b) => b.dir.length - a.dir.length)
+  return path => {
+    const at = normPath(path)
+    if (!at) return undefined
+    const hit = list.find(p => at === p.dir || at.startsWith(p.dir.endsWith('/') ? p.dir : `${p.dir}/`))
+    return hit?.name
+  }
+}
+
+// places (contract v3.5): where the projects live; a worker whose `dir` (or a busy boss whose stats.bossDir) lies in
+// another project's folder is shown there: the worker gets that project and `from` (its session's project), and
+// that project's entry gets `remote: { working, isBossBusy, from }`. Counts, busy state and approvals stay with
+// the session's own project, so totals do not double and notifications keep coming from the prompt that answers them.
+function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null, places = null) {
   const list = projects == null ? null : (Array.isArray(projects) ? projects : [projects]).filter(p => p != null && p !== '')
   const only = list ? new Set(list.map(slugOf)) : null
   const projectOf = aliasOf(aliases)
+  const placeOf = placeFinder(places)
   const data = { workers: [], shells: [], delivered: 0, isBossBusy: false, isBossAsking: false, projects: [], project: '', sessionId: '' }
   const forget = forgetMs(root)
 
@@ -185,15 +225,31 @@ function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null
     }
     const p = entry(s.project)
     const project = p.name || String(s.project ?? '')
+    // another project's entry when `dir` lies in its folder (null: this project's own, outside every project or filtered out)
+    const awayOf = dir => {
+      const there = typeof dir === 'string' ? placeOf(dir) : undefined
+      return there === undefined || slugOf(there) === key || (only && !only.has(slugOf(there))) ? null : entry(there)
+    }
+    // that project is worked on from this one right now
+    const visit = q => {
+      q.remote ??= { working: 0, isBossBusy: false, from: [] }
+      if (!q.remote.from.includes(project)) q.remote.from.push(project)
+      return q.remote
+    }
     for (const sh of shells) data.shells.push({ ...sh, project })
     for (const w of workers) {
       if (!w || typeof w !== 'object') continue
-      data.workers.push({ ...w, project })
-      if (w.doneAt == null) p.working++
+      const away = awayOf(w.dir)
+      data.workers.push(away ? { ...w, project: away.name, from: project } : { ...w, project })
+      if (w.doneAt != null) continue
+      p.working++
+      if (away) visit(away).working++
     }
     const busy = Boolean(s.stats?.isBossBusy)
     p.isBossBusy ||= busy
     data.isBossBusy ||= busy
+    const bossAway = busy ? awayOf(s.stats.bossDir) : null
+    if (bossAway) visit(bossAway).isBossBusy = true
     // open permission prompt (contract v2.6): the oldest one in the project
     const w = s.stats?.waiting
     if (w && w.kind === 'permission' && Number.isFinite(w.since) && (!p.waiting || w.since < p.waiting.since)) {
@@ -278,4 +334,4 @@ function readToday(projects, now = Date.now(), root = rootDir(), aliases = null)
   return out
 }
 
-module.exports = { readOffice, readToday, readSession, readThemes, themesError, dayKey, forgetMs, LIVE_MS, FORMAT }
+module.exports = { readOffice, readToday, normPath, placeFinder, readSession, readThemes, themesError, dayKey, forgetMs, LIVE_MS, FORMAT }

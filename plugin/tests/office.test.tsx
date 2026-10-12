@@ -20,6 +20,7 @@ function setUp(
   on('env.get', (_$, e) => ({ value: env[e.name] }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.root', () => ({ value: root }))
+  on('session.cwd', () => ({ value: root }))
   const commands: string[] = []
   const registered: { name: string; description?: string; argumentHint?: string }[] = []
   on('command.register', (_$, e) => {
@@ -476,6 +477,7 @@ type State = {
     history?: { at: number; tool: string; detail: string }[]
     toolCount?: number
     result?: string
+    dir?: string
   }[]
   stats: OfficeStats
   format?: number
@@ -1043,6 +1045,8 @@ test('inside the app with manager mode on, the manager section is appended to th
   expect(manager?.text).toContain('You are the manager in Agent Office')
   expect(manager?.text).toContain("Don't end a turn with a list of remaining work")
   expect(manager?.text).toContain('take precedence over this')
+  // work across projects (app contract v3.5): another project's job is done in its folder, so it shows up there
+  expect(manager?.text).toContain("work in that project's folder with absolute paths")
   // the text is the same on every request (prompt cache)
   const again = await $.prompt.compose(mainLoop)
   expect(again.sections[1]?.text).toBe(manager?.text)
@@ -1068,4 +1072,86 @@ test('a loop that cannot start agents, or a teammate, gets no manager section', 
   setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' })
   expect((await $.prompt.compose({ ...composing, tools: ['Bash', 'Read'], traits: [] })).sections.map(s => s.id)).toEqual(['intro'])
   expect((await $.prompt.compose({ ...composing, tools: ['Agent'], traits: ['teammate'] })).sections.map(s => s.id)).toEqual(['intro'])
+})
+
+// work across projects (app contract v3.5): the folder each loop works in
+
+test("a worker's dir follows its tool calls: file folders, Glob/Grep paths, a leading cd; calls naming no folder keep it", async ($, on) => {
+  const { writes, clock } = setUpDetails(on)
+
+  await $.session.start(start)
+  await spawnAgent($, 'Fix the shop', 'general-purpose')
+  const dirAfter = async (tool: string, args: Record<string, unknown>) => {
+    await callTool($, 'agent-1', tool, args)
+    await clock.advance(PUBLISH_MS)
+    return stateOf(writes).workers[0]?.dir
+  }
+
+  expect(stateOf(writes).workers[0]?.dir).toBeUndefined()
+  expect(await dirAfter('Read', { file_path: '/work/shop/src/cart.ts' })).toBe('/work/shop/src')
+  expect(await dirAfter('Bash', { command: 'npm test' })).toBe('/work/shop/src')
+  expect(await dirAfter('WebFetch', { url: 'https://example.com' })).toBe('/work/shop/src')
+  expect(await dirAfter('Edit', { file_path: 'lib/a.ts', old_string: 'a', new_string: 'b' })).toBe('/work/my-app/lib')
+  expect(await dirAfter('Bash', { command: 'cd "/work/blog" && npm run build' })).toBe('/work/blog')
+  expect(await dirAfter('Bash', { command: 'git -C /work/shop status' })).toBe('/work/shop')
+  expect(await dirAfter('Grep', { pattern: 'TODO', path: '/work/blog/posts' })).toBe('/work/blog/posts')
+  expect(await dirAfter('Glob', { pattern: '*.md' })).toBe('/work/my-app')
+  expect(await dirAfter('NotebookEdit', { notebook_path: 'C:\\work\\nb\\a.ipynb', new_source: 'x' })).toBe('C:\\work\\nb')
+  expect(await dirAfter('Write', { file_path: '~/notes/todo.md', content: 'x' })).toBe('/home/tester/notes')
+})
+
+test("a subagent started with a cwd works there first, and its relative paths count from it", async ($, on) => {
+  const { writes, clock } = setUpDetails(on)
+
+  await $.session.start(start)
+  await $.agent.spawn({ prompt: 'go', description: 'Blog', subagentType: 'Explore', cwd: '/work/blog' } as Parameters<typeof $.agent.spawn>[0])
+  expect(stateOf(writes).workers[0]?.dir).toBe('/work/blog')
+  await callTool($, 'agent-1', 'Read', { file_path: 'posts/a.md' })
+  await clock.advance(PUBLISH_MS)
+  expect(stateOf(writes).workers[0]?.dir).toBe('/work/blog/posts')
+})
+
+test("the boss's folder this turn: main-loop calls set stats.bossDir, its own folder writes nothing, a new turn forgets it", async ($, on) => {
+  const { writes, clock } = setUpDetails(on)
+
+  await $.session.start(start)
+  await $.turn.start({ text: 'fix the shop', turnId: 'turn-1' })
+  const before = writes.length
+  await $.tool.call({ tool: 'Read', file_path: '/work/my-app/README.md' } as never)
+  await clock.advance(PUBLISH_MS)
+  expect(writes.length).toBe(before)
+  expect(stateOf(writes).stats.bossDir).toBeUndefined()
+
+  await $.tool.call({ tool: 'Edit', file_path: '/work/shop/a.ts', old_string: 'a', new_string: 'b' } as never)
+  await clock.advance(PUBLISH_MS)
+  expect(stateOf(writes).stats.bossDir).toBe('/work/shop')
+  expect(stateOf(writes).stats.isBossBusy).toBe(true)
+
+  await completeTurn($, 'answer')
+  expect(stateOf(writes).stats.bossDir).toBeUndefined()
+  await $.turn.start({ text: 'again', turnId: 'turn-2' })
+  expect(stateOf(writes).stats.bossDir).toBeUndefined()
+})
+
+test("CwdChanged moves the main loop (bossDir, relative paths) and a subagent's dir", async ($, on) => {
+  const { writes, clock } = setUpDetails(on)
+  on('classic.CwdChanged', () => ({}) as never)
+
+  await $.session.start(start)
+  await spawnAgent($, 'Scan', 'Explore')
+  await $.turn.start({ text: 'go', turnId: 'turn-1' })
+  await $.classic.CwdChanged({ old_cwd: '/work/my-app', new_cwd: '/work/shop' })
+  await clock.advance(PUBLISH_MS)
+  expect(stateOf(writes).stats.bossDir).toBe('/work/shop')
+  await $.classic.CwdChanged({ old_cwd: '/work/my-app', new_cwd: '/work/blog', agent_id: 'agent-1' })
+  await clock.advance(PUBLISH_MS)
+  expect(stateOf(writes).workers[0]?.dir).toBe('/work/blog')
+
+  // the next turn starts where the main loop now runs
+  await completeTurn($, 'answer')
+  await $.turn.start({ text: 'again', turnId: 'turn-2' })
+  expect(stateOf(writes).stats.bossDir).toBe('/work/shop')
+  await $.tool.call({ tool: 'Read', file_path: 'a.ts' } as never)
+  await clock.advance(PUBLISH_MS)
+  expect(stateOf(writes).stats.bossDir).toBe('/work/shop')
 })
