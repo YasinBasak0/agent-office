@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld('agentOffice', {
     wake: (id) => ipcRenderer.send('pty:wake', id),     // the tab is shown: a sleeping claude starts
     onSleep: listen('pty:sleep'),                       // an idle background claude was ended to save memory
   },
+  work: {
+    resumeUnfinished: () => ipcRenderer.invoke('work:resumeUnfinished'), // v3.8: { resumed: [{ id, name }], skipped: [{ id, name }] }
+    onResumed: listen('work:resumed'),                  // the same result after the menu item
+  },
   clipboard: {
     hasImage: () => ipcRenderer.invoke('clipboard:hasImage'),
     read: () => ipcRenderer.invoke('clipboard:read'),   // { hasImage, text, files }

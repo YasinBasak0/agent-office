@@ -98,12 +98,18 @@ export function mountSidebar(el, on) {
   const projHead = h('span', {});
   const acctHead = h('span', {});
   const addProjectBtn = h('button', { class: 'sb-add', id: 'sb-add-project', onclick: () => on.addProject() });
+  // "Resume unfinished work" (v3.8): main checks every tab; the result shows under the button for a while
+  const resumeAllBtn = h('button', { class: 'sb-add sb-resume-all', id: 'sb-resume-all', onclick: () => on.resumeUnfinished?.() });
+  const resumeNote = h('div', { class: 'sb-note', id: 'sb-resume-note', hidden: true });
+  let noteTimer = null;
   const projList = h('ul', { class: 'sb-list', id: 'sb-projects' });
   const acctList = h('ul', { class: 'sb-list', id: 'sb-accounts' });
   el.append(
     h('div', { class: 'sb-head' }, projHead),
     projList,
     addProjectBtn,
+    resumeAllBtn,
+    resumeNote,
     h('div', { class: 'sb-accounts' },
       h('div', { class: 'sb-head' }, acctHead),
       acctList,
@@ -123,6 +129,8 @@ export function mountSidebar(el, on) {
     acctHead.textContent = t('sidebar.accounts');
     addProjectBtn.textContent = t('sidebar.addProject');
     addProjectBtn.title = t('sidebar.addProjectTitle', { mod: modLabel });
+    resumeAllBtn.textContent = t('sidebar.resumeUnfinished');
+    resumeAllBtn.title = t('sidebar.resumeUnfinishedTitle');
     botLabel.textContent = t('sidebar.botColor');
     botInput.title = t('sidebar.botColorTitle');
     botReset.title = t('sidebar.botColorReset');
@@ -383,6 +391,25 @@ export function mountSidebar(el, on) {
     setResume(on) { resumeBox.checked = on !== false; syncResumeWork(); },
     /** Setting to carry on interrupted work at launch (greyed while "continue last session" is off). */
     setResumeWork(on) { resumeWorkBox.checked = on !== false; syncResumeWork(); },
+    /** The button is working (main checks the transcripts): no second click meanwhile. */
+    setResuming(on) { resumeAllBtn.disabled = Boolean(on); },
+    /**
+     * Result of "Resume unfinished work": { resumed: [{ id, name }], skipped: [{ id, name }] } (main's
+     * resumeUnfinished), shown under the button for a while; null hides it.
+     */
+    showResumed(r) {
+      clearTimeout(noteTimer);
+      if (!r) { resumeNote.hidden = true; return; }
+      const names = (list) => list.map((x) => x.name).join(', ');
+      const resumed = Array.isArray(r.resumed) ? r.resumed : [];
+      const skipped = Array.isArray(r.skipped) ? r.skipped : [];
+      const lines = [resumed.length ? t('sidebar.resumeUnfinishedDone', { n: resumed.length, names: names(resumed) }) : t('sidebar.resumeUnfinishedNone')];
+      if (skipped.length) lines.push(t('sidebar.resumeUnfinishedSkipped', { names: names(skipped) }));
+      resumeNote.textContent = lines.join('\n');
+      resumeNote.classList.toggle('is-none', !resumed.length);
+      resumeNote.hidden = false;
+      noteTimer = setTimeout(() => { resumeNote.hidden = true; }, 12000);
+    },
     /** Manager mode setting (the boss delegates to agents). */
     setManager(on) { managerBox.checked = on !== false; },
     /** Minutes after which an idle background session sleeps (0 = off). */

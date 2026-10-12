@@ -130,6 +130,9 @@ let resumeSetting = true;
 let resumeWorkSetting = true;
 let managerSetting = true;
 let sleepSetting = 30;
+// "Resume unfinished work" (v3.8): the first click finds two projects with unfinished work (?unfinished=0: none);
+// a stopped one starts, as main starts a lazy tab with --resume
+let mockUnfinished = q.get('unfinished') !== '0';
 const prefsNow = () => ({ resume: resumeSetting, resumeWork: resumeWorkSetting, theme: themeSetting, manager: managerSetting, sleepMinutes: sleepSetting });
 
 window.agentOffice = {
@@ -225,6 +228,15 @@ window.agentOffice = {
     restart: (id) => boot(id),
     wake: () => {},
     onSleep: () => {},
+  },
+  work: {
+    resumeUnfinished: async () => {
+      const hit = mockUnfinished ? projects.slice(1, 3) : [];
+      mockUnfinished = false;
+      for (const p of hit) if (!running.get(p.id)) boot(p.id);
+      return { resumed: hit.map((p) => ({ id: p.id, name: p.name })), skipped: [] };
+    },
+    onResumed: () => () => {},
   },
   prefs: {
     get: async () => prefsNow(),

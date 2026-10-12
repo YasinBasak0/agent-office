@@ -1607,3 +1607,108 @@ test('yarım iş: Windows — claude.exe argümanları olduğu gibi, claude.cmd 
   // inside the quotes cmd.exe leaves (), &, | alone; the prompt has no " % ! ^ that it would still act on
   assert.ok(!/["%!^]/.test(RESUME_PROMPT));
 });
+
+// --- "Resume unfinished work" (contract v3.8): the last turn of a transcript, and what each tab gets
+const jl = (...entries) => entries.map((e) => (typeof e === 'string' ? e : JSON.stringify(e))).join('\n') + '\n';
+const uPrompt = (text) => ({ type: 'user', isSidechain: false, message: { role: 'user', content: text } });
+const aMsg = (stop, content = [{ type: 'text', text: 'ok' }]) => ({ type: 'assistant', isSidechain: false, message: { role: 'assistant', stop_reason: stop, content } });
+const toolResult = { type: 'user', isSidechain: false, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'done' }] } };
+const noise = [
+  { type: 'system', subtype: 'turn_duration', isSidechain: false, isMeta: false },
+  { type: 'last-prompt' }, { type: 'cost-state' }, { type: 'attachment', isSidechain: false }, { type: 'summary', summary: 'x' },
+  { type: 'file-history-snapshot' }, { type: 'permission-mode' },
+  { type: 'system', subtype: 'local_command', content: '<local-command-stdout>hi</local-command-stdout>' },
+];
+
+test('yarım iş butonu: transkriptin son turu', () => {
+  const { transcriptState } = require('../src/resume.js');
+  // end_turn: done, whatever bookkeeping follows it
+  assert.equal(transcriptState(jl(uPrompt('fix it'), aMsg('tool_use', [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }]), toolResult, aMsg('end_turn'), ...noise)), 'finished');
+  // a tool call waiting for its result
+  assert.equal(transcriptState(jl(uPrompt('fix it'), aMsg('tool_use', [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }]), ...noise)), 'unfinished');
+  // a tool result the model never answered
+  assert.equal(transcriptState(jl(uPrompt('fix it'), aMsg('tool_use'), toolResult, { type: 'attachment' })), 'unfinished');
+  // a prompt the model never answered (string or blocks; an image alone is a prompt too)
+  assert.equal(transcriptState(jl(aMsg('end_turn'), uPrompt('next step'), ...noise)), 'unfinished');
+  assert.equal(transcriptState(jl(aMsg('end_turn'), uPrompt([{ type: 'text', text: 'next' }]))), 'unfinished');
+  assert.equal(transcriptState(jl(aMsg('end_turn'), uPrompt([{ type: 'image', source: {} }]))), 'unfinished');
+  // an assistant message cut off while streaming (no stop_reason)
+  assert.equal(transcriptState(jl(uPrompt('go'), aMsg(null))), 'unfinished');
+  // stop_sequence (an API error message) ends the turn
+  assert.equal(transcriptState(jl(uPrompt('go'), aMsg('stop_sequence'))), 'finished');
+  // the user interrupted on purpose: not unfinished (both forms Claude Code writes)
+  assert.equal(transcriptState(jl(uPrompt('go'), aMsg('tool_use'), toolResult, uPrompt([{ type: 'text', text: '[Request interrupted by user for tool use]' }]))), 'finished');
+  assert.equal(transcriptState(jl(uPrompt('go'), aMsg(null), uPrompt('[Request interrupted by user]'), ...noise)), 'finished');
+  // a background task's notification the model never saw: unfinished
+  assert.equal(transcriptState(jl(aMsg('end_turn'), uPrompt('<task-notification> <task-id>a1</task-id> done </task-notification>'))), 'unfinished');
+});
+
+test('yarım iş butonu: yan zincir, meta, özet ve yerel komut satırları sayılmaz', () => {
+  const { transcriptState } = require('../src/resume.js');
+  const side = { ...aMsg('tool_use'), isSidechain: true };
+  const sideUser = { ...toolResult, isSidechain: true };
+  assert.equal(transcriptState(jl(uPrompt('go'), aMsg('end_turn'), side, sideUser)), 'finished');
+  assert.equal(transcriptState(jl(uPrompt('go'), aMsg('end_turn'), { ...uPrompt('Caveat: local'), isMeta: true })), 'finished');
+  assert.equal(transcriptState(jl(aMsg('end_turn'), uPrompt('<command-name>/office</command-name>'), uPrompt('<local-command-stdout>ok</local-command-stdout>'))), 'finished');
+  assert.equal(transcriptState(jl(aMsg('end_turn'), { ...uPrompt('This session is being continued…'), isCompactSummary: true })), 'finished');
+  // a cut first line (tail read) and broken lines are skipped; nothing that counts → none
+  assert.equal(transcriptState('"stop_reason":"end_turn"}}\n' + jl(aMsg('tool_use'))), 'unfinished');
+  assert.equal(transcriptState(jl(...noise, side)), 'none');
+  assert.equal(transcriptState(''), 'none');
+});
+
+test('yarım iş butonu: dosyanın yalnız sonu okunur; uzun son satırda daha fazlası', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { transcriptFileState } = require('../src/resume.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-unfinished-'));
+  try {
+    const f = path.join(dir, 's.jsonl');
+    // a long history before the end: only the tail decides
+    fs.writeFileSync(f, jl(...Array.from({ length: 3000 }, (_, i) => (i % 2 ? aMsg('end_turn') : uPrompt('x'.repeat(50)))), uPrompt('last'), aMsg('tool_use')));
+    assert.equal(transcriptFileState(f), 'unfinished');
+    // the last counting line is longer than the first tail step (a big tool result): read on
+    fs.writeFileSync(f, jl(uPrompt('go'), aMsg('end_turn'), { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'y'.repeat(200 * 1024) }] } }, { type: 'last-prompt' }));
+    assert.equal(transcriptFileState(f), 'unfinished');
+    fs.writeFileSync(f, jl(uPrompt('go'), aMsg('end_turn'), { type: 'attachment', big: 'z'.repeat(200 * 1024) }));
+    assert.equal(transcriptFileState(f), 'finished');
+    assert.equal(transcriptFileState(path.join(dir, 'missing.jsonl')), 'none');
+    assert.equal(transcriptFileState(null), 'none');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('yarım iş butonu: hangi sekmeye ne yapılır', () => {
+  const { unfinishedActions } = require('../src/resume.js');
+  const r = unfinishedActions([
+    { id: 'done', running: true, sessionId: 's1', transcript: 'finished', continues: true },
+    { id: 'busy', running: true, busy: true, marked: true, sessionId: 's2', transcript: 'unfinished', continues: true },
+    { id: 'idle', running: true, sessionId: 's3', transcript: 'unfinished', continues: true },
+    { id: 'draft', running: true, draft: true, sessionId: 's4', transcript: 'unfinished', continues: true },
+    { id: 'lazy', running: false, sessionId: 's5', transcript: 'unfinished', continues: true },
+    { id: 'marked', running: false, marked: true, markSid: 's6', sessionId: 'other', transcript: 'finished', continues: true },
+    { id: 'marked-nosid', running: false, marked: true, markSid: '', transcript: 'none', continues: true },
+    { id: 'same-folder-nosid', running: false, marked: true, markSid: '', transcript: 'none', continues: false },
+    { id: 'nosession', running: false, sessionId: '', transcript: 'unfinished', continues: true },
+    { id: 'bad-sid', running: false, sessionId: '--evil', transcript: 'unfinished', continues: true },
+  ]);
+  assert.deepEqual(r.actions, [
+    { id: 'idle', how: 'type', sessionId: 's3' },
+    { id: 'lazy', how: 'start', sessionId: 's5' },
+    { id: 'marked', how: 'start', sessionId: 's6' },
+    { id: 'marked-nosid', how: 'start', sessionId: '' },
+  ]);
+  assert.deepEqual(r.skipped, ['draft']);
+  assert.deepEqual(unfinishedActions([]), { actions: [], skipped: [] });
+});
+
+test('yarım iş butonu: istem tek satır, köşeli yapıştırma içinde; Enter ayrı gönderilir', () => {
+  const { typedPrompt, UNFINISHED_PROMPT, claudeArgs, promptArg } = require('../src/resume.js');
+  const typed = typedPrompt(UNFINISHED_PROMPT);
+  assert.ok(typed.startsWith('\x1b[200~') && typed.endsWith('\x1b[201~'));
+  assert.ok(!/[\r\n]/.test(typed));
+  assert.equal(typedPrompt('a\r\nb\x1b[201~c'), '\x1b[200~a b [201~c\x1b[201~');
+  assert.equal(promptArg(UNFINISHED_PROMPT), UNFINISHED_PROMPT);
+  assert.ok(!/["%!^]/.test(UNFINISHED_PROMPT));
+  assert.deepEqual(claudeArgs(['--x'], ['--resume', 's1'], UNFINISHED_PROMPT), ['--x', '--resume', 's1', UNFINISHED_PROMPT]);
+});

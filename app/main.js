@@ -637,6 +637,70 @@ function wake(id) {
   if (how && !terms.has(id)) startPty(id, Z.wakeOptions(how, state.resume !== false));
 }
 
+// --- "Resume unfinished work" (contract v3.8, src/resume.js): every tab that is marked or whose last conversation
+// ends mid-turn is told to carry on. The conversation looked at is the one the tab would resume: a running tab's own
+// session (its pid file), a sleeping tab's session, else the folder's newest one (what --continue opens; only for
+// tabs that would --continue: the main tab and worktree tabs).
+const ENTER_DELAY_MS = 300; // Enter after the pasted prompt, once Claude Code has taken the paste
+/** The tab's name in the result: the project, plus the tab's branch or number for an extra tab. */
+function tabName(r) {
+  if (!r.tab) return r.project.name;
+  return `${r.project.name} · ${r.tab.worktree ? r.tab.worktree.branch : `#${r.tab.n}`}`;
+}
+function unfinishedTabs() {
+  const home = app.getPath('home');
+  const at = marks();
+  const tabs = [];
+  for (const p of state.projects) {
+    for (const id of P.ptyIdsOf(p)) {
+      const r = P.resolvePty(state, id);
+      if (!r) continue;
+      const { configDir } = A.accountOf(state, p);
+      const t = terms.get(id);
+      const continues = !r.tab || Boolean(r.tab.worktree);
+      let sid = '';
+      let busy = false;
+      if (t) {
+        const claude = readJson(Z.claudePidFile(configDir, home, t.pid));
+        sid = validSid(claude?.sessionId);
+        busy = R.isTurnBusy({ claude, office: sid ? office()?.readSession(sid) : undefined });
+      } else {
+        const how = asleep.get(id);
+        // asleep {} = start fresh (account change): its old session belongs to another account
+        if (how?.sessionId) sid = validSid(how.sessionId);
+        else if (continues && (!how || how.resume)) sid = validSid(TIO.newestSession(r.dir, configDir, home));
+      }
+      const marked = Object.prototype.hasOwnProperty.call(at, id);
+      const look = validSid(at[id]) || sid;
+      const transcript = busy || !look ? 'none' : R.transcriptFileState(TIO.findTranscript(r.dir, look, configDir, home)?.file);
+      tabs.push({ id, name: tabName(r), running: Boolean(t), busy, draft: Boolean(activity.get(id)?.draft), marked, markSid: at[id] || '', sessionId: sid, continues, transcript });
+    }
+  }
+  return tabs;
+}
+/** Types the prompt into a running claude's input box and submits it. */
+function typePrompt(id, text) {
+  const t = terms.get(id);
+  if (!t) return;
+  t.write(R.typedPrompt(text));
+  setTimeout(() => { if (terms.get(id) === t) t.write('\r'); }, ENTER_DELAY_MS);
+  const a = activity.get(id);
+  if (a) { a.at = Date.now(); a.draft = false; }
+}
+/** @returns {{ resumed: { id: string, name: string }[], skipped: { id: string, name: string }[] }} */
+function resumeUnfinished() {
+  if (!state || !win || !isLoaded) return { resumed: [], skipped: [] };
+  const tabs = unfinishedTabs();
+  const nameOf = (id) => ({ id, name: tabs.find((x) => x.id === id)?.name || id });
+  const { actions, skipped } = R.unfinishedActions(tabs);
+  for (const a of actions) {
+    if (a.how === 'type') typePrompt(a.id, R.UNFINISHED_PROMPT);
+    else startPty(a.id, { sessionId: a.sessionId || null, resume: true, prompt: R.UNFINISHED_PROMPT });
+  }
+  setMarks(R.clearInterrupted(marks(), actions.map((a) => a.id)));
+  return { resumed: actions.map((a) => nameOf(a.id)), skipped: skipped.map(nameOf) };
+}
+
 // --- sleeping idle background tabs (see src/sleep.js)
 const sleepMinutes = () => Z.normalizeSleep(state.sleepMinutes);
 const scheduleSeen = new Map(); // transcript path → { key: "size|mtime", has }
@@ -1120,6 +1184,9 @@ function importResumeFailed(sessionId, configDir) {
   if (win && !win.isDestroyed()) warnBox(T('main.importResumeFailed'), T('main.importResumeFailedDetail', { file, id: sessionId }));
 }
 
+// the sidebar's "Resume unfinished work" button (v3.8); the menu item sends the result as work:resumed
+ipcMain.handle('work:resumeUnfinished', () => resumeUnfinished());
+
 // right click on a project in the sidebar
 ipcMain.handle('projects:menu', (_e, id) => {
   const p = P.findProject(state, id);
@@ -1382,6 +1449,8 @@ function buildMenu() {
     { label: T('main.file'), submenu: [
       { label: T('main.openSessionFile'), click: () => importSession(null) },
       { label: T('main.moveSession'), click: () => exportSession(state.activeId) },
+      { type: 'separator' },
+      { label: T('main.resumeUnfinished'), click: () => send('work:resumed', resumeUnfinished()) },
     ] },
     { label: T('main.edit'), submenu: [
       { role: 'undo', label: T('main.undo') }, { role: 'redo', label: T('main.redo') }, { type: 'separator' },

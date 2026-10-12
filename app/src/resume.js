@@ -7,9 +7,16 @@
 // session" and "Resume interrupted work" on, every marked tab starts right away (even when starts are lazy) with
 // `claude --resume <id> "<RESUME_PROMPT>"` (or `--continue "<…>"`), which opens the interactive session and submits
 // the prompt.
+//
+// The marks miss some cases (a restart from an older version, a death within the 1.5 s poll, a tab killed on purpose),
+// so the "Resume unfinished work" button (contract v3.8) also reads each tab's last conversation: a transcript whose
+// last turn did not end (transcriptState) counts as unfinished too, and unfinishedActions picks what to do per tab.
 
 /** The prompt sent to the resumed session (English: it goes to the model). One line, no quotes or cmd.exe specials. */
 const RESUME_PROMPT = 'Agent Office restarted (app update or restart) while you were working, which interrupted your last turn and any sub-agents you had running. Check what was finished (git status, files, your task list), then continue the unfinished work from where it stopped. Restart sub-agents that were cut off.';
+
+/** The prompt the "Resume unfinished work" button sends (it is not always a restart). Same rules as RESUME_PROMPT. */
+const UNFINISHED_PROMPT = 'Your last turn in this session did not finish: it was cut off (an Agent Office restart or update, the session ending, or a crash) before you were done, along with any sub-agents you had running. Check what was finished (git status, files, your task list), then continue the unfinished work from where it stopped. Restart sub-agents that were cut off.';
 
 const validSid = (s) => (typeof s === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(s) ? s : '');
 
@@ -101,4 +108,125 @@ function claudeArgs(base, resumeArgs, prompt) {
   return [...base, ...resumeArgs, ...(p ? [p] : [])];
 }
 
-module.exports = { RESUME_PROMPT, normalizeInterrupted, isTurnBusy, nextInterrupted, clearInterrupted, resumeTargets, promptArg, claudeArgs };
+// --- the last turn of a Claude Code transcript (<config>/projects/<slug>/<session id>.jsonl, one JSON object a line)
+
+// a user text that is not a prompt: slash commands and their output (older Claude Code wrote them as user lines)
+const LOCAL_COMMAND = /^\s*<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|bash-input|bash-stdout|bash-stderr)>/;
+const USER_INTERRUPT = /^\s*\[Request interrupted by user/;
+
+/**
+ * What one transcript line says about the turn: 'open' (a prompt or tool result waiting for the model, or an
+ * assistant message that stopped for a tool or did not finish), 'closed' (the model ended its turn, or the user
+ * interrupted it on purpose), or null (not part of the main conversation: sub-agent (sidechain) lines, meta lines,
+ * compaction summaries, system/summary/attachment/bookkeeping lines, slash commands and their output).
+ * @param {any} o @returns {'open' | 'closed' | null}
+ */
+function entryTurn(o) {
+  if (!o || typeof o !== 'object' || o.isSidechain || o.isMeta || o.isCompactSummary || o.isVisibleInTranscriptOnly) return null;
+  const m = o.message;
+  if (!m || typeof m !== 'object') return null;
+  if (o.type === 'assistant') return m.stop_reason === 'tool_use' || m.stop_reason == null ? 'open' : 'closed';
+  if (o.type !== 'user') return null;
+  const c = m.content;
+  let text = '';
+  if (typeof c === 'string') text = c;
+  else if (Array.isArray(c)) {
+    if (!c.length) return null;
+    if (c.some((b) => b && b.type === 'tool_result')) return 'open';
+    text = c.filter((b) => b && b.type === 'text').map((b) => String(b.text ?? '')).join('\n');
+    if (!text.trim()) return 'open'; // an image or document only: still a prompt
+  } else return null;
+  if (USER_INTERRUPT.test(text)) return 'closed';
+  if (LOCAL_COMMAND.test(text) || !text.trim()) return null;
+  return 'open';
+}
+
+/**
+ * The state of a transcript's last turn from its text (or the tail of it: a cut first line is skipped as bad JSON):
+ * 'unfinished' when the last line that counts (entryTurn) is open, 'finished' when it is closed, 'none' when no
+ * line counts.
+ * @param {string} text @returns {'unfinished' | 'finished' | 'none'}
+ */
+function transcriptState(text) {
+  const lines = String(text ?? '').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line || line[0] !== '{') continue;
+    let o;
+    try { o = JSON.parse(line); } catch { continue; }
+    const turn = entryTurn(o);
+    if (turn) return turn === 'open' ? 'unfinished' : 'finished';
+  }
+  return 'none';
+}
+
+/** Tail sizes read in turn until a line counts (a big tool result can be one long line). */
+const TAIL_STEPS = [64 * 1024, 1024 * 1024, 16 * 1024 * 1024];
+
+/**
+ * transcriptState of a transcript file, reading only its end (more of it while nothing counts). 'none' for a
+ * missing or unreadable file.
+ * @param {string | null | undefined} file @param {typeof import('fs')} [fsm]
+ * @returns {'unfinished' | 'finished' | 'none'}
+ */
+function transcriptFileState(file, fsm = require('fs')) {
+  if (!file) return 'none';
+  let fd;
+  try {
+    fd = fsm.openSync(file, 'r');
+    const size = fsm.fstatSync(fd).size;
+    for (const step of TAIL_STEPS) {
+      const len = Math.min(size, step);
+      const buf = Buffer.alloc(len);
+      fsm.readSync(fd, buf, 0, len, size - len);
+      let text = buf.toString('utf8');
+      if (len < size) text = text.slice(text.indexOf('\n') + 1); // the first line is cut
+      const st = transcriptState(text);
+      if (st !== 'none' || len === size) return st;
+    }
+    return 'none';
+  } catch {
+    return 'none';
+  } finally {
+    if (fd !== undefined) try { fsm.closeSync(fd); } catch {}
+  }
+}
+
+/**
+ * What the "Resume unfinished work" button does with each tab (in the order given). A tab has unfinished work when
+ * it is marked (interrupted) or its last conversation ends mid-turn. A busy one is skipped (it is working); a
+ * running one with unsent text typed in it is skipped (the prompt would be mixed into it) and listed under skipped;
+ * a running idle one gets the prompt typed in ('type'); one that is not running starts with --resume <session id>
+ * and the prompt ('start'), or --continue when it is marked without a known session (only a tab that continues:
+ * the main tab or a worktree tab; another one would start a fresh session, so it is left alone).
+ * @param {{ id: string, running: boolean, busy?: boolean, draft?: boolean, marked?: boolean, markSid?: string,
+ *   sessionId?: string, continues?: boolean, transcript?: 'unfinished' | 'finished' | 'none' }[]} tabs
+ * @returns {{ actions: { id: string, how: 'start' | 'type', sessionId: string }[], skipped: string[] }}
+ */
+function unfinishedActions(tabs) {
+  /** @type {{ id: string, how: 'start' | 'type', sessionId: string }[]} */
+  const actions = [];
+  /** @type {string[]} */
+  const skipped = [];
+  for (const t of tabs) {
+    if (t.busy) continue;
+    const sid = validSid(t.markSid) || validSid(t.sessionId);
+    if (!t.marked && !(t.transcript === 'unfinished' && sid)) continue;
+    if (t.running) {
+      if (t.draft) skipped.push(t.id);
+      else actions.push({ id: t.id, how: 'type', sessionId: sid });
+    } else if (sid || t.continues) actions.push({ id: t.id, how: 'start', sessionId: sid });
+  }
+  return { actions, skipped };
+}
+
+/**
+ * The bytes that type a prompt into Claude Code's input box: one line inside a bracketed paste (so its characters
+ * are not taken as keys). Enter (\r) is sent separately a moment later, after the paste has landed.
+ * @param {string} text
+ */
+function typedPrompt(text) {
+  return `\x1b[200~${promptArg(text)}\x1b[201~`;
+}
+
+module.exports = { RESUME_PROMPT, UNFINISHED_PROMPT, entryTurn, transcriptState, transcriptFileState, unfinishedActions, typedPrompt, normalizeInterrupted, isTurnBusy, nextInterrupted, clearInterrupted, resumeTargets, promptArg, claudeArgs };
