@@ -154,12 +154,15 @@ const MANAGER_TEXT = `# Manager mode (Agent Office)
 You are the manager in Agent Office. Your agents are subagents you start with the Agent tool; the person watches them work at their desks.
 
 - For work with several parts, split it into independent pieces and delegate them to subagents, in parallel when they don't overlap (in separate git worktrees when they would touch the same files). You plan, review, integrate and verify. A small single-step task you do yourself: don't start an agent for it.
+- A job for another project: work in that project's folder with absolute paths (in Bash, \`cd <folder> && …\`) and have your agents do the same, so Agent Office shows the work under that project.
 - Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them.
 - Stop only for what genuinely needs the person: approving outward-facing or destructive actions (deploying to production, publishing, deleting data, spending money), credentials or logins, and decisions that are theirs to make. For those, finish everything else first, then ask in one short list.
 - Report honestly what you verified and what you did not.
 
 The person's own instructions (CLAUDE.md, explicit requests) take precedence over this.`
 const AGENT_TOOLS = ['Agent', 'Task']
+// work across projects (app contract v3.5): longer paths are not recorded
+const PLACE_MAX = 1024
 
 let workers: Worker[] = []
 let shells: Shell[] = []
@@ -191,6 +194,12 @@ let kittyWindowId = ''
 let weztermPane = ''
 let isInApp = false // AGENT_OFFICE_APP: the session runs inside the Agent Office app
 let isWindows = false // OS=Windows_NT: no /bin/mv or /bin/rm, cmd.exe's move/del/rmdir instead
+let homeDir = ''
+// work across projects (app contract v3.5): the folder the main loop runs in (where its relative paths point; a
+// Bash `cd` moves it, CwdChanged), and each subagent's own when its spawn set one (agentId -> folder)
+let sessionCwd = ''
+let sessionRoot = ''
+const agentCwds = new Map<string, string>()
 
 async function publish($: EngineInterface, endedAt?: number) {
   if (!stateFile) return
@@ -264,6 +273,60 @@ function detailOf(e: { tool: string }) {
     }
   }
   return clip(detail.replace(/\s*[\r\n]+\s*/g, ' ').trim(), DETAIL_MAX)
+}
+
+// work across projects (app contract v3.5): `path` made absolute against `base` ('' when it cannot be); `~` is the home
+// folder. A Windows path keeps its backslashes: the app compares paths in its own normal form.
+function absolutePath(path: string, base: string) {
+  let at = path.trim()
+  if (at === '~' || /^~[\\/]/.test(at)) at = homeDir ? homeDir + at.slice(1) : ''
+  const isAbsolute = (p: string) => p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\')
+  if (at && !isAbsolute(at)) at = base && at !== '.' ? `${base.replace(/[\\/]+$/, '')}/${at.replace(/^\.[\\/]/, '')}` : base
+  return at && isAbsolute(at) && at.length <= PLACE_MAX ? at : ''
+}
+
+const folderOf = (file: string) => file.replace(/[\\/]+[^\\/]*$/, '') || file.slice(0, 1)
+
+// the folder a tool call works in, absolute, or '' when the call does not say: Read/Edit/Write/NotebookEdit the file's
+// folder, Glob/Grep their path (the loop's folder without one), Bash and Monitor a leading `cd <dir>`, `pushd <dir>`
+// or `git -C <dir>`; relative paths count from `base`, the folder the loop runs in
+function placeOf(e: { tool: string }, base: string) {
+  const args = e as unknown as Record<string, unknown>
+  const text = (key: string) => (typeof args[key] === 'string' ? (args[key] as string) : '')
+  switch (e.tool) {
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit': {
+      const file = absolutePath(text(e.tool === 'NotebookEdit' ? 'notebook_path' : 'file_path'), base)
+      return file ? folderOf(file) : ''
+    }
+    case 'Grep':
+    case 'Glob':
+      return absolutePath(text('path') || '.', base)
+    case 'Bash':
+    case 'Monitor': {
+      const lead = /^\s*(?:cd|pushd|git\s+-C)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|'"]+))/.exec(text('command'))
+      return lead ? absolutePath(lead[1] ?? lead[2] ?? lead[3] ?? '', base) : ''
+    }
+    default:
+      return ''
+  }
+}
+
+// the folder the boss works in this turn (stats.bossDir; left out = the session's own folder), from the main loop's
+// tool calls and its moves
+async function placeBoss($: EngineInterface, dir: string) {
+  if (!dir || dir === (stats.bossDir ?? sessionRoot)) return
+  stats = await update($, statsAtom, s => ({ ...s, bossDir: dir }))
+  await publishSoon($)
+}
+
+// a subagent's folder, from its tool calls and its moves
+async function placeWorker($: EngineInterface, id: string, dir: string) {
+  if (!dir || !workers.some(w => w.id === id && w.dir !== dir)) return
+  workers = await update($, workersAtom, list => list.map(w => (w.id === id ? { ...w, dir } : w)))
+  await publishSoon($)
 }
 
 // keeps running shells and finished ones; past SHELLS_MAX the oldest finished go first, then the oldest running
@@ -621,6 +684,7 @@ async function tick($: EngineInterface) {
   }
   if (workers.some(w => w.doneAt !== undefined && now - w.doneAt > forgetMs)) {
     await setWorkers($, list => list.filter(w => w.doneAt === undefined || now - w.doneAt <= forgetMs))
+    for (const id of agentCwds.keys()) if (!workers.some(w => w.id === id)) agentCwds.delete(id)
   }
   if (shells.some(s => s.endAt !== undefined && now - s.endAt > forgetMs)) {
     shells = await update($, shellsAtom, list => list.filter(s => s.endAt === undefined || now - s.endAt <= forgetMs))
@@ -802,6 +866,7 @@ export const register: Register = on => {
     // Windows: the user profile, as Node's os.homedir() there (the app reads the office from it); HOME is often unset
     isWindows = (await $.env.get('OS')) === 'Windows_NT'
     const home = (isWindows ? (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) : await $.env.get('HOME')) ?? ''
+    homeDir = home
     const settings = await readSettings($, home)
     forgetMs = settings.forgetMinutes * 60_000
     const locale = (await $.env.get('LC_ALL')) || (await $.env.get('LC_MESSAGES')) || (await $.env.get('LANG')) || ''
@@ -818,7 +883,9 @@ export const register: Register = on => {
         : { name: 'office', description: t.description, argumentHint: t.argumentHint },
     )
     const id = await $.session.id()
-    project = (await $.session.root()).split(/[\\/]/).pop() ?? ''
+    sessionRoot = await $.session.root()
+    project = sessionRoot.split(/[\\/]/).pop() ?? ''
+    sessionCwd = (await $.session.cwd().catch(() => '')) || sessionRoot
     const root = `${home}/.claude/agent-office`
     rootDir = root
     sessionId = id
@@ -895,6 +962,12 @@ export const register: Register = on => {
         prompt: clip((e.prompt ?? '').replace(/\s+/g, ' ').trim(), PROMPT_MAX),
         toolCount: 0,
       }
+      // a subagent started in a folder of its own (cwd): it works there until its tool calls say otherwise
+      const cwd = typeof e.cwd === 'string' ? absolutePath(e.cwd, sessionCwd) : ''
+      if (cwd) {
+        worker.dir = cwd
+        agentCwds.set(worker.id, cwd)
+      }
       await setWorkers($, list => [...list.filter(w => w.id !== worker.id), worker])
     }
 
@@ -904,6 +977,7 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     if (e.agentId && workers.some(w => w.id === e.agentId)) {
       const call = { at: Date.now(), tool: e.tool, detail: detailOf(e) }
+      const dir = placeOf(e, agentCwds.get(e.agentId) ?? sessionCwd)
       workers = await update($, workersAtom, list =>
         list.map(w =>
           w.id === e.agentId
@@ -913,12 +987,13 @@ export const register: Register = on => {
                 detail: call.detail,
                 history: [...(w.history ?? []), call].slice(-HISTORY_MAX),
                 toolCount: (w.toolCount ?? 0) + 1,
+                ...(dir ? { dir } : {}),
               }
             : w,
         ),
       )
       await publishSoon($)
-    }
+    } else if (!e.agentId) await placeBoss($, placeOf(e, sessionCwd)).catch(() => undefined)
     if (e.tool !== 'Bash' && e.tool !== 'Monitor' && e.tool !== 'TaskStop') {
       const answered = await next(e)
       // allowed and run, or denied: its permission dialog is closed (a failure here must not rerun the tool)
@@ -986,15 +1061,33 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // a loop's folder moved (a Bash `cd` that stays, /cd, a worktree): the main loop's relative paths and the boss's
+  // place follow it; a subagent's too
+  on('classic.CwdChanged', async ($, e, next) => {
+    const dir = typeof e.new_cwd === 'string' ? absolutePath(e.new_cwd, '') : ''
+    if (dir && e.agent_id === undefined) {
+      sessionCwd = dir
+      if (stats.isBossBusy) await placeBoss($, dir)
+    } else if (dir && e.agent_id && workers.some(w => w.id === e.agent_id)) {
+      agentCwds.set(e.agent_id, dir)
+      await placeWorker($, e.agent_id, dir)
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('turn.start', async ($, e, next) => {
-    if (!stats.isBossBusy) await setStats($, s => ({ ...s, isBossBusy: true }))
+    // a new turn starts where the main loop runs, not where the last one ended
+    const bossDir = sessionCwd !== sessionRoot ? sessionCwd : undefined
+    if (!stats.isBossBusy || stats.bossDir !== bossDir)
+      await setStats($, ({ bossDir: _, ...s }) => ({ ...s, isBossBusy: true, ...(bossDir ? { bossDir } : {}) }))
 
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     // the main turn is over: nothing is left waiting on a dialog
-    if (e.agentId === undefined) await setStats($, ({ waiting: _, ...s }) => ({ ...s, isBossBusy: false }))
+    if (e.agentId === undefined) await setStats($, ({ waiting: _, bossDir: __, ...s }) => ({ ...s, isBossBusy: false }))
     else {
       // the subagent's report (contract v2.2 `result`); "" when it gave none
       const answer = typeof e.answer === 'string' ? e.answer.trim() : ''

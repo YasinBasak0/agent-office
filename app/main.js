@@ -625,7 +625,7 @@ function startPolling() {
     // while the window is unfocused, read every two seconds instead of twice a second (battery); notifications still come
     if (!win.isFocused() && tick++ % 4 !== 0) return;
     try {
-      const d = s.readOffice(state.projects.map((p) => p.name), undefined, undefined, sessionAliases());
+      const d = s.readOffice(state.projects.map((p) => p.name), undefined, undefined, sessionAliases(), P.projectPlaces(state.projects));
       send('office:data', d);
       lastOffice = d.projects;
       updateAttention();

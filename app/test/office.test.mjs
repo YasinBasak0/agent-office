@@ -608,6 +608,53 @@ const shellShots = []
   rmSync(root, { recursive: true })
 }
 
+// ---------- readOffice: work across projects (contract v3.5) ----------
+{
+  const root = mkdtempSync(join(tmpdir(), 'agent-office-away-'))
+  const dir = join(root, 'sessions')
+  mkdirSync(dir, { recursive: true })
+  const put = (name, obj) => {
+    const f = join(dir, `${name}.json`)
+    writeFileSync(f, JSON.stringify(obj))
+    utimesSync(f, NOW / 1000, NOW / 1000)
+  }
+  // shop's session works in blog: two agents (one done), its boss too; one agent stays home, one works outside all projects
+  put('shop', {
+    format: 2, project: 'shop', updatedAt: NOW - 1000,
+    workers: [
+      { id: 'a', type: 'Explore', spawnAt: NOW - 5000, dir: '/w/blog/posts' },
+      { id: 'b', type: 'Plan', spawnAt: NOW - 9000, doneAt: NOW - 2000, isOk: true, dir: '/w/blog' },
+      { id: 'c', type: 'Plan', spawnAt: NOW - 4000, dir: '/w/shop/src' },
+      { id: 'd', type: 'Plan', spawnAt: NOW - 4000, dir: '/tmp/x' },
+      { id: 'e', type: 'Plan', spawnAt: NOW - 4000 },
+    ],
+    stats: { isBossBusy: true, bossDir: '/w/blog', waiting: { kind: 'permission', tool: 'Edit', since: NOW - 700 } },
+  })
+  // blog's own session is idle
+  put('blog', { format: 2, project: 'blog', updatedAt: NOW - 800, workers: [], stats: { isBossBusy: false } })
+  const places = [{ dir: '/w/shop', name: 'shop' }, { dir: '/w/blog', name: 'blog' }]
+  const d = readOffice(['shop', 'blog'], NOW, root, null, places)
+  const byName = Object.fromEntries(d.projects.map(p => [p.name, p]))
+  assert.deepEqual(byName.shop, { name: 'shop', working: 4, delivered: 1, isBossBusy: true, waiting: { tool: 'Edit', since: NOW - 700 } }, 'sahibin sayıları, onayı ve meşguliyeti değişmez')
+  assert.deepEqual(byName.blog, { name: 'blog', working: 0, delivered: 0, isBossBusy: false, waiting: null, remote: { working: 1, isBossBusy: true, from: ['shop'] } })
+  assert.deepEqual(d.workers.map(w => [w.id, w.project, w.from]), [
+    ['a', 'blog', 'shop'], ['b', 'blog', 'shop'], ['c', 'shop', undefined], ['d', 'shop', undefined], ['e', 'shop', undefined],
+  ])
+  assert.equal(d.projects.reduce((n, p) => n + p.working, 0), 4, 'başlık çubuğu toplamı bir kez sayar')
+  // blog outside the filter: shop's agents stay shop's
+  const onlyShop = readOffice(['shop'], NOW, root, null, places)
+  assert.deepEqual(onlyShop.workers.map(w => w.project), ['shop', 'shop', 'shop', 'shop', 'shop'])
+  assert.equal(onlyShop.projects.length, 1)
+  // without places (an older main) nothing moves
+  assert.deepEqual(readOffice(['shop', 'blog'], NOW, root).projects.find(p => p.name === 'blog'), { name: 'blog', working: 0, delivered: 0, isBossBusy: false, waiting: null })
+  // the boss idle: its bossDir no longer counts
+  put('shop', { format: 2, project: 'shop', updatedAt: NOW - 1000, workers: [], stats: { isBossBusy: false, bossDir: '/w/blog' } })
+  assert.equal(readOffice(['shop', 'blog'], NOW, root, null, places).projects.find(p => p.name === 'blog').remote, undefined)
+  // the office draws the moved agents at blog's desks (no error, both projects on the board)
+  render(NOW, d, { focus: 'blog' })
+  rmSync(root, { recursive: true })
+}
+
 console.log('ok', shellShots)
 console.log('ok', selectShots)
 console.log('ok', multiShots)

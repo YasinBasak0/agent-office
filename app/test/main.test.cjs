@@ -1251,3 +1251,84 @@ test('transfer: export → file → import into another home at another path (gi
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+// ---------- work across projects (contract v3.5) ----------
+const SS = require('../src/sessions.js');
+
+test('normPath: mutlak yollar tek biçimde; Windows yolları küçük harf ve / ile; göreli yol boş', () => {
+  assert.equal(SS.normPath('/a//b/./c/../d/'), '/a/b/d');
+  assert.equal(SS.normPath('C:\\Users\\Me\\Shop\\src'), 'c:/users/me/shop/src');
+  assert.equal(SS.normPath('c:/Users/me/../..'), 'c:');
+  assert.equal(SS.normPath('\\\\Server\\Share\\Repo'), '//server/share/repo');
+  assert.equal(SS.normPath('src/a.ts'), '');
+  assert.equal(SS.normPath(''), '');
+  assert.equal(SS.normPath(undefined), '');
+});
+
+test('placeFinder: yolu tutan projenin adı, iç içe projelerde en derini; dışarıdaki ve göreli yol yok sayılır', () => {
+  const placeOf = SS.placeFinder([
+    { dir: '/w/mono', name: 'mono' },
+    { dir: '/w/mono/apps/web', name: 'web' },
+    { dir: '/w/shop', name: 'shop' },
+    { dir: '/w/shop-wt-2', name: 'shop' },
+    { dir: 'C:\\Code\\Blog', name: 'blog' },
+    { dir: '', name: 'empty' },
+    null,
+  ]);
+  assert.equal(placeOf('/w/mono/apps/web/src'), 'web');
+  assert.equal(placeOf('/w/mono/apps/api'), 'mono');
+  assert.equal(placeOf('/w/mono'), 'mono');
+  assert.equal(placeOf('/w/shop-wt-2/src'), 'shop');
+  assert.equal(placeOf('/w/shopping'), undefined, 'adı yalnız önek olan klasör projenin değil');
+  assert.equal(placeOf('/elsewhere/x'), undefined);
+  assert.equal(placeOf('relative/dir'), undefined);
+  assert.equal(placeOf('c:/code/blog/posts'), 'blog');
+  assert.equal(placeOf('C:\\CODE\\Blog\\posts\\a'), 'blog');
+  assert.equal(placeOf('D:\\code\\blog'), undefined);
+  assert.equal(SS.placeFinder(null)('/w/shop'), undefined);
+});
+
+test('projectPlaces: proje klasörü ve worktree sekmelerinin klasörleri projenin adıyla', () => {
+  const wt = (root) => ({ root, repo: '/r/shop', branch: 'agent-office/3' });
+  assert.deepEqual(P.projectPlaces([
+    { id: 'a', dir: '/r/shop', name: 'shop', tabs: [{ n: 2 }, { n: 3, dir: '/r/shop-wt-3', worktree: wt('/r/shop-wt-3') }] },
+    { id: 'b', dir: '/r/blog', name: 'blog' },
+  ]), [
+    { dir: '/r/shop', name: 'shop' },
+    { dir: '/r/shop-wt-3', name: 'shop' },
+    { dir: '/r/blog', name: 'blog' },
+  ]);
+});
+
+test('kenar çubuğu durumu: başka projeden çalışılan proje çalışıyor görünür, nereden olduğu yazar', async () => {
+  const { projectStatus, isBossHere } = await import('../src/project-status.mjs');
+  const en = await tFor('en');
+  const tr = await tFor('tr');
+  assert.equal(projectStatus(undefined, tr), 'boşta');
+  assert.equal(projectStatus({ working: 0, delivered: 0 }, en), 'idle');
+  assert.equal(projectStatus({ working: 2, delivered: 5 }, tr), '2 çalışan · 5 teslim');
+  const remote = { working: 0, delivered: 0, remote: { working: 2, isBossBusy: false, from: ['shop'] } };
+  assert.equal(projectStatus(remote, tr), '2 çalışan · shop projesinden çalışılıyor');
+  assert.equal(projectStatus(remote, en), '2 working · worked on from shop');
+  const both = { working: 1, delivered: 3, remote: { working: 1, isBossBusy: true, from: ['shop', 'blog'] } };
+  assert.equal(projectStatus(both, en), '2 working · 3 delivered · worked on from shop, blog');
+  // only the boss works there: no agents to count, still not idle
+  const boss = { working: 0, delivered: 0, isBossBusy: false, remote: { working: 0, isBossBusy: true, from: ['shop'] } };
+  assert.equal(projectStatus(boss, en), 'worked on from shop');
+  assert.equal(isBossHere(boss), true);
+  assert.equal(isBossHere({ isBossBusy: false }), false);
+  assert.equal(isBossHere(undefined), false);
+});
+
+test('nextAttention: başka projeden çalışılan proje meşgul sayılmaz; bitiş bildirimi sahibinden gelir', () => {
+  const projects = [{ id: 'a', name: 'shop' }, { id: 'b', name: 'blog' }];
+  const office = (busy) => [
+    { name: 'shop', working: busy ? 1 : 0, delivered: 0, isBossBusy: busy, waiting: null },
+    { name: 'blog', working: 0, delivered: 0, isBossBusy: false, waiting: null, ...(busy ? { remote: { working: 1, isBossBusy: true, from: ['shop'] } } : {}) },
+  ];
+  let r = N.nextAttention(N.emptyAttention(), projects, office(true), null);
+  r = N.nextAttention(r.state, projects, office(true), null);
+  r = N.nextAttention(r.state, projects, office(false), null);
+  assert.deepEqual(r.events, [{ kind: 'done', id: 'a' }]);
+  assert.equal(r.attention.has('b'), false);
+});

@@ -198,7 +198,9 @@ export function mountAgentPanel(el, { onClose, onSelect, onOpenProject, loadToda
     }
     if (done) html += block('result', failed ? t('panel.resultError') : t('panel.result'), w.result, { copy: true, clamp: true });
     if (!hasDetails) html += `<div class="ap-note">${t('panel.noDetails')}</div>`;
-    return { title: typeLabel(w.type), project: str(w.project), html, now };
+    // work across projects (contract v3.5): the agent works in this project from another project's session, whose
+    // terminal is where its approvals are answered
+    return { title: typeLabel(w.type), project: str(w.project), from: str(w.from), html, now };
   }
 
   function shellHtml(s, isGone) {
@@ -338,7 +340,8 @@ export function mountAgentPanel(el, { onClose, onSelect, onOpenProject, loadToda
     const html = `<header class="ap-head">
         <span class="ap-title">${esc(view.title)}</span>
         ${view.project ? `<span class="ap-proj" title="${esc(t('panel.project'))}">${esc(view.project)}</span>` : ''}
-        ${view.project && onOpenProject ? `<button class="ap-go" data-go="${esc(view.project)}" title="${esc(t('panel.toTerminalTitle'))}">${esc(t('panel.toTerminal'))}</button>` : ''}
+        ${view.from ? `<span class="ap-dim ap-from" title="${esc(t('panel.fromTitle', { from: view.from }))}">${esc(t('panel.from', { from: view.from }))}</span>` : ''}
+        ${view.project && onOpenProject ? `<button class="ap-go" data-go="${esc(view.from || view.project)}" title="${esc(t('panel.toTerminalTitle'))}">${esc(t('panel.toTerminal'))}</button>` : ''}
         <button class="ap-close" data-close title="${esc(t('panel.close'))}">×</button>
       </header>
       <div class="ap-body">${view.html}</div>`;

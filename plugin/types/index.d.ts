@@ -12,6 +12,9 @@ export type Worker = {
   history?: ToolCall[] // the last 20 tool calls, oldest first
   toolCount?: number // all tool calls so far
   result?: string // the agent's final answer, ≤ 4000 chars (600 before v2.6), once done
+  // work across projects (app contract v3.5): the folder it last worked in, absolute (its last file's folder, a
+  // Glob/Grep path, a leading `cd`, its spawn cwd); left out = the session's own folder
+  dir?: string
 }
 
 export type ToolCall = { at: number; tool: string; detail: string }
@@ -34,7 +37,8 @@ export type Shell = {
 export type Waiting = { kind: 'permission'; tool: string; since: number }
 // one delivery of the day (contract v2.9): what the end-of-day summary lists
 export type Delivery = { id: string; type: string; description: string; spawnAt: number; doneAt: number; isOk: boolean; toolCount: number }
-export type OfficeStats = { delivered: number; isBossBusy: boolean; today?: { date: string; ids: string[]; log?: Delivery[] }; waiting?: Waiting }
+// bossDir (app contract v3.5): the folder the main loop works in this turn, same rules as Worker.dir; left out = the session's own
+export type OfficeStats = { delivered: number; isBossBusy: boolean; today?: { date: string; ids: string[]; log?: Delivery[] }; waiting?: Waiting; bossDir?: string }
 
 // the last frame the viewer wrote: its number and the theme's colours (hex without #)
 export type OfficeFrame = { gen: number; accent: string; frameColor: string; title: string }

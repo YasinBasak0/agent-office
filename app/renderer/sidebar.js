@@ -3,6 +3,7 @@
 // (so an open <select> or a name being typed is not disrupted by 500 ms data). A language change redraws everything.
 import { hasText, locale, onLang, t } from './i18n.js';
 import { modLabel } from './platform.js';
+import { isBossHere, projectStatus } from '../src/project-status.mjs';
 
 function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -18,14 +19,8 @@ function h(tag, props = {}, ...children) {
 }
 
 
-/** The project's subline summary: "2 çalışan · 5 teslim". */
-function statsText(s) {
-  if (!s) return t('sidebar.idle');
-  const parts = [];
-  if (s.working) parts.push(t('sidebar.working', { n: s.working }));
-  if (s.delivered) parts.push(t('sidebar.delivered', { n: s.delivered }));
-  return parts.length ? parts.join(' · ') : t('sidebar.idle');
-}
+/** The project's subline summary: "2 çalışan · 5 teslim" (src/project-status.mjs). */
+const statsText = (s) => projectStatus(s, t);
 
 /** The default account's name in the selected language (main stores it as 'Varsayılan'). */
 const labelOf = (a) => (a.id === 'default' ? t('sidebar.defaultLabel') : a.label);
@@ -214,7 +209,7 @@ export function mountSidebar(el, on) {
         attn.get(p.id) === 'permission'
           ? h('span', { class: 'sb-attn permission', title: t('sidebar.attnPermission') }, '✋')
           : attn.get(p.id) === 'done' ? h('span', { class: 'sb-attn done', title: t('sidebar.attnDone') }, '●') : null,
-        h('span', { class: 'sb-boss', hidden: !s?.isBossBusy, title: t('sidebar.bossBusy') }, '★'),
+        h('span', { class: 'sb-boss', hidden: !isBossHere(s), title: t('sidebar.bossBusy') }, '★'),
         h('button', {
           class: 'sb-x', title: t('sidebar.removeFromList'),
           onclick: (e) => { e.stopPropagation(); on.removeProject(p); },
@@ -396,7 +391,7 @@ export function mountSidebar(el, on) {
         const t = statsText(s);
         const st = li.querySelector('.sb-stats');
         if (st.textContent !== t) { st.textContent = t; st.title = t; }
-        li.querySelector('.sb-boss').hidden = !s?.isBossBusy;
+        li.querySelector('.sb-boss').hidden = !isBossHere(s);
       }
     },
   };

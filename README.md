@@ -102,6 +102,7 @@ The **Default** account is your normal Claude Code login in `~/.claude`. A new a
 Each project's Claude is the boss of its office. With **Manager mode — delegate to agents** on (the default), every Claude session the app starts gets a short extra section in its system prompt that tells it to act as a manager:
 
 - split work with several parts into independent pieces and hand them to subagents, in parallel when they don't overlap (in separate git worktrees when they would touch the same files), while it plans, reviews, integrates and verifies; a small one-step task it still does itself;
+- for a job that belongs to another project, work in that project's folder with absolute paths (and have its agents do the same), so the sidebar and the office show the work under that project (see [Work across projects](#work-across-projects));
 - keep going until the task list is done instead of ending with a "remaining / next steps" list of work it could do now;
 - stop only for what needs you: approving outward-facing or destructive actions (production deploys, publishing, deleting data, spending money), credentials or logins, and decisions that are yours, asked together in one short list once everything else is done;
 - report honestly what it verified.
@@ -109,6 +110,10 @@ Each project's Claude is the boss of its office. With **Manager mode — delegat
 Your own instructions (`CLAUDE.md`, what you ask for) come first. Being part of the system prompt, the section stays through `--continue`, `/resume`, `/clear` and compaction; subagents don't get it.
 
 To turn it off, untick **Manager mode** in the sidebar. The change applies to Claude sessions started afterwards (a new tab, a restart, the next launch); running ones keep what they started with. Plain Claude Code with the plugin gets it only when you set `AGENT_OFFICE_MANAGER=1` yourself.
+
+## Work across projects
+
+You can give one project's Claude a job that belongs to another project in your list. The plugin notes the folder each agent and the boss work in (from the files they read and edit, the paths they search and a leading `cd` in their commands), and the app places that folder under the project that holds it (the deepest one when projects nest; worktree tabs count as their project). That project then shows as working in the sidebar, for example **2 working · worked on from shop**, its agents sit at its desks in the office, and an agent's panel says where it is worked on from. Approvals and the "done" notification stay with the project whose terminal runs the session, since that is where you answer them, and the title bar counts every agent once.
 
 ## Move a session to another computer
 
@@ -161,7 +166,7 @@ All data stays on your machine:
 
 | Where | What |
 | --- | --- |
-| `~/.claude/agent-office/sessions/` | Per session: the agents, the first 600 characters of each agent's task and 4000 of its result, and a one-line summary of its last 20 tool calls (commands, file paths, search patterns, URLs). Removed automatically a day after the session ends. |
+| `~/.claude/agent-office/sessions/` | Per session: the agents, the first 600 characters of each agent's task and 4000 of its result, and a one-line summary of its last 20 tool calls (commands, file paths, search patterns, URLs), and the folder each agent and the boss last worked in. Removed automatically a day after the session ends. |
 | `.agentoffice` files | Only where you save them: a session you chose to move (see [Move a session to another computer](#move-a-session-to-another-computer)). |
 | `~/Library/Application Support/Agent Office/` (Linux: `~/.config/Agent Office/`, Windows: `%APPDATA%\Agent Office\`) | Your project list, the config folders of the accounts you added (each one holds that account's Claude Code login) and, under `usage/`, each project's latest Claude Code status line input (model, context and plan usage), used for the usage bars. |
 

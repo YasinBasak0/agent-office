@@ -40,6 +40,7 @@
     "idle": "boşta",
     "working": "{n} çalışan",
     "delivered": "{n} teslim",
+    "workedFrom": "{from} projesinden çalışılıyor",
     "defaultLabel": "Varsayılan",
     "defaultNote": "Varsayılan hesap, sistemdeki normal Claude Code girişidir; buradan çıkış yapılmaz.",
     "authDot": {
@@ -199,6 +200,8 @@
     "noWorkers": "Şu an çalışan ajan yok.",
     "agentTitle": "Ajan",
     "project": "Proje",
+    "from": "{from} projesinden",
+    "fromTitle": "{from} oturumundan çalışılıyor: onaylar ve bildirimler oradan gelir",
     "close": "Kapat (Esc)",
     "toTerminal": "Terminal ›",
     "toTerminalTitle": "Bu projenin terminaline git",
