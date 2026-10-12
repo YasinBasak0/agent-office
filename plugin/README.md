@@ -161,6 +161,14 @@ Optional, in `~/.claude/agent-office/settings.json`; both the plugin and the vie
 
 A missing or invalid file, or an invalid value, falls back to the defaults. Restart the session and reopen the office after changing it.
 
+## Manager mode
+
+With `AGENT_OFFICE_MANAGER=1` in the environment, the plugin adds a short section to Claude's system prompt (a `prompt.compose` hook) that makes the main Claude act as the office's manager: split multi-part work across subagents (in parallel when the pieces don't overlap), keep going until the task list is done instead of ending with a list of remaining work, and stop only for what needs you (approving deploys, publishing or deleting data, credentials, your decisions), asked together at the end. Your `CLAUDE.md` and explicit requests come first. Subagents and loops without the Agent tool don't get it. The [Agent Office app](../README.md#the-boss-delegates) sets the variable while its **Manager mode** setting is on (the default); plain Claude Code gets nothing unless you set it yourself:
+
+```sh
+AGENT_OFFICE_MANAGER=1 claude
+```
+
 ## Privacy
 
 Everything stays on your machine, under `~/.claude/agent-office/`:
@@ -248,5 +256,7 @@ Tam pencere modunda üstte ofis sahnesi, Claude konuşmasının canlı akışı 
 Her projenin kendi ofisi vardır: duvardaki tabela proje klasörünün adını gösterir, renkler bu addan üretilir. Kendi temanı `~/.claude/agent-office/themes.json` ile tanımlayabilirsin (yukarıdaki Themes bölümüne bak). Depo kökündeki [`themes/`](../themes) klasöründe sekiz hazır tema var (midnight, sakura, ocean, desert, lavender, graphite, terminal, latte; önizlemeler yukarıdaki Theme gallery bölümünde): birinin dosyasını `themes.json`'a birleştirip `match`'i proje klasörünün adına göre değiştirmen yeterli. Agent Office uygulamasında kopyalamaya gerek yok: kenar çubuğunun altındaki **Tema** seçicisinden seç. Dosya bozuksa ofis varsayılan temalarla açılır ve hatayı gösterir. Beyaz tahtadaki BUGÜN sayısı yerel gece yarısından beri tüm oturumlardaki (bitenler dahil) teslimleri sayar. Arayüz, yerel ayarın `tr` ile başlıyorsa Türkçedir. Tüm veriler `~/.claude/agent-office/` altında, makinende kalır; hiçbir yere gönderilmez. Gelen kutusuna (`inbox/<oturum>.jsonl`) yazılan satır Claude'a senin yazmışsın gibi gider; oraya yazabilen bir süreç zaten senin kullanıcınla çalışır ve `claude`'u kendisi de başlatabilir, yani gelen kutusu yeni bir erişim açmaz. Bu dosyalar kendiliğinden temizlenir: gönderilen görev gelen kutusundan hemen silinir. Her oturum açılışında eklenti, bitmiş ya da bir gündür güncellenmemiş diğer oturumların `sessions/`, `inbox/` ve `frames/` dosyalarını siler. Açık olan oturumun ve hâlâ çalışan başka bir oturumun dosyalarına dokunmaz.
 
 İsteğe bağlı ayarlar `~/.claude/agent-office/settings.json` dosyasındadır; eklenti de görüntüleyici de okur: `{ "language": "tr", "forgetMinutes": 5 }`. `language`: `"tr"`, `"en"` ya da `"auto"` (varsayılan; yerel ayara göre). `forgetMinutes`: teslim eden botun ofiste kalma süresi, 1-60 dakika (varsayılan 5); bu sürenin 30 saniye eksiği parti yapar, sonra çıkar. `botColor`: botların rengi, `"#rrggbb"` (uygulamada kenar çubuğundaki **Bot rengi** ile seçilir). Dosya yoksa ya da geçersizse varsayılanlar kullanılır. Değiştirdikten sonra oturumu yeniden başlatıp ofisi yeniden aç.
+
+Müdür modu: ortamda `AGENT_OFFICE_MANAGER=1` varsa eklenti Claude'un sistem istemine kısa bir bölüm ekler; ana Claude işi alt agent'lara böler (birbirine değmeyen parçaları paralel), görev listesi bitene kadar devam eder, "kalanlar" listesiyle durmaz ve yalnız sana gereken şeyler (yayına alma, silme gibi onaylar, giriş bilgileri, senin kararların) için, en sonda tek listede sorar. `CLAUDE.md` ve açık isteklerin önce gelir. Agent Office uygulaması bunu kenar çubuğundaki **Müdür modu** açıkken (varsayılan) ayarlar; düz Claude Code'da kendin ayarlamadıkça eklenmez.
 
 Gereksinimler: Claude Code 2.1.295+, Node.js 18+, tam pencere için macOS'ta Ghostty, uzaktan kontrolü açık kitty ya da WezTerm.

@@ -144,6 +144,23 @@ const PUBLISH_MS = 500
 // format reads a newer one wrong, so the app warns when it sees a format above its own
 const FORMAT = 2
 
+// Manager mode: the Agent Office app sets AGENT_OFFICE_MANAGER=1 (sidebar setting, on by default); anyone else may
+// opt in with the same variable. The section rides the system prompt of every request (prompt.compose), so it
+// survives --continue, /resume, /clear and compaction. Only a loop that can start agents (the Agent tool) gets it,
+// never an in-process teammate. The text never changes: it sits after the prompt cache boundary and stays cached.
+const MANAGER_SECTION_ID = 'agent-office:manager'
+const MANAGER_TEXT = `# Manager mode (Agent Office)
+
+You are the manager in Agent Office. Your agents are subagents you start with the Agent tool; the person watches them work at their desks.
+
+- For work with several parts, split it into independent pieces and delegate them to subagents, in parallel when they don't overlap (in separate git worktrees when they would touch the same files). You plan, review, integrate and verify. A small single-step task you do yourself: don't start an agent for it.
+- Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them.
+- Stop only for what genuinely needs the person: approving outward-facing or destructive actions (deploying to production, publishing, deleting data, spending money), credentials or logins, and decisions that are theirs to make. For those, finish everything else first, then ask in one short list.
+- Report honestly what you verified and what you did not.
+
+The person's own instructions (CLAUDE.md, explicit requests) take precedence over this.`
+const AGENT_TOOLS = ['Agent', 'Task']
+
 let workers: Worker[] = []
 let shells: Shell[] = []
 // shells whose Bash result said backgroundEndsWithFinalResponse: they die when their subagent answers,
@@ -804,6 +821,15 @@ export const register: Register = on => {
     startTicker($)
 
     return next(e)
+  })
+
+  // manager mode (see MANAGER_TEXT): one section appended after the engine's own
+  on('prompt.compose', async ($, e, next) => {
+    const result = await next(e)
+    if ((await $.env.get('AGENT_OFFICE_MANAGER')) !== '1') return result
+    if (e.traits.includes('teammate') || !e.tools.some(tool => AGENT_TOOLS.includes(tool))) return result
+    if (result.sections.some(section => section.id === MANAGER_SECTION_ID)) return result
+    return { sections: [...result.sections, { id: MANAGER_SECTION_ID, text: MANAGER_TEXT, scope: 'session' as const }] }
   })
 
   on('session.end', async ($, e, next) => {

@@ -288,3 +288,16 @@ agentOffice.office.themes(): Promise<Record<string, ThemeSpec>>   // now: galler
 - **Office.** `renderer/office-view.js` `setTheme(name | '')` calls `core.mjs` `setTheme`: a name forces that theme in every project, `''` is today's pick by project (a `match` from `themes.json`, else colours from the project name). The frame, accent and terminal colours follow through `onTheme` → `applyTheme` as before. The user's **Bot color** is applied after the theme's colours, so it still wins over a theme's `body`/`bodyHi`/`shade`.
 - **Sidebar.** A **Theme** / **Tema** select between Language and Bot color: **Auto (per project)**, then the built-ins `classic` and `forest`, then the other themes in map order (`themeChoices(themes)`), each by its name. Each option's tooltip is the theme's `description` (the built-ins' come from the locale files: `sidebar.themeClassicTitle`, `sidebar.themeForestTitle`); the closed select shows the chosen one's. Choosing switches the office at once (no reload) and saves through `prefs.set({ theme })`.
 - `dev-mock.js`: `?theme=<name>` sets the stored choice (e.g. `?theme=sakura`); the mock reads the gallery from `../../themes/*.json`, so it is there under Electron's `loadFile` or a static server at the repository root (`/app/renderer/index.html`).
+
+## Manager mode (v3.2)
+
+In the app the project's Claude session is the boss: it should delegate the work to agents and keep going until the task list is done, stopping only for what needs the person.
+
+```ts
+agentOffice.prefs.get(): Promise<{ resume: boolean; theme: 'auto' | string; manager: boolean }>
+agentOffice.prefs.set(p: { resume?: boolean; theme?: 'auto' | string; manager?: boolean }): Promise<{ resume: boolean; theme: string; manager: boolean }>
+```
+
+- **Setting.** Main keeps `manager` in `state.json` next to `resume` (default true). The sidebar shows it as a checkbox under **Continue last session**: **Manager mode — delegate to agents** / **Müdür modu — işleri ajanlara dağıt**; its tooltip says it applies to sessions started afterwards. Toggling restarts nothing.
+- **Env.** `startPty` builds the pty's env with `accounts.js` `sessionEnv(ptyEnv(…), { manager })`: `AGENT_OFFICE_APP=1` always, `AGENT_OFFICE_MANAGER=1` when the setting is on (off, the variable is removed, even if the app inherited it).
+- **Plugin.** A `prompt.compose` hook appends one section, `agent-office:manager` (scope `session`, fixed text: `MANAGER_TEXT` in `plugin/hooks/register.tsx`), to the system prompt of every request when `AGENT_OFFICE_MANAGER=1` and the loop offers the Agent tool (not to a teammate, not to a loop without the Agent tool). Being part of the system prompt, it holds across `--continue`, `/resume`, `/clear` and compaction. Outside the app the plugin adds nothing unless the person sets `AGENT_OFFICE_MANAGER=1` themselves.

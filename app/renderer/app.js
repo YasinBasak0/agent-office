@@ -415,6 +415,7 @@ sidebar = mountSidebar($('sidebar'), {
   refreshAuth,
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
   setResume: (on) => api.prefs?.set({ resume: on }).then((p) => sidebar.setResume(p?.resume)).catch((e) => console.error(e)),
+  setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
 });
 
@@ -481,6 +482,7 @@ onLang(applyStaticText);
 applyStaticText();
 api.prefs?.get().then((p) => {
   sidebar.setResume(p?.resume);
+  sidebar.setManager(p?.manager);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
   applyThemeChoice();
 }).catch((e) => console.error(e));

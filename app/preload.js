@@ -52,7 +52,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     install: () => ipcRenderer.send('update:install'),
   },
   prefs: {
-    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, theme: 'auto' | name } (theme: v3.1)
+    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, theme: 'auto' | name, manager: boolean } (theme: v3.1, manager: v3.2)
     set: (p) => ipcRenderer.invoke('prefs:set', p),
   },
   language: {
