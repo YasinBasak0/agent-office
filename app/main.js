@@ -1,10 +1,9 @@
 // Agent Office shell: window, projects, accounts, one claude pty per project (several with tabs), and office data.
-const { app, BrowserWindow, ipcMain, dialog, clipboard, Menu, Notification, shell: eShell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, Menu, Notification, nativeImage, shell: eShell } = require('electron');
 const { execFile, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const pty = require('node-pty');
 const P = require('./src/projects.js');
 const A = require('./src/accounts.js');
 const U = require('./src/usage.js');
@@ -14,6 +13,11 @@ const L = require('./src/locales.js');
 const UP = require('./src/updates.js');
 const M = require('./src/memory.js');
 const IS_MAC = OS.isMac();
+const IS_WIN = OS.isWindows();
+// Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
+// must be a real file (its own asar fix-up only knows node_modules.asar). macOS and Linux load it as before.
+/** @type {typeof import('node-pty')} */
+const pty = IS_WIN ? require(require.resolve('node-pty').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1')) : require('node-pty');
 
 let win = null;
 let poll = null;
@@ -88,17 +92,24 @@ function updateAttention() {
     const p = P.findProject(state, ev.id);
     if (!p) continue;
     notify(p.name, ev.kind === 'permission' ? (ev.tool ? T('main.notifyPermissionTool', { tool: ev.tool }) : T('main.notifyPermission')) : T('main.notifyDone'), p.id);
+    // Windows: the taskbar button flashes until the window is focused
+    if (IS_WIN && win && !win.isDestroyed() && !win.isFocused()) win.flashFrame(true);
   }
   const key = (m) => JSON.stringify([...m]);
   if (key(r.attention) === key(attention)) return;
   attention = r.attention;
-  // macOS: Dock badge; Linux: app counter on desktops that support it (Unity launcher)
+  // macOS: Dock badge; Linux: app counter on desktops that support it (Unity launcher); Windows: a dot on the
+  // taskbar button (overlay icon)
   try {
     if (app.dock) app.dock.setBadge(attention.size ? String(attention.size) : '');
+    else if (IS_WIN) win?.setOverlayIcon(attention.size ? badgeDot() : null, attention.size ? T('main.badge', { count: attention.size }) : '');
     else app.setBadgeCount(attention.size);
   } catch {}
   broadcast();
 }
+/** @type {Electron.NativeImage | null} */
+let badge = null;
+const badgeDot = () => badge || (badge = nativeImage.createFromBuffer(OS.dotPng(32, 0xe5484d)));
 function alertUsage(account, usage, seed = false) {
   for (const a of N.usageAlerts(account.id, usage, alerted, { seed })) {
     const when = a.resetsAt ? new Date(a.resetsAt).toLocaleString(uiLang(), { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -216,14 +227,40 @@ function accountEnv(account) {
   return A.ptyEnv(process.env, account.configDir);
 }
 
+// --- Windows: no login shell; claude is found on PATH and started directly (see src/platform.js)
+const CLAUDE_INSTALL_URL = 'https://code.claude.com/docs/en/setup';
+const isFile = (f) => { try { return fs.statSync(f).isFile(); } catch { return false; } };
+/** How to start claude with these arguments in this environment; null when Claude Code is not installed. */
+function windowsClaude(args, env) {
+  const claude = OS.findClaude(env, isFile);
+  return claude ? OS.windowsCommand(claude, args, env) : null;
+}
+// Claude Code is missing: say so in the tab's terminal, then exit (Enter there tries again).
+function sendNoClaude(id) {
+  send('pty:data', id, `\r\n\x1b[31m${T('main.noClaude')}\x1b[0m\r\n${T('main.noClaudeHelp', { url: CLAUDE_INSTALL_URL })}\r\n`);
+  send('pty:exit', id, 127);
+}
+/** node-pty arguments: a verbatim cmd.exe line is passed as one pre-quoted string. */
+const ptyArgs = (cmd) => (cmd.verbatim ? cmd.args.join(' ') : cmd.args);
+
 // Non-interactive claude command, run from the login shell like the projects' ptys (PATH and rc files apply).
+// Windows: claude itself (an exit code of 127 when it is missing, shown as "claude not found").
 function runClaude(account, args, timeout) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = execFile(shell(), ['-l', '-i', '-c', A.claudeCommand(args)], {
-        env: accountEnv(account), cwd: app.getPath('home'), timeout, maxBuffer: 1 << 20, killSignal: 'SIGKILL',
-      }, (err, stdout, stderr) => resolve({ err, stdout, stderr }));
+      if (IS_WIN) {
+        const env = accountEnv(account);
+        const cmd = windowsClaude(args.split(' '), env);
+        if (!cmd) return resolve({ err: Object.assign(new Error('claude not found'), { code: 127 }), stdout: '', stderr: '' });
+        child = execFile(cmd.file, cmd.args, {
+          env, cwd: app.getPath('home'), timeout, maxBuffer: 1 << 20, windowsVerbatimArguments: cmd.verbatim, windowsHide: true,
+        }, (err, stdout, stderr) => resolve({ err, stdout, stderr }));
+      } else {
+        child = execFile(shell(), ['-l', '-i', '-c', A.claudeCommand(args)], {
+          env: accountEnv(account), cwd: app.getPath('home'), timeout, maxBuffer: 1 << 20, killSignal: 'SIGKILL',
+        }, (err, stdout, stderr) => resolve({ err, stdout, stderr }));
+      }
     } catch (err) {
       return resolve({ err, stdout: '', stderr: '' });
     }
@@ -278,12 +315,19 @@ function startLogin(accountId) {
   const { cols, rows } = sizes.get(id) || lastSize;
   let t;
   try {
-    t = pty.spawn(shell(), ['-l', '-i', '-c', A.claudeCommand('auth login')], {
-      name: 'xterm-256color',
-      cols, rows,
-      cwd: app.getPath('home'),
-      env: accountEnv(account),
-    });
+    if (IS_WIN) {
+      const env = accountEnv(account);
+      const cmd = windowsClaude(['auth', 'login'], env);
+      if (!cmd) return sendNoClaude(id);
+      t = pty.spawn(cmd.file, ptyArgs(cmd), { name: 'xterm-256color', cols, rows, cwd: app.getPath('home'), env });
+    } else {
+      t = pty.spawn(shell(), ['-l', '-i', '-c', A.claudeCommand('auth login')], {
+        name: 'xterm-256color',
+        cols, rows,
+        cwd: app.getPath('home'),
+        env: accountEnv(account),
+      });
+    }
   } catch (e) {
     console.error('giriş pty\'si başlatılamadı:', e.message);
     send('pty:exit', id, -1);
@@ -303,13 +347,19 @@ function startLogin(accountId) {
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return undefined; } };
 
 // The script is written to userData/usage at startup (it is not run from inside the signed .app bundle).
+// Windows: statusline.js and agent-office-statusline.cmd, which runs this executable as Node on it (see usage.js).
 let usageScript;
 function ensureUsageScript() {
   if (usageScript !== undefined) return usageScript;
-  const f = path.join(usageRoot(), 'statusline.sh');
+  const f = path.join(usageRoot(), IS_WIN ? U.WIN_CMD : 'statusline.sh');
   try {
     fs.mkdirSync(usageRoot(), { recursive: true });
-    fs.writeFileSync(f, U.SCRIPT, { mode: 0o755 });
+    if (IS_WIN) {
+      fs.writeFileSync(path.join(usageRoot(), U.WIN_SCRIPT_NAME), U.WIN_SCRIPT);
+      fs.writeFileSync(f, U.windowsCmdFile(process.execPath));
+    } else {
+      fs.writeFileSync(f, U.SCRIPT, { mode: 0o755 });
+    }
     usageScript = f;
   } catch (e) {
     console.error('status line betiği yazılamadı:', e.message);
@@ -336,7 +386,34 @@ function usageStatusLine(project, configDir, dir = project.dir, key = project.id
     return null;
   }
   const user = U.userStatusLine(U.settingsPaths(dir, configDir, app.getPath('home')).map(readJson));
-  return { settings: U.statusLineSettings(script, path.join(accDir, `${key}.json`), user), userCommand: user?.command };
+  const out = path.join(accDir, `${key}.json`);
+  if (IS_WIN) return { settings: U.windowsStatusLineSettings(user), userCommand: user?.command, out };
+  return { settings: U.statusLineSettings(script, out, user), userCommand: user?.command };
+}
+
+// Windows: the --settings JSON goes in a file (userData/settings/<tab>.json; claude accepts a path), so no JSON has
+// to survive cmd.exe's quoting when claude is npm's claude.cmd. If it cannot be written, the JSON itself is passed.
+function settingsFile(key, json) {
+  const f = path.join(app.getPath('userData'), 'settings', `${key}.json`);
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, json);
+    return f;
+  } catch (e) {
+    console.error('ayar dosyası yazılamadı:', e.message);
+    return json;
+  }
+}
+
+// Windows: what claude's environment needs for the status line (see usage.js): the tab's quota file, the folder of
+// agent-office-statusline.cmd on PATH, and the shell Claude Code would run the user's own status line with.
+let gitBash;
+function windowsStatusLineEnv(env, sl) {
+  delete env.AGENT_OFFICE_USAGE_OUT;
+  delete env.AGENT_OFFICE_STATUSLINE_SHELL;
+  if (!sl?.out) return env;
+  if (gitBash === undefined) gitBash = OS.findGitBash(process.env, isFile);
+  return { ...OS.withPathDir(env, usageRoot()), AGENT_OFFICE_USAGE_OUT: sl.out, AGENT_OFFICE_STATUSLINE_SHELL: gitBash || '' };
 }
 
 // The newest of the project files in the account folders; a changed account is written to last.json and sent.
@@ -413,15 +490,20 @@ function startPty(id, { resume = false } = {}) {
   const sl = usageStatusLine(project, configDir, cwd, usageKey(id));
   const settings = M.withMemorySetting(sl?.settings, isDir(cwd) ? projectMemoryDir(cwd, configDir) : null);
   const isResume = resume && (!tab || Boolean(tab.worktree)) && hasHistory(cwd, configDir);
-  const args = [...(dir ? ['--plugin-dir', dir] : []), ...(settings ? ['--settings', settings] : []), ...(isResume ? ['--continue'] : [])];
+  const settingsArg = IS_WIN && settings ? settingsFile(usageKey(id), settings) : settings;
+  const args = [...(dir ? ['--plugin-dir', dir] : []), ...(settingsArg ? ['--settings', settingsArg] : []), ...(isResume ? ['--continue'] : [])];
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
-  const env = { ...A.ptyEnv(process.env, configDir), AGENT_OFFICE_APP: '1' };
+  let env = { ...A.ptyEnv(process.env, configDir), AGENT_OFFICE_APP: '1' };
   delete env.AGENT_OFFICE_STATUSLINE;
   if (sl?.userCommand) env.AGENT_OFFICE_STATUSLINE = sl.userCommand;
+  if (IS_WIN) env = windowsStatusLineEnv(env, sl);
   let t;
   try {
-    t = pty.spawn(shell(), ['-l', '-i', '-c', cmd, 'claude', ...args], {
+    // Windows: claude starts directly in a ConPTY (CLAUDE_CONFIG_DIR is already in env: no rc files to override it)
+    const win32 = IS_WIN ? windowsClaude(args, env) : null;
+    if (IS_WIN && !win32) { sendNoClaude(id); return broadcast(); }
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', cmd, 'claude', ...args], {
       name: 'xterm-256color',
       cols, rows,
       cwd: isDir(cwd) ? cwd : app.getPath('home'),
@@ -707,7 +789,31 @@ async function linuxClipboardFiles() {
   }
   return [];
 }
-const clipboardFiles = () => (IS_MAC ? macClipboardFiles() : linuxClipboardFiles());
+// Windows: Explorer puts CF_HDROP (every file) and FileNameW (the first) on the clipboard; Electron 44 shows such
+// formats as 'electron application/osclipboard;format="…"' items. If it shows none and the clipboard holds no text
+// (a file copy has none), PowerShell's Get-Clipboard reads the file list (slower, so only then).
+async function windowsClipboardFiles() {
+  try {
+    for (const item of await clipboard.read()) {
+      for (const type of item.types) {
+        const kind = OS.windowsClipboardKind(type);
+        if (!kind) continue;
+        const blob = await item.getType(type);
+        if (!(blob instanceof Blob)) continue;
+        const buf = Buffer.from(await blob.arrayBuffer());
+        const files = kind === 'drop' ? OS.filesFromDropFiles(buf)
+          : kind === 'name' ? OS.filesFromFileNameW(buf) : OS.filesFromUriList(buf.toString('utf8'), 'win32');
+        if (files.length) return files;
+      }
+    }
+  } catch {}
+  try { if (await clipboard.readText()) return []; } catch {}
+  const out = await new Promise((resolve) => {
+    execFile('powershell.exe', OS.POWERSHELL_FILES, { timeout: 4000, windowsHide: true }, (err, stdout) => resolve(err ? '' : String(stdout || '')));
+  });
+  return OS.filesFromLines(out);
+}
+const clipboardFiles = () => (IS_MAC ? macClipboardFiles() : IS_WIN ? windowsClipboardFiles() : linuxClipboardFiles());
 const IMAGE_TYPES = ['image/png', 'image/tiff', 'image/jpeg', 'image/gif', 'image/heic'];
 async function clipboardHasImage() {
   for (const t of IMAGE_TYPES) if (await clipboard.has(t)) return true;
@@ -751,7 +857,8 @@ ipcMain.handle('office:themes', () => {
   try { return TH ? TH.mergeThemes(TH.galleryThemes(readGalleryFiles()), user) : user; } catch { return user; }
 });
 
-// On Linux under npm start the window icon is the repo's build/icon.png; when packaged it comes from the .desktop file.
+// On Linux under npm start the window icon is the repo's build/icon.png; when packaged it comes from the .desktop file
+// (Windows: from the executable).
 function devIcon() {
   const icon = path.join(__dirname, 'build', 'icon.png');
   return !app.isPackaged && fs.existsSync(icon) ? { icon } : {};
@@ -762,7 +869,7 @@ async function createWindow() {
     width: 1400, height: 950,
     minWidth: 900, minHeight: 640,
     backgroundColor: '#2b1d1a',
-    // macOS: title bar inside the page, traffic lights above it; Linux: the window manager's normal frame
+    // macOS: title bar inside the page, traffic lights above it; Linux and Windows: the system's normal frame
     ...(IS_MAC ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 12, y: 10 } } : devIcon()),
     title: 'Agent Office',
     show: false,
@@ -780,6 +887,7 @@ async function createWindow() {
   isLoaded = false;
   win.once('ready-to-show', () => win.show());
   win.on('focus', onFocus);
+  if (IS_WIN) win.on('focus', () => win?.flashFrame(false));
   win.on('closed', () => { killAll(); clearInterval(poll); clearInterval(usagePoll); isLoaded = false; win = null; });
 
   // The folder from the command line is added/activated; if there are no projects, ask for a folder.
@@ -797,19 +905,22 @@ async function createWindow() {
 }
 
 fixSpawnHelper();
+// Windows: notifications are shown under this id; the installer's Start menu shortcut carries the same one (appId)
+if (IS_WIN) app.setAppUserModelId('io.github.isisever.agentoffice');
 // App menu: Paste (⌘V) goes to the renderer; if focus is in the terminal, the clipboard image/file/text
 // is passed to Claude Code in a suitable form, otherwise a normal paste happens.
 // ---- Updates: from GitHub Releases (electron-updater). A new version downloads in the background; the title bar
 // button or quitting the app installs it. Runs only in the packaged (signed) app. On Linux only the AppImage
-// updates itself (latest-linux.yml); a .deb install is the package manager's job, the updater is off.
-const linuxNoUpdates = () => !IS_MAC && !process.env.APPIMAGE;
+// updates itself (latest-linux.yml); a .deb install is the package manager's job, the updater is off. Windows: the
+// NSIS installer (latest.yml; the app is not code-signed, so nothing checks a publisher signature).
+const noSelfUpdate = () => !OS.canSelfUpdate();
 let updater = null;
 let updateReady = null; // downloaded version
 let updateDownloading = null; // version being downloaded
 let updateCheck = null; // the check in flight (checks never overlap)
 let lastUpdateCheck = 0;
 function setupUpdates() {
-  if (!app.isPackaged || linuxNoUpdates()) return;
+  if (!app.isPackaged || noSelfUpdate()) return;
   try { ({ autoUpdater: updater } = require('electron-updater')); } catch (e) { console.error('electron-updater yok:', e.message); return; }
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = true;
@@ -837,7 +948,7 @@ function checkUpdatesOnFocus() {
 }
 // manual check from the menu: the result is shown in a short dialog
 async function checkUpdatesNow() {
-  if (!updater) return dialog.showMessageBox(win, { message: app.isPackaged && linuxNoUpdates() ? T('main.updatesManual') : T('main.updatesOnlyInstalled') });
+  if (!updater) return dialog.showMessageBox(win, { message: app.isPackaged && noSelfUpdate() ? T('main.updatesManual') : T('main.updatesOnlyInstalled') });
   const current = app.getVersion();
   let latest = null;
   if (!updateReady && !updateDownloading) {
@@ -859,7 +970,7 @@ ipcMain.on('update:install', () => { if (updateReady && updater) { killAll(); up
 
 function buildMenu() {
   const name = app.getName();
-  // Linux: no hide/show roles; cut/copy/paste use Ctrl+Shift (Ctrl+C/V in the terminal go to claude,
+  // Linux and Windows: no hide/show roles; cut/copy/paste use Ctrl+Shift (Ctrl+C/V in the terminal go to claude,
   // Chromium's own Ctrl+C/V works in text boxes).
   const keys = OS.shortcuts();
   const hideRoles = IS_MAC ? [{ role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }] : [];

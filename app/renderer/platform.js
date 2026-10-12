@@ -1,15 +1,16 @@
 // OS differences (renderer): title bar and keyboard shortcuts.
-// In Electron, the preload's agentOffice.platform; in a plain browser (dev-mock), try it with ?platform=linux.
-// macOS: ⌘ shortcuts, room for traffic lights in the title bar. Linux: the window's normal frame and
+// In Electron, the preload's agentOffice.platform; in a plain browser (dev-mock), try it with ?platform=linux or win32.
+// macOS: ⌘ shortcuts, room for traffic lights in the title bar. Linux and Windows: the window's normal frame and
 // Ctrl+Shift shortcuts (Ctrl+V, Ctrl+O, Ctrl+1… go to Claude Code in the terminal).
 const fromQuery = new URLSearchParams(location.search).get('platform');
 export const platform = window.agentOffice?.platform || fromQuery || 'darwin';
 export const isMac = platform === 'darwin';
 
-// <html class="platform-darwin|platform-linux">: style.css lays out the title bar accordingly
-document.documentElement.classList.add(`platform-${isMac ? 'darwin' : 'linux'}`);
+// <html class="platform-darwin|platform-linux|platform-win32">: style.css lays out the title bar accordingly
+// (Windows like Linux)
+document.documentElement.classList.add(`platform-${isMac ? 'darwin' : platform === 'win32' ? 'win32' : 'linux'}`);
 
-/** Shortcut hint prefix: '⌘' (macOS) or 'Ctrl+Shift+' (Linux); e.g. modLabel + 'O'. */
+/** Shortcut hint prefix: '⌘' (macOS) or 'Ctrl+Shift+' (Linux, Windows); e.g. modLabel + 'O'. */
 export const modLabel = isMac ? '⌘' : 'Ctrl+Shift+';
 
 /** Is this an app shortcut (⌘X / Ctrl+Shift+X)? Not if another modifier is pressed. */
@@ -19,7 +20,7 @@ export const isModKey = (/** @type {KeyboardEvent} */ e) => (isMac
 
 /**
  * The pressed letter or digit, independent of keyboard layout and Shift ('o', '1'); otherwise e.key lowercased.
- * On Linux, Ctrl+Shift+1 gives e.key '!', while e.code stays 'Digit1'.
+ * On Linux and Windows, Ctrl+Shift+1 gives e.key '!', while e.code stays 'Digit1'.
  */
 export function keyOf(/** @type {KeyboardEvent} */ e) {
   const m = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(e.code || '');

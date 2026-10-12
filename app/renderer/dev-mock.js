@@ -3,7 +3,7 @@
 // ?empty → no projects; ?themesError → theme warning in the title bar; ?authError → third account 'error';
 // ?loginFail → fake login exits with code 1 and the account stays 'out'. ?lang=en|tr → language setting (else auto: browser language).
 // ?langs=en,tr,de → languages in the picker (a browser cannot list the folder; main reads locales/*.json). Default en,tr.
-// ?platform=linux → Linux title bar and Ctrl+Shift shortcuts (platform.js).
+// ?platform=linux (or win32) → Linux / Windows title bar and Ctrl+Shift shortcuts (platform.js).
 // ?asking → second project awaits approval (sign, ✋), third is done (●).
 // ?agentsWaiting → no boss is busy but agents still work (sign and boss panel: waiting on agents).
 // ?select=<worker id | @boss | shell:<id>> → clicks that bot/rack slot after a few seconds (agent panel test;

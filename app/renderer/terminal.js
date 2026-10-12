@@ -3,8 +3,8 @@
 import { Terminal } from '../node_modules/@xterm/xterm/lib/xterm.mjs';
 import { FitAddon } from '../node_modules/@xterm/addon-fit/lib/addon-fit.mjs';
 import { t } from './i18n.js';
-import { isMac, isModKey, keyOf } from './platform.js';
-import { translateKey } from '../src/terminal-keys.mjs';
+import { platform, isMac, isModKey, keyOf } from './platform.js';
+import { translateKey, imagePasteKey, quotePath } from '../src/terminal-keys.mjs';
 
 // Text lives in locales/*.json (terminal.exited). A line already written to the terminal is not rewritten on a language change.
 
@@ -70,20 +70,21 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
     if (restartable && d === '\r') { dead = false; term.reset(); pty.restart(projectId); needSize = true; resize(); }
   });
 
-  // Depending on clipboard content: image → Ctrl+V (Claude Code reads the image from the clipboard itself), files
-  // copied from Finder → quoted paths, text → xterm's (bracketed) paste.
+  // Depending on clipboard content: image → Claude Code's image paste key (Ctrl+V; Alt+V on Windows: it reads the
+  // image from the clipboard itself), files copied from Finder / a file manager / Explorer → quoted paths, text →
+  // xterm's (bracketed) paste.
   async function paste() {
     if (dead) return;
     let clip = null;
     try { clip = await window.agentOffice.clipboard.read(); } catch { return; }
     if (clip.files?.length) pty.write(projectId, clip.files.map(quote).join(' ') + ' ');
-    else if (clip.hasImage) pty.write(projectId, '\x16');
+    else if (clip.hasImage) pty.write(projectId, imagePasteKey(platform));
     else if (clip.text) term.paste(clip.text);
     term.focus();
   }
 
   // File drag-and-drop: write the paths (quoting those with spaces) to the terminal.
-  const quote = (p) => (/[\s'"\\$`!&;()<>|*?]/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p);
+  const quote = (p) => quotePath(p, platform);
   let depth = 0;
   const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
   el.addEventListener('dragenter', (e) => { if (hasFiles(e)) { depth++; el.classList.add('drop'); } });
@@ -100,7 +101,7 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
   });
 
   // ⌘V in the terminal is caught here: Chromium's own paste would send empty text for images/files.
-  // Linux: Ctrl+Shift+V pastes (Ctrl+V goes to claude, which reads the image from the clipboard); Ctrl+Shift+C/X
+  // Linux and Windows: Ctrl+Shift+V pastes (Ctrl+V goes to claude, which reads the image from the clipboard); Ctrl+Shift+C/X
   // are not passed to xterm (it would send ^C) and are left to Copy/Cut in the menu.
   // Cmd+Enter / Ctrl+Enter: xterm would send a bare CR; claude gets ctrl+enter (send a queued message now).
   term.attachCustomKeyEventHandler((ev) => {
@@ -109,7 +110,7 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
       if (ev.type === 'keydown') { ev.preventDefault(); term.input(seq); }
       return false;
     }
-    // macOS: ⌘V and ⌘⇧V (Shift optional, as before); Linux: Ctrl+Shift
+    // macOS: ⌘V and ⌘⇧V (Shift optional, as before); Linux and Windows: Ctrl+Shift
     const mod = isMac ? ev.metaKey && !ev.ctrlKey && !ev.altKey : isModKey(ev);
     if (ev.type !== 'keydown' || !mod) return true;
     const key = keyOf(ev);

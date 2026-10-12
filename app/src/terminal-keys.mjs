@@ -1,4 +1,4 @@
-// Key translations for the claude terminal that xterm.js does not encode by itself (pure; tested in main.test.cjs).
+// Key translations and paste helpers for the claude terminal that xterm.js does not do by itself (pure; tested in main.test.cjs).
 
 // Claude Code's send-now key (chat:sendNow) is ctrl+enter, which it reads as the CSI u sequence ESC [13;5u even
 // when the kitty keyboard protocol was not negotiated. xterm.js sends a bare CR for Enter whatever the modifiers.
@@ -15,4 +15,20 @@ export function translateKey(ev, isMac) {
   const cmd = isMac && ev.metaKey && !ev.ctrlKey;
   const ctrl = ev.ctrlKey && !ev.metaKey;
   return cmd || ctrl ? CTRL_ENTER : null;
+}
+
+// Claude Code's image paste key (chat:imagePaste): Ctrl+V on macOS and Linux, Alt+V (ESC v) on Windows.
+// The app sends it when the clipboard holds an image, and Claude Code reads the image from the clipboard itself.
+/** @param {string} platform process.platform */
+export const imagePasteKey = (platform) => (platform === 'win32' ? '\x1bv' : '\x16');
+
+/**
+ * A pasted or dropped file path as the terminal gets it. macOS and Linux: shell-style single quotes when the path
+ * has spaces or shell characters. Windows: double quotes when it has spaces or such characters ("C:\a b\c.png");
+ * a backslash alone needs none there.
+ * @param {string} p @param {string} platform process.platform
+ */
+export function quotePath(p, platform) {
+  if (platform === 'win32') return /[\s"'&()^%!;,=`$]/.test(p) ? `"${p.replace(/"/g, '')}"` : p;
+  return /[\s'"\\$`!&;()<>|*?]/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p;
 }

@@ -41,8 +41,8 @@ button { font: inherit; color: inherit; }
   white-space: nowrap;
   min-width: 0;
 }
-/* Linux: the window has its own frame and title; no traffic-light gap or drag region needed */
-.platform-linux #titlebar { padding-left: 12px; -webkit-app-region: no-drag; }
+/* Linux and Windows: the window has its own frame and title; no traffic-light gap or drag region needed */
+.platform-linux #titlebar, .platform-win32 #titlebar { padding-left: 12px; -webkit-app-region: no-drag; }
 #title { color: var(--accent); font-weight: bold; letter-spacing: 2px; }
 #project {
   opacity: .85;

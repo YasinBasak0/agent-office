@@ -264,7 +264,10 @@
     "removeWorktree": "Close and Remove Worktree",
     "keepWorktree": "Close, Keep Folder",
     "worktreeKept": "Git did not remove the worktree; the tab stays open.",
-    "worktreeKeptDetail": "{error}\n\nCommit or discard the changes and close the tab again, or choose \"Close, Keep Folder\"."
+    "worktreeKeptDetail": "{error}\n\nCommit or discard the changes and close the tab again, or choose \"Close, Keep Folder\".",
+    "noClaude": "Claude Code was not found.",
+    "noClaudeHelp": "Install Claude Code for Windows ({url}), check that `claude` runs in a new terminal, then press Enter here to try again.",
+    "badge": "{count} waiting for you"
   },
   "auth": {
     "unreadable": "could not read the login status",

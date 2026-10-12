@@ -177,7 +177,7 @@ function showActive() {
 
 // The tab strip shows only when the project has more than one tab; a single terminal looks as before
 // (then "+" sits in the terminal's top-right corner and appears on hover).
-const baseName = (d) => String(d || '').replace(/\/+$/, '').split('/').pop() || '';
+const baseName = (d) => String(d || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''; // '/' or Windows '\\'
 function tabButton(p, tab, active, running) {
   const n = tab?.n ?? MAIN_TAB;
   const dir = tab?.dir || p.dir;

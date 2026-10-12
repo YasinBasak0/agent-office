@@ -644,3 +644,142 @@ test('terminal: ⌘Enter (macOS) ve Ctrl+Enter claude\'a ctrl+enter (hemen gönd
   assert.equal(K.translateKey(enter({ metaKey: true, ctrlKey: true }), true), null);
   assert.equal(K.translateKey({ key: 's', ctrlKey: true }, true), null);
 });
+
+// ---- Windows (decisions are pure and take the platform/env as arguments, so they run on any OS)
+const W = require('path').win32;
+const filesAt = (...files) => (f) => files.includes(f);
+
+test('Windows: claude PATH\'te (PATHEXT sırası, Path anahtarı), yoksa kurulum klasörleri; hiç yoksa null', () => {
+  const env = { Path: 'C:\\Windows;C:\\Users\\a\\AppData\\Roaming\\npm;"C:\\Users\\a\\.local\\bin"', PATHEXT: '.COM;.EXE;.BAT;.CMD;.PS1' };
+  // .exe comes before .cmd in PATHEXT, but PATH order wins: npm's folder is earlier
+  assert.equal(OS.findClaude(env, filesAt('C:\\Users\\a\\AppData\\Roaming\\npm\\claude.cmd', 'C:\\Users\\a\\.local\\bin\\claude.exe')),
+    'C:\\Users\\a\\AppData\\Roaming\\npm\\claude.cmd');
+  assert.equal(OS.findClaude(env, filesAt('C:\\Users\\a\\.local\\bin\\claude.exe')), 'C:\\Users\\a\\.local\\bin\\claude.exe');
+  // an extensionless npm shim (a shell script) or a .ps1 is never picked
+  assert.equal(OS.findClaude(env, filesAt('C:\\Users\\a\\AppData\\Roaming\\npm\\claude', 'C:\\Users\\a\\AppData\\Roaming\\npm\\claude.ps1')), null);
+  // not on PATH: the native installer's folder, then npm's
+  const bare = { PATH: 'C:\\Windows', USERPROFILE: 'C:\\Users\\b', APPDATA: 'C:\\Users\\b\\AppData\\Roaming' };
+  assert.equal(OS.findClaude(bare, filesAt('C:\\Users\\b\\.local\\bin\\claude.exe')), 'C:\\Users\\b\\.local\\bin\\claude.exe');
+  assert.equal(OS.findClaude(bare, filesAt('C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd')), 'C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd');
+  assert.equal(OS.findClaude(bare, () => false), null);
+  assert.equal(OS.findOnPath('git.exe', { PATH: 'C:\\Git\\cmd' }, filesAt('C:\\Git\\cmd\\git.exe')), 'C:\\Git\\cmd\\git.exe');
+});
+
+test('Windows: .exe doğrudan, .cmd cmd.exe /d /s /c ile tek satır (tırnaklar korunur)', () => {
+  const args = ['--plugin-dir', 'C:\\Users\\a b\\AppData\\Roaming\\Agent Office\\plugin\\agent-office', '--settings', 'C:\\s\\p.json', '--continue'];
+  assert.deepEqual(OS.windowsCommand('C:\\Users\\a\\.local\\bin\\claude.exe', args, {}), { file: 'C:\\Users\\a\\.local\\bin\\claude.exe', args, verbatim: false });
+  const c = OS.windowsCommand('C:\\Users\\a b\\AppData\\Roaming\\npm\\claude.cmd', args, { ComSpec: 'C:\\Windows\\system32\\cmd.exe' });
+  assert.equal(c.file, 'C:\\Windows\\system32\\cmd.exe');
+  assert.equal(c.verbatim, true);
+  assert.deepEqual(c.args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.equal(c.args[3], '""C:\\Users\\a b\\AppData\\Roaming\\npm\\claude.cmd" --plugin-dir "C:\\Users\\a b\\AppData\\Roaming\\Agent Office\\plugin\\agent-office" --settings C:\\s\\p.json --continue"');
+  assert.equal(OS.windowsCommand('C:\\x\\claude.BAT', [], {}).file, 'cmd.exe');
+  assert.equal(OS.cmdQuote('a&b'), '"a&b"');
+  assert.equal(OS.cmdQuote('say "hi"'), '"say ""hi"""');
+});
+
+test('Windows: PATH\'e klasör eklenir (mevcut anahtar, bir kez); env değişken adı büyük/küçük harf duyarsız', () => {
+  assert.deepEqual(OS.withPathDir({ Path: 'C:\\A;C:\\B' }, 'C:\\U s'), { Path: 'C:\\A;C:\\B;C:\\U s' });
+  assert.deepEqual(OS.withPathDir({ Path: 'C:\\A;c:\\u s' }, 'C:\\U s'), { Path: 'C:\\A;c:\\u s' });
+  assert.deepEqual(OS.withPathDir({}, 'C:\\U'), { PATH: 'C:\\U' });
+  assert.equal(OS.envGet({ ComSpec: 'x' }, 'COMSPEC'), 'x');
+  assert.equal(OS.envGet({}, 'COMSPEC'), undefined);
+});
+
+test('Windows: Git Bash CLAUDE_CODE_GIT_BASH_PATH, git.exe\'nin yanı, sonra varsayılan klasörler', () => {
+  const bash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+  assert.equal(OS.findGitBash({ CLAUDE_CODE_GIT_BASH_PATH: 'D:\\g\\bash.exe' }, filesAt('D:\\g\\bash.exe', bash)), 'D:\\g\\bash.exe');
+  assert.equal(OS.findGitBash({ PATH: 'C:\\Program Files\\Git\\cmd' }, filesAt('C:\\Program Files\\Git\\cmd\\git.exe', bash)), bash);
+  assert.equal(OS.findGitBash({ ProgramFiles: 'C:\\Program Files' }, filesAt(bash)), bash);
+  assert.equal(OS.findGitBash({ LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local' }, filesAt('C:\\Users\\a\\AppData\\Local\\Programs\\Git\\bin\\bash.exe')),
+    'C:\\Users\\a\\AppData\\Local\\Programs\\Git\\bin\\bash.exe');
+  assert.equal(OS.findGitBash({ PATH: 'C:\\Windows' }, () => false), null);
+});
+
+test('Windows: Gezgin\'den kopyalanan dosyalar (CF_HDROP, FileNameW, uri-list, PowerShell çıktısı)', () => {
+  const names = ['C:\\Users\\a\\b c.png', 'D:\\x.txt'];
+  const wide = Buffer.concat([Buffer.alloc(20), Buffer.from(names.join('\0') + '\0\0', 'utf16le')]);
+  wide.writeUInt32LE(20, 0);
+  wide.writeUInt32LE(1, 16);
+  assert.deepEqual(OS.filesFromDropFiles(wide), names);
+  const ansi = Buffer.concat([Buffer.alloc(20), Buffer.from('C:\\a.txt\0\0', 'latin1')]);
+  ansi.writeUInt32LE(20, 0);
+  assert.deepEqual(OS.filesFromDropFiles(ansi), ['C:\\a.txt']);
+  assert.deepEqual(OS.filesFromDropFiles(Buffer.alloc(4)), []);
+  assert.deepEqual(OS.filesFromFileNameW(Buffer.from('C:\\ç d.png\0', 'utf16le')), ['C:\\ç d.png']);
+  assert.deepEqual(OS.filesFromFileNameW(Buffer.alloc(0)), []);
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="CF_HDROP"'), 'drop');
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="FileNameW"'), 'name');
+  assert.equal(OS.windowsClipboardKind('text/uri-list'), 'uri');
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="HTML Format"'), null);
+  assert.equal(OS.windowsClipboardKind('text/plain'), null);
+  assert.deepEqual(OS.filesFromUriList('file:///C:/Users/a%20b/x.png\r\nfile://srv/share/y.txt\r\nhttps://e.com/z', 'win32'),
+    ['C:\\Users\\a b\\x.png', '\\\\srv\\share\\y.txt']);
+  assert.deepEqual(OS.filesFromLines('C:\\a b.txt\r\n\\\\srv\\s\\c.txt\r\nWARNING: x\r\n'), ['C:\\a b.txt', '\\\\srv\\s\\c.txt']);
+});
+
+test('Windows: kısayollar Linux gibi Ctrl+Shift; güncelleyici macOS, Windows ve AppImage\'da', () => {
+  assert.deepEqual(OS.shortcuts('win32'), OS.shortcuts('linux'));
+  assert.equal(OS.isWindows('win32'), true);
+  assert.equal(OS.isWindows('darwin'), false);
+  assert.equal(OS.canSelfUpdate('darwin', {}), true);
+  assert.equal(OS.canSelfUpdate('win32', {}), true);
+  assert.equal(OS.canSelfUpdate('linux', {}), false);
+  assert.equal(OS.canSelfUpdate('linux', { APPIMAGE: '/x.AppImage' }), true);
+});
+
+test('Windows: görev çubuğu rozeti geçerli bir PNG', () => {
+  const png = OS.dotPng(32, 0xe5484d);
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(png.readUInt32BE(16), 32);
+  assert.equal(png.readUInt32BE(20), 32);
+});
+
+test('Windows: status line komutu tek çıplak sözcük; .cmd uygulamayı Node olarak çalıştırır', () => {
+  const s = JSON.parse(U.windowsStatusLineSettings({ padding: 1 }));
+  assert.deepEqual(s.statusLine, { type: 'command', command: 'agent-office-statusline.cmd', padding: 1 });
+  assert.equal('padding' in JSON.parse(U.windowsStatusLineSettings(null)).statusLine, false);
+  // no quotes, spaces or backslashes: Git Bash and PowerShell read it the same way
+  assert.match(U.WIN_CMD, /^[\w.-]+$/);
+  const cmd = U.windowsCmdFile('C:\\Users\\a 100%\\AppData\\Local\\Programs\\Agent Office\\Agent Office.exe');
+  assert.equal(cmd.split('\r\n')[3], 'set ELECTRON_RUN_AS_NODE=1');
+  assert.equal(cmd.split('\r\n')[4], '"C:\\Users\\a 100%%\\AppData\\Local\\Programs\\Agent Office\\Agent Office.exe" "%~dp0statusline.js"');
+});
+
+test('Windows: status line betiği (Node) girdiyi dosyaya yazar, kullanıcının komutunu aynı girdiyle çalıştırır', { skip: process.platform === 'win32' && 'runs the user command with /bin/sh here' }, () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { execFileSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-slw-'));
+  const script = path.join(dir, U.WIN_SCRIPT_NAME);
+  fs.writeFileSync(script, U.WIN_SCRIPT);
+  const out = path.join(dir, 'p.json');
+  const input = JSON.stringify({ rate_limits: { seven_day: { used_percentage: 3 } } });
+  const env = { PATH: process.env.PATH, AGENT_OFFICE_USAGE_OUT: out };
+  assert.equal(execFileSync(process.execPath, [script], { input, env }).toString(), '');
+  assert.equal(fs.readFileSync(out, 'utf8'), input);
+  const shown = execFileSync(process.execPath, [script], { input, env: { ...env, AGENT_OFFICE_STATUSLINE: 'wc -c | tr -d " "', AGENT_OFFICE_STATUSLINE_SHELL: '/bin/sh' } }).toString();
+  assert.equal(shown.trim(), String(input.length));
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['p.json', U.WIN_SCRIPT_NAME]);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('Windows: hafıza ve geçmiş slug\'ı C:\\ yollarında da Claude Code gibi', () => {
+  assert.equal(M.memorySlug('C:\\Users\\a\\proj'), 'C--Users-a-proj');
+  // git reports forward slashes on Windows: the same slug
+  assert.equal(M.memorySlug(M.memoryBase('C:\\Users\\a\\proj\\sub', 'C:/Users/a/proj\nC:/Users/a/proj/.git\n')), 'C--Users-a-proj');
+  assert.equal(W.basename(P.historyDir('C:\\Users\\a\\my.proj', null, 'C:\\Users\\a')), 'C--Users-a-my-proj');
+});
+
+test('terminal: resim yapıştırma tuşu ve yol tırnakları (Windows çift tırnak)', async () => {
+  const K = await import('../src/terminal-keys.mjs');
+  assert.equal(K.imagePasteKey('darwin'), '\x16');
+  assert.equal(K.imagePasteKey('linux'), '\x16');
+  assert.equal(K.imagePasteKey('win32'), '\x1bv');
+  assert.equal(K.quotePath('/a/b c', 'darwin'), "'/a/b c'");
+  assert.equal(K.quotePath("/a/it's", 'linux'), "'/a/it'\\''s'");
+  assert.equal(K.quotePath('/a/b', 'darwin'), '/a/b');
+  assert.equal(K.quotePath('C:\\Users\\a\\b.png', 'win32'), 'C:\\Users\\a\\b.png');
+  assert.equal(K.quotePath('C:\\Users\\a b\\c.png', 'win32'), '"C:\\Users\\a b\\c.png"');
+  assert.equal(K.quotePath('C:\\R&D\\x', 'win32'), '"C:\\R&D\\x"');
+});
