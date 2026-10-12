@@ -420,6 +420,7 @@ sidebar = mountSidebar($('sidebar'), {
   addProject,
   setBotColor,
   removeProject,
+  projectMenu: (p) => api.projects.menu?.(p.id).catch((e) => console.error(e)),
   setAccount,
   addAccount,
   renameAccount,

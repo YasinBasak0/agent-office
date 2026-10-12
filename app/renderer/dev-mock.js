@@ -151,6 +151,7 @@ window.agentOffice = {
       changed();
     },
     setActive: async (id) => { activeId = id; changed(); },
+    menu: async () => {},
     setAccount: async (id, accountId) => {
       const p = projects.find((x) => x.id === id);
       if (p) p.accountId = accountId;

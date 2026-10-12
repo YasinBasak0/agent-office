@@ -947,3 +947,307 @@ test('uyku: uyanış seçenekleri (kendi oturumu, açılışta "son oturumdan de
   assert.deepEqual(wakeOptions({}, true), { resume: false });
   assert.deepEqual(wakeOptions(undefined, true), { resume: false });
 });
+
+// --- moving a session to another computer (contract v3.4): src/transfer.js (pure) and src/transfer-io.js (files, git)
+const TR = require('../src/transfer.js');
+const TIO = require('../src/transfer-io.js');
+
+const manifestOf = (over = {}) => ({
+  format: TR.FORMAT, version: TR.VERSION, createdAt: '2026-10-12T00:00:00.000Z',
+  source: { platform: 'darwin', projectDir: '/Users/a/proj', historyDir: '/Users/a/.claude/projects/-Users-a-proj' },
+  session: { id: 'abc-123' }, git: null, ...over,
+});
+const archiveOf = (extra = [], manifest = manifestOf()) => [
+  { name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest)) },
+  { name: `transcript/${manifest.session?.id}.jsonl`, data: Buffer.from('{"type":"user"}\n') },
+  ...extra,
+];
+const codeOf = (fn) => { try { fn(); } catch (e) { return e.code; } return 'no error'; };
+
+test('transfer: tar.gz round trip keeps names (long, non-ASCII) and bytes', () => {
+  const long = `memory/${'x'.repeat(150)}.md`;
+  const entries = [
+    { name: 'manifest.json', data: Buffer.from('{}') },
+    { name: 'transcript/abc/subagents/agent-1.jsonl', data: Buffer.from('a\nb\n') },
+    { name: long, data: Buffer.alloc(0) },
+    { name: 'memory/çalışma_notları.md', data: Buffer.from('ğüş') },
+    { name: 'git/handoff.bundle', data: Buffer.from([0, 1, 2, 255, 254, 0, 10, 13]) },
+    { name: 'big', data: Buffer.alloc(70000, 7) },
+  ];
+  const back = TR.unpackArchive(TR.packArchive(entries, 1700000000));
+  assert.deepEqual(back.map((e) => e.name), entries.map((e) => e.name));
+  for (let i = 0; i < entries.length; i++) assert.ok(back[i].data.equals(entries[i].data), entries[i].name);
+  assert.equal(codeOf(() => TR.unpackArchive(Buffer.from('not gzip'))), 'notArchive');
+  assert.equal(codeOf(() => TR.unpackArchive(TR.packArchive([{ name: 'a', data: Buffer.alloc(5000) }]), 1000)), 'tooLarge');
+  assert.equal(codeOf(() => TR.tarPack([{ name: '../evil', data: Buffer.alloc(1) }])), 'unsafeEntry');
+});
+
+test('transfer: the archive is refused for unknown formats, traversal, absolute paths, links and credentials', () => {
+  const ok = TR.readArchive(archiveOf([{ name: 'memory/MEMORY.md', data: Buffer.from('- x') }, { name: 'office/abc-123.json', data: Buffer.from('{}') }, { name: 'transcript/abc-123/tool-results/x.txt', data: Buffer.from('t') }]));
+  assert.equal(ok.manifest.session.id, 'abc-123');
+  assert.equal(ok.memory[0].name, 'MEMORY.md');
+  assert.equal(ok.sidecar[0].rel, 'tool-results/x.txt');
+  assert.ok(ok.office);
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([], { ...manifestOf(), format: 'zip' }))), 'unknownFormat');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([], { ...manifestOf(), version: TR.VERSION + 1 }))), 'newerFormat');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([], { ...manifestOf(), session: { id: 'a b' } }))), 'badManifest');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([], manifestOf({ git: { head: 'a'.repeat(40), branch: '--upload-pack=x' } })))), 'badManifest');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([], manifestOf({ git: { head: 'nothex' } })))), 'badManifest');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([], manifestOf({ source: { platform: 'darwin' } })))), 'badManifest');
+  for (const name of ['../x', 'memory/../../x.md', '/etc/passwd', 'C:/x', 'c:\\x', 'memory\\..\\x.md', 'a//b', './a', 'a/./b', 'x\0y']) {
+    assert.equal(codeOf(() => TR.readArchive(archiveOf([{ name, data: Buffer.alloc(1) }]))), 'unsafeEntry', name);
+  }
+  for (const name of ['transcript/abc-123/.credentials.json', 'memory/.claude.json', 'transcript/abc-123/login.keychain-db']) {
+    assert.equal(codeOf(() => TR.readArchive(archiveOf([{ name, data: Buffer.alloc(1) }]))), 'secret', name);
+  }
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([{ name: 'settings.json', data: Buffer.alloc(1) }]))), 'unexpectedEntry');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([{ name: 'memory/sub/x.md', data: Buffer.alloc(1) }]))), 'unexpectedEntry');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf([{ name: 'manifest.json', data: Buffer.from('{}') }]))), 'duplicate');
+  assert.equal(codeOf(() => TR.readArchive(archiveOf().slice(0, 1))), 'missingTranscript');
+  assert.equal(codeOf(() => TR.readArchive([])), 'notArchive');
+  // a symlink entry (type 2) in a hand-made tar is refused while reading
+  const tar = TR.tarPack([{ name: 'manifest.json', data: Buffer.from('{}') }]);
+  tar[156] = '2'.charCodeAt(0);
+  let sum = 0;
+  for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 0x20 : tar[i];
+  tar.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 'ascii');
+  assert.equal(codeOf(() => TR.tarUnpack(tar)), 'unsafeEntry');
+});
+
+test('transfer: path prefixes in transcript lines (POSIX→POSIX, macOS→Windows, Windows→macOS)', () => {
+  const src = { platform: 'darwin', projectDir: '/Users/a/proj', realDir: '/Users/a/proj', historyDir: '/Users/a/.claude/projects/-Users-a-proj', memoryDir: '/Users/a/.claude/projects/-Users-a-proj/memory' };
+  const ids = { from: 's1', to: 's1' };
+  // POSIX → POSIX
+  let rw = TR.makeRewriter(TR.moveMaps(src, { projectDir: '/home/b/code/proj', historyDir: '/home/b/.claude/projects/-home-b-code-proj', memoryDir: '/home/b/.claude/projects/-home-b-code-proj/memory' }, ids), 'posix');
+  const line = JSON.stringify({ type: 'user', cwd: '/Users/a/proj', sessionId: 's1', message: { content: [{ type: 'tool_use', input: { file_path: '/Users/a/proj/src/a b.js', command: 'cat /Users/a/proj/x.txt; ls /Users/a/project /x/Users/a/proj' } }, { type: 'text', text: 'saved to /Users/a/.claude/projects/-Users-a-proj/s1/tool-results/r.txt.' }] } });
+  const out = JSON.parse(TR.rewriteJsonl(line, rw, ids));
+  assert.equal(out.cwd, '/home/b/code/proj');
+  assert.equal(out.message.content[0].input.file_path, '/home/b/code/proj/src/a b.js');
+  assert.equal(out.message.content[0].input.command, 'cat /home/b/code/proj/x.txt; ls /Users/a/project /x/Users/a/proj');
+  assert.equal(out.message.content[1].text, 'saved to /home/b/.claude/projects/-home-b-code-proj/s1/tool-results/r.txt.');
+  // lines without a path stay byte for byte; broken lines too
+  const plain = '{"type":"x",  "a":1.0}\nnot json /Users/a/proj\n';
+  assert.equal(TR.rewriteJsonl(plain, rw, ids), plain);
+  // macOS → Windows: separators follow, a whole-path field converts spaces and all
+  rw = TR.makeRewriter(TR.moveMaps(src, { projectDir: 'C:\\Users\\b\\proj', historyDir: 'C:\\Users\\b\\.claude\\projects\\C--Users-b-proj', memoryDir: null }, ids), 'win32');
+  const w = JSON.parse(TR.rewriteJsonl(JSON.stringify({ cwd: '/Users/a/proj', input: { file_path: '/Users/a/proj/my dir/a.js' }, text: 'edit /Users/a/proj/src/b.ts now' }), rw, ids));
+  assert.equal(w.cwd, 'C:\\Users\\b\\proj');
+  assert.equal(w.input.file_path, 'C:\\Users\\b\\proj\\my dir\\a.js');
+  assert.equal(w.text, 'edit C:\\Users\\b\\proj\\src\\b.ts now');
+  // Windows → macOS: any case, / or \ or JSON-escaped \\ between parts
+  const wsrc = { platform: 'win32', projectDir: 'C:\\Users\\a\\proj', historyDir: 'C:\\Users\\a\\.claude\\projects\\C--Users-a-proj' };
+  rw = TR.makeRewriter(TR.moveMaps(wsrc, { projectDir: '/Users/b/proj', historyDir: '/Users/b/.claude/projects/-Users-b-proj' }, ids), 'posix');
+  const m = JSON.parse(TR.rewriteJsonl(JSON.stringify({ cwd: 'C:\\Users\\a\\proj', a: 'c:\\users\\A\\Proj\\src\\x.js', b: 'C:/Users/a/proj/y.js', c: '{"p":"C:\\\\Users\\\\a\\\\proj\\\\z.js"}', d: 'C:\\Users\\a\\project2' }), rw, ids));
+  assert.equal(m.cwd, '/Users/b/proj');
+  assert.equal(m.a, '/Users/b/proj/src/x.js');
+  assert.equal(m.b, '/Users/b/proj/y.js');
+  assert.equal(m.c, '{"p":"/Users/b/proj/z.js"}');
+  assert.equal(m.d, 'C:\\Users\\a\\project2');
+  // a new session id: the id fields and the session's own folder follow
+  const ids2 = { from: 's1', to: 's2' };
+  rw = TR.makeRewriter(TR.moveMaps(src, { projectDir: '/p', historyDir: '/h' }, ids2), 'posix');
+  const r = JSON.parse(TR.rewriteJsonl(JSON.stringify({ sessionId: 's1', session_id: 's1', other: 's1', t: '/Users/a/.claude/projects/-Users-a-proj/s1/tool-results/a.txt' }), rw, ids2));
+  assert.deepEqual(r, { sessionId: 's2', session_id: 's2', other: 's1', t: '/h/s2/tool-results/a.txt' });
+});
+
+test('transfer: the new folder\'s Claude Code slug (real path; Windows drive; too long → refused)', () => {
+  const path = require('path');
+  assert.equal(P.historyDir('C:\\Users\\b\\proj', null, 'C:\\Users\\b').replace(/\\/g, '/').split('/').pop(), 'C--Users-b-proj');
+  assert.equal(path.basename(P.historyDir('/home/b/my proj.v2', null, '/home/b')), '-home-b-my-proj-v2');
+  const fs = require('fs');
+  const os = require('os');
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-slug-')));
+  try {
+    assert.equal(TIO.historyDirOf(tmp, null, '/h'), P.historyDir(tmp, null, '/h'));
+    if (process.platform !== 'win32') {
+      fs.symlinkSync(tmp, path.join(tmp, 'link'));
+      assert.equal(TIO.historyDirOf(path.join(tmp, 'link'), '/cfg', '/h'), P.historyDir(tmp, '/cfg', '/h'));
+    }
+    const long = path.join(tmp, 'x'.repeat(210));
+    fs.mkdirSync(long);
+    const parsed = TR.readArchive(archiveOf());
+    assert.equal(codeOf(() => TIO.placeSession(parsed, { targetDir: long, configDir: path.join(tmp, 'cfg'), home: tmp })), 'longPath');
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('transfer: secrets stay out (Claude login files, untracked .env, keys), remote URLs lose their passwords', () => {
+  for (const f of ['.credentials.json', 'x/.claude.json', '.env', '.env.local', 'config/.env.production', 'id_rsa', 'certs/server.key', 'a.pem', '.claude/settings.local.json', '.netrc', 'login.keychain-db']) assert.equal(TR.isSecretFile(f), true, f);
+  for (const f of ['.env.example', 'src/env.js', 'id_rsa.pub', 'README.md', 'keys.ts', '.claude/agents/x.md']) assert.equal(TR.isSecretFile(f), false, f);
+  assert.equal(TR.redactRemote('https://user:ghp_secret@github.com/a/b.git'), 'https://github.com/a/b.git');
+  assert.equal(TR.redactRemote('https://x-access-token:abc@github.com/a/b'), 'https://github.com/a/b');
+  assert.equal(TR.redactRemote('https://ghp_abcdef@github.com/a/b'), 'https://github.com/a/b');
+  assert.equal(TR.redactRemote('https://me@gitlab.com/a/b'), 'https://me@gitlab.com/a/b');
+  assert.equal(TR.redactRemote('git@github.com:a/b.git'), 'git@github.com:a/b.git');
+  assert.ok(TR.remotesMatch(['git@github.com:Isisever/Agent-Office.git'], ['https://github.com/isisever/agent-office']));
+  assert.ok(TR.remotesMatch(['ssh://git@github.com:22/a/b.git'], ['https://tok@github.com/a/b/']));
+  assert.ok(!TR.remotesMatch(['git@github.com:a/b.git'], ['git@github.com:a/c.git']));
+  assert.ok(!TR.remotesMatch([], ['git@github.com:a/b.git']));
+});
+
+test('transfer: only an idle session goes (sleep rules: busy boss, prompt, agents, shells, draft)', () => {
+  const idle = { sessionId: 's', status: 'idle' };
+  const office = { stats: {}, workers: [{ doneAt: 1 }], shells: [{ endAt: 2 }] };
+  assert.equal(TR.exportBlocker({ running: false }), '');
+  assert.equal(TR.exportBlocker({ running: true, claude: idle, office }), '');
+  assert.equal(TR.exportBlocker({ running: true, claude: { sessionId: 's', status: 'busy' }, office }), 'busy');
+  assert.equal(TR.exportBlocker({ running: true, claude: idle, office: { stats: { isBossBusy: true } } }), 'busy');
+  assert.equal(TR.exportBlocker({ running: true, claude: idle, office: { stats: { waiting: { tool: 'Bash' } } } }), 'waiting');
+  assert.equal(TR.exportBlocker({ running: true, claude: idle, office: { stats: {}, workers: [{ doneAt: null }] } }), 'agents');
+  assert.equal(TR.exportBlocker({ running: true, claude: idle, office: { stats: {}, shells: [{}] } }), 'shells');
+  assert.equal(TR.exportBlocker({ running: true, claude: idle, office, hasDraft: true }), 'draft');
+  assert.equal(TR.exportBlocker({ running: true, claude: undefined, office }), 'unknown');
+  assert.equal(TR.exportBlocker({ running: true, claude: idle, office: undefined }), 'unknown');
+});
+
+test('transfer: checkout plan, file name, versions', () => {
+  const base = { base: 'b', isClean: true, branches: ['main', 'feat'], sourceBranch: 'feat', sessionId: '12345678-aaaa' };
+  assert.deepEqual(TR.planCheckout({ ...base, head: 'b' }), { action: 'apply' });
+  assert.deepEqual(TR.planCheckout({ ...base, head: 'b', isClean: false }), { action: 'dirty' });
+  assert.deepEqual(TR.planCheckout({ ...base, head: 'x' }), { action: 'branch', branch: 'agent-office/handoff-12345678' });
+  assert.deepEqual(TR.planCheckout({ ...base, head: 'x', sourceBranch: 'new' }), { action: 'branch', branch: 'new' });
+  assert.deepEqual(TR.planCheckout({ ...base, head: 'x', branches: ['feat', 'agent-office/handoff-12345678'] }), { action: 'branch', branch: 'agent-office/handoff-12345678-2' });
+  assert.deepEqual(TR.planCheckout({ ...base, head: 'x', sourceBranch: null }), { action: 'branch', branch: 'agent-office/handoff-12345678' });
+  assert.equal(TR.archiveName('shop', new Date(2026, 9, 2)), 'shop-2026-10-02.agentoffice');
+  assert.equal(TR.archiveName('a:b/c', new Date(2026, 0, 1)), 'a-b-c-2026-01-01.agentoffice');
+  assert.ok(TR.compareVersions('2.1.200 (Claude Code)', '2.1.296') < 0);
+  assert.equal(TR.compareVersions('2.1.296', '2.1.296 (Claude Code)'), 0);
+  assert.equal(TR.compareVersions(null, '2.1.296'), 0);
+  assert.ok(TR.compareVersions('3.0.0', '2.9.9') > 0);
+});
+
+test('transfer: export → file → import into another home at another path (git, memory, office, new id)', async (t) => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { execFileSync } = require('child_process');
+  try { execFileSync('git', ['--version']); } catch { return t.skip('git not installed'); }
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-move-')));
+  const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main', ...args], { cwd, encoding: 'utf8' }).trim();
+  const write = (f, s) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, s); };
+  try {
+    // origin with one pushed commit; the source clone has one unpushed commit, a change, a new file, an ignored file and a .env
+    const origin = path.join(tmp, 'origin.git');
+    git(tmp, 'init', '-q', '--bare', origin);
+    const homeA = path.join(tmp, 'a');
+    const src = path.join(homeA, 'code', 'shop');
+    fs.mkdirSync(src, { recursive: true });
+    git(src, 'init', '-q');
+    write(path.join(src, 'app.txt'), 'one\n');
+    write(path.join(src, 'gone.txt'), 'bye\n');
+    write(path.join(src, '.gitignore'), 'build/\n');
+    git(src, 'add', '-A'); git(src, 'commit', '-q', '-m', 'first');
+    git(src, 'remote', 'add', 'origin', origin);
+    git(src, 'push', '-q', '-u', 'origin', 'main');
+    git(src, 'checkout', '-q', '-b', 'feature');
+    write(path.join(src, 'app.txt'), 'one\ntwo\n');
+    git(src, 'commit', '-q', '-am', 'unpushed');
+    write(path.join(src, 'app.txt'), 'one\ntwo\nthree (uncommitted)\n');
+    fs.rmSync(path.join(src, 'gone.txt'));
+    write(path.join(src, 'new.txt'), 'untracked\n');
+    write(path.join(src, 'bin.dat'), Buffer.from([0, 1, 2, 3, 255]));
+    write(path.join(src, 'build', 'out.js'), 'ignored');
+    write(path.join(src, '.env'), 'TOKEN=secret');
+    const indexBefore = fs.readFileSync(path.join(src, '.git', 'index'));
+    // Claude Code's files for the session in home A
+    const id = '0f0e0d0c-1111-4222-8333-444455556666';
+    const hist = P.historyDir(src, null, homeA);
+    write(path.join(hist, `${id}.jsonl`), [
+      JSON.stringify({ type: 'user', cwd: src, sessionId: id, message: { role: 'user', content: 'remember the word banana' } }),
+      JSON.stringify({ type: 'assistant', cwd: src, sessionId: id, message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: path.join(src, 'app.txt') } }] } }),
+    ].join('\n') + '\n');
+    write(path.join(hist, id, 'subagents', 'agent-a1.jsonl'), JSON.stringify({ cwd: src, sessionId: id }) + '\n');
+    write(path.join(hist, id, 'subagents', 'agent-a1.meta.json'), '{"agentType":"Explore"}');
+    write(path.join(hist, id, 'tool-results', 'r1.txt'), `listing of ${src}\n`);
+    write(path.join(hist, id, '.credentials.json'), '{"secret":1}');
+    write(path.join(hist, 'other-session.jsonl'), '{}\n');
+    const mem = TIO.memoryDirOf(src, homeA);
+    write(path.join(mem, 'MEMORY.md'), '- [Rule](rule.md) — a rule\n');
+    write(path.join(mem, 'rule.md'), 'always test');
+    write(TIO.officeSessionFile(homeA, id), JSON.stringify({ format: 2, project: 'shop', workers: [], shells: [], stats: { delivered: 2 } }));
+
+    const ex = await TIO.collectExport({ dir: src, sessionId: id, configDir: null, home: homeA, appVersion: '0.7.0', claudeVersion: '2.1.296', accountLabel: 'Default', hostname: 'mac-a' });
+    const names = ex.entries.map((e) => e.name);
+    assert.ok(names.includes(`transcript/${id}.jsonl`));
+    assert.ok(names.includes(`transcript/${id}/subagents/agent-a1.jsonl`));
+    assert.ok(names.includes(`transcript/${id}/tool-results/r1.txt`));
+    assert.ok(!names.some((n) => n.includes('credentials')), 'no credentials');
+    assert.ok(!names.some((n) => n.includes('other-session')), 'only this session');
+    assert.ok(names.includes('memory/rule.md') && names.includes('memory/MEMORY.md'));
+    assert.ok(names.includes(`office/${id}.json`));
+    assert.ok(names.includes('git/handoff.bundle') && names.includes('git/changes.patch'));
+    assert.equal(ex.manifest.git.branch, 'feature');
+    assert.equal(ex.manifest.git.unpushed, 1);
+    assert.equal(ex.manifest.git.upstream, null);
+    assert.deepEqual(ex.notes.skipped, ['.env']);
+    const patch = ex.entries.find((e) => e.name === 'git/changes.patch').data.toString();
+    assert.match(patch, /three \(uncommitted\)/);
+    assert.match(patch, /new\.txt/);
+    assert.doesNotMatch(patch, /TOKEN=secret|out\.js/);
+    // the source repository is untouched: same index, no leftover ref, same status
+    assert.ok(fs.readFileSync(path.join(src, '.git', 'index')).equals(indexBefore));
+    assert.equal(git(src, 'for-each-ref', 'refs/agent-office'), '');
+
+    const file = path.join(tmp, TR.archiveName('shop'));
+    TIO.writeArchive(file, ex.entries);
+    const parsed = TIO.loadArchive(file);
+    assert.equal(parsed.manifest.session.id, id);
+
+    // home B: a clone of origin (without the unpushed commit) at another path, a separate config dir (an account)
+    const homeB = path.join(tmp, 'b');
+    const dst = path.join(homeB, 'work', 'shop-copy');
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    git(tmp, 'clone', '-q', origin, dst);
+    const cfgB = path.join(homeB, 'accounts', 'x');
+    write(TIO.memoryDirOf(dst, homeB) + '/rule.md', 'existing rule wins');
+    const target = await TIO.inspectTarget(parsed, dst);
+    assert.equal(target.isRepo, true);
+    assert.equal(target.remoteMatches, true); // both clones of the same origin
+    assert.deepEqual(target.plan, { action: 'branch', branch: 'feature' });
+    // a dirty tree is refused
+    write(path.join(dst, 'app.txt'), 'local edit\n');
+    assert.equal((await TIO.inspectTarget(parsed, dst)).plan.action, 'dirty');
+    git(dst, 'checkout', '-q', '--', 'app.txt');
+    assert.deepEqual(await TIO.prepareGit(parsed, target.top), { ok: true });
+    const applied = await TIO.applyGit(parsed, target.top, target.plan);
+    assert.deepEqual(applied, { ok: true, branch: 'feature' });
+    assert.equal(fs.readFileSync(path.join(dst, 'app.txt'), 'utf8'), 'one\ntwo\nthree (uncommitted)\n');
+    assert.equal(fs.readFileSync(path.join(dst, 'new.txt'), 'utf8'), 'untracked\n');
+    assert.ok(fs.readFileSync(path.join(dst, 'bin.dat')).equals(Buffer.from([0, 1, 2, 3, 255])));
+    assert.ok(!fs.existsSync(path.join(dst, 'gone.txt')));
+    assert.ok(!fs.existsSync(path.join(dst, '.env')));
+    assert.equal(git(dst, 'rev-parse', 'HEAD'), parsed.manifest.git.head);
+    assert.deepEqual(execFileSync('git', ['status', '--porcelain'], { cwd: dst, encoding: 'utf8' }).split('\n').filter(Boolean).sort(), [' D gone.txt', ' M app.txt', '?? bin.dat', '?? new.txt']);
+    assert.equal(git(dst, 'for-each-ref', 'refs/agent-office'), '');
+
+    const placed = TIO.placeSession(parsed, { targetDir: dst, configDir: cfgB, home: homeB, gitTop: target.top });
+    assert.equal(placed.sessionId, id);
+    assert.equal(placed.historyDir, P.historyDir(fs.realpathSync(dst), cfgB, homeB));
+    const lines = fs.readFileSync(placed.transcript, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(lines[0].cwd, fs.realpathSync(dst));
+    assert.equal(lines[1].message.content[0].input.file_path, path.join(fs.realpathSync(dst), 'app.txt'));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(placed.historyDir, id, 'subagents', 'agent-a1.jsonl'), 'utf8')).cwd, fs.realpathSync(dst));
+    assert.equal(fs.readFileSync(path.join(placed.historyDir, id, 'tool-results', 'r1.txt'), 'utf8'), `listing of ${fs.realpathSync(dst)}\n`);
+    assert.ok(!fs.existsSync(path.join(placed.historyDir, id, '.credentials.json')));
+    assert.equal(fs.readFileSync(path.join(TIO.memoryDirOf(dst, homeB), 'rule.md'), 'utf8'), 'existing rule wins');
+    assert.equal(JSON.parse(fs.readFileSync(TIO.officeSessionFile(homeB, id), 'utf8')).project, 'shop-copy');
+    // the same id again: refused, never overwritten; under a new id it goes in beside it
+    assert.equal(codeOf(() => TIO.placeSession(parsed, { targetDir: dst, configDir: cfgB, home: homeB })), 'sessionExists');
+    const id2 = '99999999-1111-4222-8333-444455556666';
+    const again = TIO.placeSession(parsed, { targetDir: dst, configDir: cfgB, home: homeB, newId: id2 });
+    const l2 = fs.readFileSync(again.transcript, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(l2[0].sessionId, id2);
+    assert.ok(fs.existsSync(path.join(again.historyDir, id2, 'subagents', 'agent-a1.jsonl')));
+    assert.equal(TIO.findSessionFiles(id, cfgB, homeB).length, 1);
+    // a target already at the recorded commit: applied in place, no branch
+    const dst2 = path.join(homeB, 'work', 'shop-2');
+    git(tmp, 'clone', '-q', origin, dst2);
+    assert.deepEqual(await TIO.prepareGit(parsed, dst2), { ok: true });
+    git(dst2, 'checkout', '-q', '--detach', parsed.manifest.git.head);
+    const t2 = await TIO.inspectTarget(parsed, dst2);
+    assert.deepEqual(t2.plan, { action: 'apply' });
+    assert.deepEqual(await TIO.applyGit(parsed, t2.top, t2.plan), { ok: true, branch: null });
+    assert.equal(fs.readFileSync(path.join(dst2, 'new.txt'), 'utf8'), 'untracked\n');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

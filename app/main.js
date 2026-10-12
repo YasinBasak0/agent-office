@@ -13,6 +13,8 @@ const L = require('./src/locales.js');
 const UP = require('./src/updates.js');
 const M = require('./src/memory.js');
 const Z = require('./src/sleep.js');
+const TR = require('./src/transfer.js');
+const TIO = require('./src/transfer-io.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -474,8 +476,9 @@ const RESUME_GRACE_MS = 8000; // if --continue ends with an error within this ti
 // The size is that tab's last pty:resize. resume: continue the last session (--continue). The tab starts in its own
 // folder (worktree) with the same account, plugin and status line rules. An extra tab in the same folder gets no
 // --continue: so a second claude doesn't open the session the main tab is resuming. sessionId: wake from sleep with
-// --resume <id>, the tab's own session.
-function startPty(id, { resume = false, sessionId = null } = {}) {
+// --resume <id>, the tab's own session. imported: a session just moved here from another computer (contract v3.4):
+// if --resume fails it does not fall back to a fresh session; the user is told and the imported files stay.
+function startPty(id, { resume = false, sessionId = null, imported = false } = {}) {
   killPty(id);
   const r = P.resolvePty(state, id);
   if (!r || !win || !isLoaded) return broadcast();
@@ -529,7 +532,10 @@ function startPty(id, { resume = false, sessionId = null } = {}) {
     if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
     terms.delete(id);
     // the session to resume was not found or could not be opened: start fresh without showing the exit to the user
-    if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) return startPty(id);
+    if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) {
+      if (!imported) return startPty(id);
+      importResumeFailed(sessionId, configDir);
+    }
     activity.delete(id);
     send('pty:exit', id, exitCode);
     broadcast();
@@ -811,6 +817,239 @@ ipcMain.handle('tabs:close', async (_e, projectId, n) => {
   return { closed: false, restarted: true };
 });
 
+// --- moving a session to another computer (contract v3.4; src/transfer.js, src/transfer-io.js)
+// Export: the project's main tab session, only when idle, into one .agentoffice file. Import: File > Open session
+// file…, or opening/double-clicking a .agentoffice file. Every step asks with a native dialog.
+const OS_NAMES = { darwin: 'macOS', win32: 'Windows', linux: 'Linux' };
+const osName = (p) => OS_NAMES[p] || String(p || '?');
+const validSid = (s) => (typeof s === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(s) ? s : '');
+const shortSha = (s) => String(s || '').slice(0, 10);
+/** @param {any} e */
+const transferErrorText = (e) => (e?.code && T.has(`main.transferError.${e.code}`) ? T(`main.transferError.${e.code}`) : String(e?.message || e));
+/** @param {string} message @param {string} [detail] */
+const warnBox = (message, detail) => dialog.showMessageBox(win, { type: 'warning', message, detail });
+/**
+ * A question with buttons; resolves to the chosen index (the last button cancels).
+ * @param {string} message @param {string} detail @param {string[]} buttons
+ * @param {'none' | 'info' | 'error' | 'question' | 'warning'} [type]
+ */
+async function ask(message, detail, buttons, type = 'question') {
+  const r = await dialog.showMessageBox(win, { type, message, detail, buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
+  return r.response;
+}
+async function claudeVersion(account) {
+  const { err, stdout } = await runClaude(account, '--version', 20000);
+  return err ? null : (TR.parseVersion(stdout) || []).join('.') || null;
+}
+/** The running claude of a tab: { sessionId, claude (its pid file) } or null when the tab is not running. */
+function liveSession(ptyId, configDir) {
+  const t = terms.get(ptyId);
+  if (!t) return null;
+  const claude = readJson(Z.claudePidFile(configDir, app.getPath('home'), t.pid));
+  return { claude, sessionId: validSid(claude?.sessionId) };
+}
+/** Why the tab's claude must not be touched now ('' = it may): the export rules (transfer.js exportBlocker). */
+function tabBlocker(ptyId, configDir) {
+  const live = liveSession(ptyId, configDir);
+  if (!live) return '';
+  return TR.exportBlocker({ running: true, claude: live.claude, office: live.sessionId ? office()?.readSession(live.sessionId) : undefined, hasDraft: activity.get(ptyId)?.draft });
+}
+
+let transferBusy = false;
+async function exportSession(projectId) {
+  const p = P.findProject(state, projectId || state.activeId);
+  if (!p || !win || transferBusy) return;
+  transferBusy = true;
+  try {
+    const home = app.getPath('home');
+    const account = A.accountOf(state, p);
+    const { configDir } = account;
+    const live = liveSession(p.id, configDir);
+    const blocker = tabBlocker(p.id, configDir);
+    if (blocker) return await warnBox(T('main.moveBlocked'), T(`main.moveBlocker.${blocker}`));
+    const sessionId = live ? live.sessionId : validSid(asleep.get(p.id)?.sessionId) || TIO.newestSession(p.dir, configDir, home);
+    if (!sessionId) return await dialog.showMessageBox(win, { type: 'info', message: T('main.moveNoSession') });
+    const label = account.id === A.DEFAULT_ID ? T('main.defaultAccount') : account.label;
+    let ex;
+    try {
+      ex = await TIO.collectExport({ dir: p.dir, sessionId, configDir, home, appVersion: app.getVersion(), claudeVersion: await claudeVersion(account), accountLabel: label });
+    } catch (e) { return await warnBox(T('main.moveFailed'), transferErrorText(e)); }
+    const g = ex.manifest.git;
+    const lines = [T('main.moveWarning'), ''];
+    if (g) {
+      lines.push(g.branch ? T('main.moveCode', { branch: g.branch, commit: shortSha(g.head) }) : T('main.moveCodeDetached', { commit: shortSha(g.head) }));
+      if (g.changed) lines.push(T('main.moveChanges', { n: g.changed }));
+      if (g.unpushed) lines.push(T('main.moveUnpushed', { n: g.unpushed }));
+    } else lines.push(T(ex.notes.noCommits ? 'main.moveNoCommits' : 'main.moveNoGit'));
+    if (ex.notes.skipped.length) lines.push(T('main.moveSkipped', { files: ex.notes.skipped.slice(0, 10).join(', ') + (ex.notes.skipped.length > 10 ? ', …' : '') }));
+    lines.push(ex.notes.memorySkipped ? T('main.moveMemorySkipped') : T('main.moveMemory', { n: ex.manifest.contents.memoryFiles }));
+    if (await ask(T('main.moveConfirm', { name: p.name }), lines.join('\n'), [T('main.moveSave'), T('main.cancel')], 'warning') !== 0) return;
+    const r = await dialog.showSaveDialog(win, {
+      title: T('main.moveSaveTitle'),
+      defaultPath: path.join(app.getPath('downloads'), TR.archiveName(p.name)),
+      filters: [{ name: T('main.sessionFileType'), extensions: [TR.EXT] }],
+    });
+    if (r.canceled || !r.filePath) return;
+    try { TIO.writeArchive(r.filePath, ex.entries); } catch (e) { return await warnBox(T('main.moveFailed'), String(e?.message || e)); }
+    if (await ask(T('main.moveSaved', { file: path.basename(r.filePath) }), T('main.moveSavedDetail'), [T('main.showInFolder'), T('main.ok')], 'info') === 0) eShell.showItemInFolder(r.filePath);
+  } finally { transferBusy = false; }
+}
+
+// .agentoffice files opened before the window could show them (macOS open-file at launch, argv on Windows/Linux)
+/** @type {string[]} */
+const pendingImports = [];
+const sessionFileArgs = (argv, cwd = process.cwd()) =>
+  argv.filter((a) => typeof a === 'string' && a.toLowerCase().endsWith(`.${TR.EXT}`)).map((a) => path.resolve(cwd, a)).filter(isFile);
+function openSessionFile(file) {
+  if (!win || win.isDestroyed() || !isLoaded) { pendingImports.push(file); return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  importSession(file);
+}
+function flushImports() {
+  const files = pendingImports.splice(0);
+  if (files.length) setTimeout(() => { for (const f of files) openSessionFile(f); }, 300);
+}
+
+/** A sidebar project that looks like the session's: same git remote first, then the same folder name. */
+async function importCandidate(m) {
+  const urls = (m.git?.remotes || []).map((r) => r.url).concat(m.git?.remote || []);
+  if (urls.length) {
+    for (const p of state.projects) {
+      if (!isDir(p.dir)) continue;
+      const r = await TIO.runGit(['remote', '-v'], { cwd: p.dir, timeout: 10000 });
+      const theirs = r.ok ? r.text.split('\n').map((l) => l.split(/\s+/)[1]).filter(Boolean) : [];
+      if (TR.remotesMatch(urls, theirs)) return p;
+    }
+  }
+  return state.projects.find((p) => p.name === m.source.projectName && isDir(p.dir)) || null;
+}
+
+async function pickImportDir(m) {
+  const r = await dialog.showOpenDialog(win, {
+    title: T('main.importPick', { name: m.source.projectName || '' }),
+    buttonLabel: T('main.importPickButton'),
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+}
+
+async function importSession(file) {
+  if (!win || transferBusy) return;
+  transferBusy = true;
+  try { await runImport(file); } catch (e) { await warnBox(T('main.importFailed'), transferErrorText(e)); } finally { transferBusy = false; }
+}
+
+async function runImport(file) {
+  if (!file) {
+    const r = await dialog.showOpenDialog(win, { title: T('main.importPickFile'), properties: ['openFile'], filters: [{ name: T('main.sessionFileType'), extensions: [TR.EXT] }] });
+    if (r.canceled || !r.filePaths[0]) return;
+    file = r.filePaths[0];
+  }
+  let parsed;
+  try { parsed = TIO.loadArchive(file); } catch (e) { return warnBox(T('main.importBad'), transferErrorText(e)); }
+  const m = parsed.manifest;
+  const g = m.git;
+  const home = app.getPath('home');
+  const name = m.source.projectName || path.basename(m.source.projectDir);
+
+  // 1. what is inside
+  const info = [T('main.importFrom', { date: new Date(m.createdAt).toLocaleString(uiLang()), machine: m.source.hostname || '?', os: osName(m.source.platform) })];
+  if (g) {
+    info.push(g.branch ? T('main.moveCode', { branch: g.branch, commit: shortSha(g.head) }) : T('main.moveCodeDetached', { commit: shortSha(g.head) }));
+    if (g.changed || g.unpushed) info.push(T('main.importChanges', { n: g.changed || 0, u: g.unpushed || 0 }));
+  } else info.push(T('main.importNoCode'));
+  if (await ask(T('main.importInfo', { name }), info.join('\n'), [T('main.continue'), T('main.cancel')]) !== 0) return;
+
+  // 2. the folder on this computer
+  let dir = null;
+  const cand = await importCandidate(m);
+  if (cand) {
+    const c = await ask(T('main.importInto', { dir: cand.dir }), T('main.importIntoDetail', { name: cand.name }), [T('main.useFolder'), T('main.otherFolder'), T('main.cancel')]);
+    if (c === 2) return;
+    dir = c === 0 ? cand.dir : await pickImportDir(m);
+  } else dir = await pickImportDir(m);
+  if (!dir) return;
+
+  // 3. the code: same repository, clean tree, the recorded commits present
+  let target = null;
+  if (g) {
+    target = await TIO.inspectTarget(parsed, dir);
+    if (!target.isRepo) {
+      let empty = false;
+      try { empty = fs.readdirSync(dir).length === 0; } catch {}
+      if (!empty || !g.remote) return warnBox(T('main.importNotGit'), T('main.importNotGitDetail', { url: g.remote || '—' }));
+      if (await ask(T('main.importClone', { url: g.remote }), '', [T('main.clone'), T('main.cancel')]) !== 0) return;
+      const cl = await TIO.cloneInto(g.remote, dir);
+      if (!cl.ok) return warnBox(T('main.importCloneFailed'), cl.stderr);
+      target = await TIO.inspectTarget(parsed, dir);
+      if (!target.isRepo) return warnBox(T('main.importNotGit'), T('main.importNotGitDetail', { url: g.remote }));
+    }
+    if (!target.remoteMatches && (g.remotes || []).length) {
+      const theirs = target.remotes.map((r) => r.url).join(', ') || '—';
+      if (await ask(T('main.importRemote', { url: g.remote || '' }), T('main.importRemoteDetail', { here: theirs }), [T('main.continue'), T('main.cancel')], 'warning') !== 0) return;
+    }
+    if (target.plan?.action === 'dirty') return warnBox(T('main.importDirty'), T('main.importDirtyDetail'));
+    const prep = await TIO.prepareGit(parsed, target.top);
+    if (!prep.ok) return warnBox(T('main.importFetchFailed'), prep.error);
+  }
+
+  // 4. the project and account it goes to; its tab must be idle
+  const real = (d) => { try { return fs.realpathSync(d); } catch { return d; } };
+  const existing = P.findByDir(state, dir) || state.projects.find((p) => real(p.dir) === real(dir)) || null;
+  const account = existing ? A.accountOf(state, existing) : accountById(A.DEFAULT_ID) || A.DEFAULT_ACCOUNT;
+  if (existing && tabBlocker(existing.id, account.configDir)) return warnBox(T('main.importTargetBusy'), T(`main.moveBlocker.${tabBlocker(existing.id, account.configDir)}`));
+  let newId = null;
+  if (TIO.findSessionFiles(m.session.id, account.configDir, home).length) {
+    if (await ask(T('main.importExists'), T('main.importExistsDetail'), [T('main.importAsNew'), T('main.cancel')]) !== 0) return;
+    newId = crypto.randomUUID();
+  }
+
+  // 5. last look, then do it
+  const steps = [];
+  if (target?.plan?.action === 'branch') steps.push(T('main.importWillBranch', { branch: target.plan.branch, commit: shortSha(g.head) }));
+  if (g?.handoff) steps.push(T('main.importWillApply'));
+  steps.push(existing && (terms.has(existing.id) || asleep.has(existing.id)) ? T('main.importWillRestart') : T('main.importWillStart'));
+  const here = await claudeVersion(account);
+  if (TR.compareVersions(here, m.claude?.version) < 0) steps.push(T('main.importOlderClaude', { here, there: m.claude.version }));
+  if (await ask(T('main.importConfirm', { dir }), steps.join('\n'), [T('main.import'), T('main.cancel')]) !== 0) return;
+  if (g && target) {
+    const a = await TIO.applyGit(parsed, target.top, target.plan);
+    if (!a.ok) return warnBox(T('main.importFailed'), a.error === 'dirty' ? T('main.importDirtyDetail') : a.error);
+  }
+  const placed = TIO.placeSession(parsed, { targetDir: dir, configDir: account.configDir, home, gitTop: target?.top || null, newId });
+  // the project is still there? (it may have been removed while the dialogs were open)
+  let projectId;
+  if (existing && P.findProject(state, existing.id)) {
+    projectId = existing.id;
+    commit(P.setActive(state, projectId));
+  } else {
+    const r = P.addProject(state, dir);
+    projectId = r.project.id;
+    commit(r.state);
+  }
+  startPty(projectId, { sessionId: placed.sessionId, imported: true });
+  if (placed.memorySkipped) await dialog.showMessageBox(win, { type: 'info', message: T('main.importMemorySkipped') });
+}
+
+// --resume of an imported session failed (contract v3.4: no silent fresh start)
+function importResumeFailed(sessionId, configDir) {
+  const file = TIO.findSessionFiles(sessionId, configDir, app.getPath('home'))[0] || sessionId;
+  if (win && !win.isDestroyed()) warnBox(T('main.importResumeFailed'), T('main.importResumeFailedDetail', { file, id: sessionId }));
+}
+
+// right click on a project in the sidebar
+ipcMain.handle('projects:menu', (_e, id) => {
+  const p = P.findProject(state, id);
+  if (!p || !win) return;
+  Menu.buildFromTemplate([
+    { label: T('main.moveSession'), click: () => exportSession(p.id) },
+    { type: 'separator' },
+    { label: T('main.openSessionFile'), click: () => importSession(null) },
+  ]).popup({ window: win });
+});
+
 // --- pty (each message carries a tab's pty id — projectId or `<projectId>:<n>` — or 'login:<accountId>')
 
 ipcMain.on('pty:write', (_e, id, d) => {
@@ -973,13 +1212,14 @@ async function createWindow() {
   // The folder from the command line is added/activated; if there are no projects, ask for a folder.
   const arg = argProject();
   if (arg) commit(P.addProject(state, arg).state);
-  if (!state.projects.length) {
+  for (const f of sessionFileArgs(process.argv.slice(app.isPackaged ? 1 : 2))) if (!pendingImports.includes(f)) pendingImports.push(f);
+  if (!state.projects.length && !pendingImports.length) {
     const dir = await pickFolder();
     if (dir) commit(P.addProject(state, dir).state);
   }
 
   // If the pty starts before the renderer sets up its size and listeners, output is lost; wait for the load.
-  win.webContents.on('did-finish-load', () => { isLoaded = true; startMissing(); });
+  win.webContents.on('did-finish-load', () => { isLoaded = true; startMissing(); flushImports(); });
   await win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   startPolling();
 }
@@ -1058,6 +1298,10 @@ function buildMenu() {
   const withKey = (item, accelerator) => (accelerator ? { ...item, accelerator } : item);
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: name, submenu: [{ role: 'about' }, { label: T('main.checkUpdates'), click: () => checkUpdatesNow() }, { type: 'separator' }, ...hideRoles, { role: 'quit' }] },
+    { label: T('main.file'), submenu: [
+      { label: T('main.openSessionFile'), click: () => importSession(null) },
+      { label: T('main.moveSession'), click: () => exportSession(state.activeId) },
+    ] },
     { label: T('main.edit'), submenu: [
       { role: 'undo', label: T('main.undo') }, { role: 'redo', label: T('main.redo') }, { type: 'separator' },
       withKey({ role: 'cut', label: T('main.cut') }, keys.cut), withKey({ role: 'copy', label: T('main.copy') }, keys.copy),
@@ -1097,7 +1341,25 @@ ipcMain.handle('language:set', (_e, setting) => {
   return languageInfo();
 });
 
-app.whenReady().then(async () => {
+// One app at a time (packaged app only: under npm start a second copy may run beside the installed one). A second
+// launch passes its folder or .agentoffice file to this one. macOS opens files with open-file, also at launch.
+const isSecondInstance = app.isPackaged && !app.requestSingleInstanceLock();
+if (isSecondInstance) app.exit(0);
+app.on('second-instance', (_e, argv, cwd) => {
+  if (!state) return;
+  const files = sessionFileArgs(argv.slice(1), cwd);
+  if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+  for (const f of files) openSessionFile(f);
+  if (files.length) return;
+  const dir = argv.slice(1).filter((a) => !a.startsWith('-')).map((a) => path.resolve(cwd, a)).find((d) => isDir(d) && d !== path.resolve(cwd));
+  if (dir && win) addDir(dir);
+});
+app.on('open-file', (e, file) => {
+  e.preventDefault();
+  if (file.toLowerCase().endsWith(`.${TR.EXT}`)) openSessionFile(file);
+});
+
+if (!isSecondInstance) app.whenReady().then(async () => {
   await loadI18n();
   await loadThemesLib();
   const raw = loadState();

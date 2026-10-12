@@ -207,6 +207,7 @@ export function mountSidebar(el, on) {
         'data-id': p.id,
         title: p.dir + (i < 9 ? `\n${modLabel}${i + 1}` : ''),
         onclick: () => on.select(p.id),
+        oncontextmenu: (e) => { e.preventDefault(); on.projectMenu?.(p); },
       },
         h('span', { class: 'sb-dot' + (live ? ' live' : sleeping ? ' asleep' : ''), title: live ? t('sidebar.claudeRunning') : sleeping ? t('sidebar.claudeAsleep') : t('sidebar.claudeStopped') }),
         h('span', { class: 'sb-name' }, p.name),

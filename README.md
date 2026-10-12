@@ -14,6 +14,7 @@ Agent Office is a macOS and Linux app, new on Windows (and a Claude Code plugin 
 - **Several Claude accounts.** Add accounts in the sidebar, log in with one click, and pick which account each project uses. Each account has its own Claude Code config folder, so logins never mix.
 - **Knows when Claude needs you.** A project waiting for your approval, or one that just finished (its background agents too) while you were looking elsewhere, raises a desktop notification, shows on the Dock badge (macOS; a dot on the taskbar button on Windows) and gets a mark on its row; the boss's sign says NEEDS YOU (and WAITING ON AGENTS while its turn is over but its agents still work). Click the notification to jump there.
 - **Plan usage per account.** Under each account, the 5-hour and weekly usage of its Claude plan (Pro/Max) and when each one resets, taken from that account's last Claude session, with a notification at 80% and 95%.
+- **Move a session to another computer.** Save a project's idle Claude session, its code changes and its memory in one `.agentoffice` file; open it on another Mac, Linux or Windows computer and the conversation continues there.
 - **Local only.** No server, no telemetry. Everything stays on your computer.
 
 > The app and the plugin speak English and Turkish. The app follows your system language; pick one with **Language** at the bottom of the sidebar. Other translations are welcome (see [Contributing](#contributing)).
@@ -86,6 +87,7 @@ Homebrew keeps showing the version it installed, because the app updates itself:
 | **Pick up where you left off** | **Continue last session** at the bottom of the sidebar (on by default): when the app starts, each project continues its last Claude session (`claude --continue`) |
 | **Let the boss delegate** | **Manager mode — delegate to agents** at the bottom of the sidebar (on by default; see [The boss delegates](#the-boss-delegates)) |
 | **Save memory** | **Sleep idle sessions** at the bottom of the sidebar (default: after 30 min). Each Claude holds its whole conversation in memory (about 70 MB fresh, 250–350 MB after a long session), so the app starts a project's Claude only when you first open the project, and ends a background project's Claude once it has been idle that long. Opening the project again continues the same session (`claude --resume`); a hollow dot marks a sleeping project. A session never sleeps while it works, waits for approval, runs agents, background shells or scheduled tasks (`/loop`, cron), has a typed but unsent prompt, or is the project you are looking at. **Off** starts every Claude at launch and keeps it running, as before. |
+| **Move a session to another computer** | Right-click the project → **Move Session to Another Computer…** saves an `.agentoffice` file; double-click it on the other computer (or **File → Open Session File…**). See [Move a session to another computer](#move-a-session-to-another-computer). |
 | **See what got done today** | Click the whiteboard: every delivery of the day with its project, duration, tool count and whether it succeeded |
 | **Today's summary in the terminal** | `/office stats` (Turkish: `/office istatistik`) in any project's Claude: today's deliveries, agent time, working agents and background shells as text |
 | **Change the language** | **Language** at the bottom of the sidebar: Auto (system language), English or Türkçe. The labels here are the English ones. |
@@ -107,6 +109,35 @@ Each project's Claude is the boss of its office. With **Manager mode — delegat
 Your own instructions (`CLAUDE.md`, what you ask for) come first. Being part of the system prompt, the section stays through `--continue`, `/resume`, `/clear` and compaction; subagents don't get it.
 
 To turn it off, untick **Manager mode** in the sidebar. The change applies to Claude sessions started afterwards (a new tab, a restart, the next launch); running ones keep what they started with. Plain Claude Code with the plugin gets it only when you set `AGENT_OFFICE_MANAGER=1` yourself.
+
+## Move a session to another computer
+
+Stop on one computer, carry on on another: the conversation, the uncommitted code and the project memory go in one file.
+
+**Save.** Right-click the project in the sidebar (or **File → Move Session to Another Computer…** for the project you are looking at). It works only while the session is idle: no turn running, no permission prompt open, no agent or background shell running, no unsent text in the prompt; otherwise it says what to wait for. You see what goes in and save `<project>-<date>.agentoffice`.
+
+**Open.** On the other computer, double-click the file (or **File → Open Session File…**). Agent Office shows where it comes from (machine, system, date, branch and commit), suggests the project in your sidebar with the same git remote or name (or asks for the folder; an empty folder can be cloned into), checks out the code, puts the session in place and opens it in the project's terminal with `claude --resume`.
+
+What the file holds:
+
+| Part | What |
+| --- | --- |
+| Conversation | The session's transcript and what Claude Code keeps next to it (subagent transcripts, saved tool outputs). Folder paths in it are rewritten from the old project folder to the new one, also between macOS, Linux and Windows. |
+| Code | Uncommitted changes and new files (your `.gitignore` applies) as one git commit object on top of your `HEAD`, plus every commit that is not on a remote, in a git bundle; the same changes as a readable `changes.patch`. Your branches, index and stash are not touched, and nothing is pushed. |
+| Memory | The project's Claude Code memory (`MEMORY.md` and its files). On import it is merged: files that already exist there win. |
+| Office | The office's session file (today's deliveries). |
+| Description | App and Claude Code versions, source system and machine name, project path, account name, session id, branch, commit and remote URLs (without passwords or tokens). |
+
+Never in it: your Claude login (`.credentials.json`, the keychain, `.claude.json`), settings files, and untracked files that look like secrets (`.env`, private keys, `.netrc`…; the save dialog lists what it left out). The file does contain the conversation, the tool outputs in it (file contents, command output) and your code: keep it to yourself.
+
+On import:
+
+- The folder must be a clone of the same repository (a different remote asks first) with no uncommitted changes to tracked files: commit or stash them first, nothing is changed until then.
+- If the folder is at the session's commit, the changes are laid on top as uncommitted changes. If it is on another commit, Agent Office offers a new branch at the session's commit (the session's branch name if it is free here, else `agent-office/handoff-<id>`); your current branch stays as it is.
+- Missing commits come from the file's bundle; commits that are on the remote are fetched (fetch only).
+- A session id that already exists on this computer is never overwritten: you can import it as a new session beside it.
+- If Claude Code cannot open the imported session (an older Claude Code, for instance), the app says so and keeps the files; it does not quietly start a fresh session.
+- Project folders whose path is longer than 200 characters get no memory (Claude Code names their folders with a hash Agent Office cannot reproduce); the conversation cannot be imported into such a folder.
 
 ## How it works
 
@@ -131,6 +162,7 @@ All data stays on your machine:
 | Where | What |
 | --- | --- |
 | `~/.claude/agent-office/sessions/` | Per session: the agents, the first 600 characters of each agent's task and 4000 of its result, and a one-line summary of its last 20 tool calls (commands, file paths, search patterns, URLs). Removed automatically a day after the session ends. |
+| `.agentoffice` files | Only where you save them: a session you chose to move (see [Move a session to another computer](#move-a-session-to-another-computer)). |
 | `~/Library/Application Support/Agent Office/` (Linux: `~/.config/Agent Office/`, Windows: `%APPDATA%\Agent Office\`) | Your project list, the config folders of the accounts you added (each one holds that account's Claude Code login) and, under `usage/`, each project's latest Claude Code status line input (model, context and plan usage), used for the usage bars. |
 
 Nothing is sent anywhere by Agent Office. Claude Code itself talks to Anthropic as usual.
