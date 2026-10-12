@@ -186,7 +186,7 @@ function showActive() {
 
 // The tab strip shows only when the project has more than one tab; a single terminal looks as before
 // (then "+" sits in the terminal's top-right corner and appears on hover).
-const baseName = (d) => String(d || '').replace(/\/+$/, '').split('/').pop() || '';
+const baseName = (d) => String(d || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''; // '/' or Windows '\\'
 function tabButton(p, tab, active, running) {
   const n = tab?.n ?? MAIN_TAB;
   const dir = tab?.dir || p.dir;
@@ -429,6 +429,7 @@ sidebar = mountSidebar($('sidebar'), {
   refreshAuth,
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
   setResume: (on) => api.prefs?.set({ resume: on }).then((p) => sidebar.setResume(p?.resume)).catch((e) => console.error(e)),
+  setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
 });
@@ -496,6 +497,7 @@ onLang(applyStaticText);
 applyStaticText();
 api.prefs?.get().then((p) => {
   sidebar.setResume(p?.resume);
+  sidebar.setManager(p?.manager);
   sidebar.setSleep(p?.sleepMinutes);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
   applyThemeChoice();

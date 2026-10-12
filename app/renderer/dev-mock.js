@@ -3,7 +3,7 @@
 // ?empty → no projects; ?themesError → theme warning in the title bar; ?authError → third account 'error';
 // ?loginFail → fake login exits with code 1 and the account stays 'out'. ?lang=en|tr → language setting (else auto: browser language).
 // ?langs=en,tr,de → languages in the picker (a browser cannot list the folder; main reads locales/*.json). Default en,tr.
-// ?platform=linux → Linux title bar and Ctrl+Shift shortcuts (platform.js).
+// ?platform=linux (or win32) → Linux / Windows title bar and Ctrl+Shift shortcuts (platform.js).
 // ?asking → second project awaits approval (sign, ✋), third is done (●).
 // ?agentsWaiting → no boss is busy but agents still work (sign and boss panel: waiting on agents).
 // ?select=<worker id | @boss | shell:<id>> → clicks that bot/rack slot after a few seconds (agent panel test;
@@ -127,8 +127,9 @@ const galleryFiles = (await Promise.all(GALLERY.map((n) => fetch(`../../themes/$
 const mockThemes = mergeThemes(galleryThemes(galleryFiles), {});
 let themeSetting = q.get('theme') || 'auto';
 let resumeSetting = true;
+let managerSetting = true;
 let sleepSetting = 30;
-const prefsNow = () => ({ resume: resumeSetting, theme: themeSetting, sleepMinutes: sleepSetting });
+const prefsNow = () => ({ resume: resumeSetting, theme: themeSetting, manager: managerSetting, sleepMinutes: sleepSetting });
 
 window.agentOffice = {
   platform: q.get('platform') || 'darwin',
@@ -223,6 +224,7 @@ window.agentOffice = {
     get: async () => prefsNow(),
     set: async (p) => {
       if (typeof p?.resume === 'boolean') resumeSetting = p.resume;
+      if (typeof p?.manager === 'boolean') managerSetting = p.manager;
       if (typeof p?.theme === 'string') themeSetting = p.theme.trim() || 'auto';
       if ([0, 15, 30, 60].includes(p?.sleepMinutes)) sleepSetting = p.sleepMinutes;
       return prefsNow();

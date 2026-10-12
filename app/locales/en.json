@@ -67,6 +67,8 @@
     "language": "Language",
     "resume": "Continue last session",
     "resumeTitle": "When the app starts, each project continues its last Claude session (claude --continue)",
+    "manager": "Manager mode — delegate to agents",
+    "managerTitle": "The boss splits the work across agents, keeps going until the tasks are done and stops only for what needs you (approvals, logins, your decisions). Applies to Claude sessions started afterwards.",
     "sleep": "Sleep idle sessions",
     "sleepTitle": "Saves memory: a project starts its Claude when first opened, and a background Claude that has been idle this long is ended and continues its session (claude --resume) when you open the project again. Never while it works, waits for approval, runs agents, background shells or scheduled tasks, or has unsent text.",
     "sleepOff": "Off",
@@ -271,7 +273,10 @@
     "removeWorktree": "Close and Remove Worktree",
     "keepWorktree": "Close, Keep Folder",
     "worktreeKept": "Git did not remove the worktree; the tab stays open.",
-    "worktreeKeptDetail": "{error}\n\nCommit or discard the changes and close the tab again, or choose \"Close, Keep Folder\"."
+    "worktreeKeptDetail": "{error}\n\nCommit or discard the changes and close the tab again, or choose \"Close, Keep Folder\".",
+    "noClaude": "Claude Code was not found.",
+    "noClaudeHelp": "Install Claude Code for Windows ({url}), check that `claude` runs in a new terminal, then press Enter here to try again.",
+    "badge": "{count} waiting for you"
   },
   "auth": {
     "unreadable": "could not read the login status",

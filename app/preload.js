@@ -9,7 +9,7 @@ const listen = (ch) => (cb) => {
 };
 
 contextBridge.exposeInMainWorld('agentOffice', {
-  platform: process.platform,                           // 'darwin' | 'linux': the title bar and shortcuts follow it
+  platform: process.platform,                           // 'darwin' | 'linux' | 'win32': the title bar and shortcuts follow it
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     add: () => ipcRenderer.invoke('projects:add'),
@@ -44,7 +44,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
   clipboard: {
     hasImage: () => ipcRenderer.invoke('clipboard:hasImage'),
     read: () => ipcRenderer.invoke('clipboard:read'),   // { hasImage, text, files }
-    onPaste: listen('edit:paste'),                      // the menu's Paste (⌘V; Ctrl+Shift+V on Linux)
+    onPaste: listen('edit:paste'),                      // the menu's Paste (⌘V; Ctrl+Shift+V on Linux and Windows)
     nativePaste: () => ipcRenderer.send('edit:nativePaste'), // outside the terminal: normal paste
   },
   pathForFile: (file) => webUtils.getPathForFile(file),
@@ -54,7 +54,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     install: () => ipcRenderer.send('update:install'),
   },
   prefs: {
-    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, theme: 'auto' | name, sleepMinutes: 0 | 15 | 30 | 60 }
+    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, theme: 'auto' | name, manager: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3)
     set: (p) => ipcRenderer.invoke('prefs:set', p),
   },
   language: {

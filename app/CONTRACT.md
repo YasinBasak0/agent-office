@@ -23,9 +23,9 @@ type ProjectStatus = { id: string; isRunning: boolean }                       //
 ```
 
 - Main keeps `projects`, `accounts` and `activeId` in `userData/state.json`. The old `lastProject` becomes the first project on upgrade.
-- Every project has its own `claude` pty, started when the project is added or the app opens, and kept running in the background while another project is shown (v3.2 sleeping changes this when it is on: see the end of this file). Removing a project kills its pty (does not touch the folder).
+- Every project has its own `claude` pty, started when the project is added or the app opens, and kept running in the background while another project is shown (v3.3 sleeping changes this when it is on: see the end of this file). Removing a project kills its pty (does not touch the folder).
 - An account other than default has `configDir = userData/accounts/<id>`; its ptys start with `CLAUDE_CONFIG_DIR=<configDir>`, so claude keeps that account's login and settings apart. Logging in: the sidebar's "Giriş yap" (see v2.1); `/login` in a project terminal also works. Changing a project's account restarts its pty.
-- **Project memory always comes from `~/.claude`** (`src/memory.js`). A session of a non-default account would otherwise read and write its own `<configDir>/projects/<slug>/memory/`, missing the rules the user built up in plain Claude Code. So at every pty start main computes the memory key as Claude Code does (the repository's main working copy, shared by all worktrees; else the git root; else the folder; slug = non-alphanumerics → `-`), merges the account's memory into `~/.claude/projects/<slug>/memory/` without overwriting anything (missing files are copied and their `MEMORY.md` index lines appended; the existing memory wins), and adds `autoMemoryDirectory: <that folder>` to the session's `--settings` JSON, so new memories land there too and the two never diverge. The default account already uses `~/.claude` and gets nothing extra. A path whose slug would exceed 200 characters (Claude Code adds a hash) keeps the account's own memory.
+- **Project memory always comes from `~/.claude`** (`src/memory.js`). A session of a non-default account would otherwise read and write its own `<configDir>/projects/<slug>/memory/`, missing the rules the user built up in plain Claude Code. So at every pty start main computes the memory key as Claude Code does, from the disk without running git (the real path with symlinks resolved; the repository's main working copy, shared by all worktrees; else the git root; else the folder; slug = non-alphanumerics of the NFC path → `-`), merges the account's memory into `~/.claude/projects/<slug>/memory/` without overwriting anything (missing files are copied and their `MEMORY.md` index lines appended; the existing memory wins; each file is merged once, recorded in the account folder's `.agent-office-merged.json`, so a memory deleted from `~/.claude` is not copied back), and adds `autoMemoryDirectory: <that folder>` to the session's `--settings` JSON, so new memories land there too and the two never diverge. The default account already uses `~/.claude` and gets nothing extra. A path whose slug would exceed 200 characters (Claude Code adds a hash) keeps the account's own memory.
 - The office always shows all projects at once (the boss oversees all of them); the active project only picks the theme and is highlighted.
 
 ## `window.agentOffice` (preload)
@@ -56,12 +56,12 @@ agentOffice.pty.restart(projectId: string): void
 agentOffice.office.onData(cb: (data: OfficeData) => void): () => void
 agentOffice.office.themes(): Promise<Record<string, ThemeSpec>>
 agentOffice.clipboard.hasImage(): Promise<boolean>
-agentOffice.clipboard.read(): Promise<{ hasImage: boolean, text: string, files: string[] }>  // files: copied in Finder (osascript) or, on Linux, a file manager (text/uri-list via Electron, wl-paste or xclip)
-agentOffice.platform: 'darwin' | 'linux'                               // process.platform; renderer/platform.js sets <html class="platform-…"> and picks the shortcuts
+agentOffice.clipboard.read(): Promise<{ hasImage: boolean, text: string, files: string[] }>  // files: copied in Finder (osascript), on Linux a file manager (text/uri-list via Electron, wl-paste or xclip), on Windows Explorer (CF_HDROP / FileNameW via Electron, else PowerShell's Get-Clipboard)
+agentOffice.platform: 'darwin' | 'linux' | 'win32'                     // process.platform; renderer/platform.js sets <html class="platform-…"> and picks the shortcuts
 agentOffice.pathForFile(file: File): string
 ```
 
-The sidebar's add button adds projects; ⌘O = add project, ⌘1…9 = switch, ⌘V = paste into the focused terminal. On Linux the same keys are Ctrl+Shift+O, Ctrl+Shift+1…9 and Ctrl+Shift+V (Ctrl+Shift+C / X copy and cut from the menu), because plain Ctrl+… keys belong to Claude Code in the terminal. In the terminal, ⌘Enter (macOS) and Ctrl+Enter are sent to Claude Code as ctrl+enter (`ESC [13;5u`, `src/terminal-keys.mjs`), its send-now key for a queued message; xterm.js alone would send a bare Enter. Linux windows use the system title bar (no traffic-light inset), and the in-app updater runs only in the AppImage.
+The sidebar's add button adds projects; ⌘O = add project, ⌘1…9 = switch, ⌘V = paste into the focused terminal. On Linux the same keys are Ctrl+Shift+O, Ctrl+Shift+1…9 and Ctrl+Shift+V (Ctrl+Shift+C / X copy and cut from the menu), because plain Ctrl+… keys belong to Claude Code in the terminal. In the terminal, ⌘Enter (macOS) and Ctrl+Enter are sent to Claude Code as ctrl+enter (`ESC [13;5u`, `src/terminal-keys.mjs`), its send-now key for a queued message; xterm.js alone would send a bare Enter. Linux windows use the system title bar (no traffic-light inset), and the in-app updater runs only in the AppImage. Windows is like Linux (system title bar, Ctrl+Shift keys) except: claude starts directly in a ConPTY (no login shell: found on PATH or in the native installer's folder, npm's `claude.cmd` through `cmd.exe /d /s /c`; the `--settings` JSON goes in a file under `userData/settings/`; if Claude Code is missing the terminal says so and exits with 127), an image paste sends Claude Code's Alt+V (`ESC v`) instead of Ctrl+V, pasted paths get double quotes, the taskbar button gets a dot overlay and flashes instead of a Dock badge, and the NSIS install updates itself (`latest.yml`).
 
 ## `src/sessions.js` (main)
 
@@ -174,6 +174,7 @@ type AccountUsage = { updatedAt: number; fiveHour?: UsageWindow; sevenDay?: Usag
 
 - Source: the status line input's `rate_limits` (code.claude.com/docs/en/statusline). Claude Code sends it only for Pro/Max subscriptions and only after the session's first API response, so an account's usage is the last value reported by any of its project sessions.
 - Main starts each project's claude with `--settings '{"statusLine":…}'` running `userData/usage/statusline.sh <userData/usage/<accountId>/<projectId>.json>` (written at start, `src/usage.js` `SCRIPT`). The script stores its stdin there and, when the user has a command status line of their own (first `statusLine` found in the project's `.claude/settings.local.json`, `.claude/settings.json`, then the account's `settings.json`), runs it with the same input via `AGENT_OFFICE_STATUSLINE`, so the terminal shows the user's status line as before. Its `padding` is carried over.
+- Windows: Claude Code runs status line commands through Git Bash, or PowerShell without it, so the command is the bare word `agent-office-statusline.cmd` (the same in both). Main writes it and `statusline.js` (`WIN_SCRIPT`) to `userData/usage/`, appends that folder to claude's `PATH`, and passes the tab's file in `AGENT_OFFICE_USAGE_OUT`; the `.cmd` runs the app's own executable as Node (`ELECTRON_RUN_AS_NODE` set only inside the `.cmd`). The user's own status line runs in the shell Claude Code would use (`AGENT_OFFICE_STATUSLINE_SHELL`: Git Bash's path, empty for PowerShell).
 - Main scans those files every 3 s; the newest one with `rate_limits` becomes the account's usage, is kept in `usage/<accountId>/last.json` (loaded at start) and sent with `accounts:changed`. A project's file is removed from other accounts' folders when its pty starts, and when the project is removed; an account's folder goes with the account.
 - UI: under a logged-in account, one line per window: label (`5 sa`, `Hafta`), a bar (accent; yellow from 70%, red from 90%), the percentage and the reset time (`14:30` within 24 h, else `Pzt 09:00`; `sıfırlandı` once passed, shown as 0%). The tooltip says how old the value is; values older than 30 minutes are dimmed. Redrawn every minute.
 
@@ -200,7 +201,7 @@ agentOffice.language.onChange(cb: (info: LanguageInfo) => void): () => void   //
 
 ## Waiting on you (v2.6)
 
-When Claude needs the person, the app says so: a desktop notification, the Dock badge (on Linux `app.setBadgeCount`, where the desktop supports it), a mark on the project's row and the boss's sign.
+When Claude needs the person, the app says so: a desktop notification, the Dock badge (on Linux `app.setBadgeCount`, where the desktop supports it; on Windows a dot overlay on the taskbar button, which also flashes), a mark on the project's row and the boss's sign.
 
 The plugin adds to the session state file:
 
@@ -289,22 +290,34 @@ agentOffice.office.themes(): Promise<Record<string, ThemeSpec>>   // now: galler
 - **Sidebar.** A **Theme** / **Tema** select between Language and Bot color: **Auto (per project)**, then the built-ins `classic` and `forest`, then the other themes in map order (`themeChoices(themes)`), each by its name. Each option's tooltip is the theme's `description` (the built-ins' come from the locale files: `sidebar.themeClassicTitle`, `sidebar.themeForestTitle`); the closed select shows the chosen one's. Choosing switches the office at once (no reload) and saves through `prefs.set({ theme })`.
 - `dev-mock.js`: `?theme=<name>` sets the stored choice (e.g. `?theme=sakura`); the mock reads the gallery from `../../themes/*.json`, so it is there under Electron's `loadFile` or a static server at the repository root (`/app/renderer/index.html`).
 
-## v3.2: sleeping sessions (memory)
+## Manager mode (v3.2)
+
+In the app the project's Claude session is the boss: it should delegate the work to agents and keep going until the task list is done, stopping only for what needs the person.
+
+```ts
+agentOffice.prefs.get(): Promise<{ resume: boolean; theme: 'auto' | string; manager: boolean }>
+agentOffice.prefs.set(p: { resume?: boolean; theme?: 'auto' | string; manager?: boolean }): Promise<{ resume: boolean; theme: string; manager: boolean }>
+```
+
+- **Setting.** Main keeps `manager` in `state.json` next to `resume` (default true). The sidebar shows it as a checkbox under **Continue last session**: **Manager mode — delegate to agents** / **Müdür modu — işleri ajanlara dağıt**; its tooltip says it applies to sessions started afterwards. Toggling restarts nothing.
+- **Env.** `startPty` builds the pty's env with `accounts.js` `sessionEnv(ptyEnv(…), { manager })`: `AGENT_OFFICE_APP=1` always, `AGENT_OFFICE_MANAGER=1` when the setting is on (off, the variable is removed, even if the app inherited it).
+- **Plugin.** A `prompt.compose` hook appends one section, `agent-office:manager` (scope `session`, fixed text: `MANAGER_TEXT` in `plugin/hooks/register.tsx`), to the system prompt of every request when `AGENT_OFFICE_MANAGER=1` and the loop offers the Agent tool (not to a teammate, not to a loop without the Agent tool). Being part of the system prompt, it holds across `--continue`, `/resume`, `/clear` and compaction. Outside the app the plugin adds nothing unless the person sets `AGENT_OFFICE_MANAGER=1` themselves.
+
+## Sleeping sessions (v3.3, memory)
 
 Each `claude` holds its whole conversation in memory: about 60–80 MB idle and fresh, 250–350 MB after a long session. Seven projects used to keep seven claudes from launch to quit (≈ 1.1 GB measured). No outside GC can shrink them: that heap is the live conversation. Ending an idle claude and resuming its session later is the process-level equivalent.
 
 ```ts
-agentOffice.prefs.get(): Promise<{ resume: boolean; theme: string; sleepMinutes: 0 | 15 | 30 | 60 }>
-agentOffice.prefs.set(p: { resume?: boolean; theme?: string; sleepMinutes?: 0 | 15 | 30 | 60 }): Promise<…>
+agentOffice.prefs.get(): Promise<{ resume: boolean; theme: string; manager: boolean; sleepMinutes: 0 | 15 | 30 | 60 }>
+agentOffice.prefs.set(p: { resume?: boolean; theme?: string; manager?: boolean; sleepMinutes?: 0 | 15 | 30 | 60 }): Promise<…>
 agentOffice.pty.wake(id: string): void              // the renderer shows this tab: a sleeping claude starts
 agentOffice.pty.onSleep(cb: (id: string) => void)   // main ended this tab's idle claude
 type ProjectStatus = { …; isAsleep: boolean; tabs: { n: number; isRunning: boolean; isAsleep: boolean }[] }
 ```
 
-- **Setting.** `state.json` `sleepMinutes`: `0` (off) or 15 / 30 / 60, default 30 (`src/sleep.js` `normalizeSleep`). Sidebar: **Sleep idle sessions** / **Boştaki oturumları uyut** under Continue last session. Off = the v2 behaviour (every claude starts at load and keeps running); turning it off starts every sleeping tab.
-- **Lazy start.** With sleeping on, `startMissing` marks every tab that is not running as asleep (`{ resume }`) instead of starting it. The renderer calls `pty.wake(id)` whenever the visible tab is asleep, so a tab's claude starts the first time it is shown (with the v2.7 `--continue` rule). New projects and tabs, Enter on an exited terminal and account changes still start at once (a sleeping tab whose account changes stays asleep and starts fresh). Any `pty:write` to a sleeping tab wakes it too.
+- **Setting.** `state.json` `sleepMinutes`: `0` (off) or 15 / 30 / 60, default 30 (`src/sleep.js` `normalizeSleep`). Sidebar: **Sleep idle sessions** / **Boştaki oturumları uyut**, a select under Manager mode. Off = the v2 behaviour (every claude starts at load and keeps running); turning it off starts every sleeping tab.
+- **Lazy start.** With sleeping on, `startMissing` marks every tab that is not running as asleep (`{ resume: true }`) instead of starting it; when it first starts, the **Continue last session** setting of that moment decides `--continue` (`wakeOptions`). The renderer calls `pty.wake(id)` whenever the visible tab is asleep, so a tab's claude starts the first time it is shown (with the v2.7 `--continue` rule). New projects and tabs, Enter on an exited terminal and account changes still start at once (a sleeping tab whose account changes stays asleep and starts fresh). Any `pty:write` to a sleeping tab wakes it too.
 - **Sleeping.** Every 30 s main looks at each running tab that is not in the active project. It sleeps when nothing can be lost (`sleepBlocker`, pure): no input or output for `sleepMinutes` (leaving the active project restarts the clock); no typed but unsent prompt (`draftAfter` over `pty:write`: printable text is a draft, Enter or Ctrl+C clears it); Claude Code's own `<config dir>/sessions/<pid>.json` says `status: 'idle'` and gives the `sessionId` (the pty runs `exec claude`, so its pid is claude's); the office file `~/.claude/agent-office/sessions/<sessionId>.json` exists, has not ended, and shows no busy boss, no open prompt, no running agent and no running background shell; the transcript `<historyDir>/<sessionId>.jsonl` never used `CronCreate` or `ScheduleWakeup` (cached by size and mtime). A missing or odd file keeps the tab awake. Main then kills the pty quietly, keeps `{ sessionId }` and sends `pty:sleep`.
-- **Waking.** `pty.wake` starts `claude --resume <sessionId>` (that tab's own session, same id) in the tab's folder with its account. If it fails within 8 s, it starts fresh as with `--continue`.
+- **Waking.** `pty.wake` starts `claude --resume <sessionId>` (that tab's own session, same id) in the tab's folder with its account. If it fails within 8 s, it starts fresh as with `--continue`. On Windows the arguments go through `windowsClaude` like `--continue`; a `.cmd` claude runs under `cmd.exe`, so the pty's pid is not claude's, no pid file matches and such tabs never sleep (lazy start still applies).
 - **Renderer.** `pty:sleep` resets the tab's xterm (dropping its scrollback, the largest part of a terminal's memory; the resumed claude draws the conversation again) and writes one dim line (`terminal.asleep`); the first output of the woken claude clears it. The sidebar dot of a sleeping project is hollow (`sidebar.claudeAsleep`); a sleeping tab's label is dim and italic (`app.asleep`).
 - **Office view.** `office-view.js` draws nothing while `document.hidden` (minimized, covered, another space) and draws once when it shows again.
-

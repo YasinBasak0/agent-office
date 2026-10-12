@@ -1,5 +1,5 @@
 // App icon: the boss bot at its desk, 32×32 pixel art, with the macOS rounded-square mask.
-// node scripts/make-icon.mjs → build/icon.png (1024) and build/icon.icns (via iconutil)
+// node scripts/make-icon.mjs → build/icon.png (1024), build/icon.ico (Windows, 16–256) and build/icon.icns (via iconutil)
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -114,6 +114,61 @@ function png(w, h, data) {
 mkdirSync(out, { recursive: true })
 const master = join(out, 'icon.png')
 writeFileSync(master, png(S, S, rgba))
+
+// .ico (Windows: the executable, the installer and the taskbar): box-filtered sizes of the master. 256 is stored as
+// PNG, the small ones as 32-bit BMPs, which every Windows tool (NSIS included) reads.
+function downscale(size) {
+  const k = S / size
+  const out = Buffer.alloc(size * size * 4)
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      let r = 0, g = 0, b = 0, a = 0
+      for (let j = y * k; j < (y + 1) * k; j++)
+        for (let i = x * k; i < (x + 1) * k; i++) {
+          const o = (j * S + i) * 4
+          const al = rgba[o + 3]
+          r += rgba[o] * al; g += rgba[o + 1] * al; b += rgba[o + 2] * al; a += al
+        }
+      const o = (y * size + x) * 4
+      if (a) { out[o] = Math.round(r / a); out[o + 1] = Math.round(g / a); out[o + 2] = Math.round(b / a) }
+      out[o + 3] = Math.round(a / (k * k))
+    }
+  return out
+}
+function bmp(size, data) {
+  const head = Buffer.alloc(40)
+  head.writeUInt32LE(40, 0)
+  head.writeInt32LE(size, 4)
+  head.writeInt32LE(size * 2, 8) // XOR image + AND mask
+  head.writeUInt16LE(1, 12)
+  head.writeUInt16LE(32, 14)
+  const pixels = Buffer.alloc(size * size * 4)
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const s = (y * size + x) * 4
+      const d = ((size - 1 - y) * size + x) * 4 // bottom-up, BGRA
+      pixels[d] = data[s + 2]; pixels[d + 1] = data[s + 1]; pixels[d + 2] = data[s]; pixels[d + 3] = data[s + 3]
+    }
+  const mask = Buffer.alloc((((size + 31) >> 5) << 2) * size) // all 0: alpha decides
+  return Buffer.concat([head, pixels, mask])
+}
+const sizes = [16, 24, 32, 48, 64, 128, 256]
+const images = sizes.map(size => (size === 256 ? png(size, size, downscale(size)) : bmp(size, downscale(size))))
+const dir = Buffer.alloc(6 + 16 * sizes.length)
+dir.writeUInt16LE(1, 2)
+dir.writeUInt16LE(sizes.length, 4)
+let at = dir.length
+sizes.forEach((size, n) => {
+  const e = 6 + 16 * n
+  dir[e] = size % 256 // 0 means 256
+  dir[e + 1] = size % 256
+  dir.writeUInt16LE(1, e + 4)
+  dir.writeUInt16LE(32, e + 6)
+  dir.writeUInt32LE(images[n].length, e + 8)
+  dir.writeUInt32LE(at, e + 12)
+  at += images[n].length
+})
+writeFileSync(join(out, 'icon.ico'), Buffer.concat([dir, ...images]))
 
 // .icns: iconutil only on macOS; otherwise the PNG is enough (electron-builder converts it)
 const set = join(out, 'icon.iconset')

@@ -129,6 +129,19 @@ test('ptyEnv: iç içe işaretleri ve üst CLAUDE_CONFIG_DIR atılır, hesabın 
   assert.equal(base.CLAUDE_CONFIG_DIR, '/parent');
 });
 
+test('sessionEnv: AGENT_OFFICE_APP her zaman, AGENT_OFFICE_MANAGER yalnız müdür modu açıkken', () => {
+  const base = A.ptyEnv({ PATH: '/bin', AGENT_OFFICE_MANAGER: '1' }, null);
+  const on = A.sessionEnv(base, { manager: true });
+  assert.equal(on.AGENT_OFFICE_APP, '1');
+  assert.equal(on.AGENT_OFFICE_MANAGER, '1');
+  assert.equal(on.PATH, '/bin');
+  assert.equal(A.sessionEnv(base).AGENT_OFFICE_MANAGER, '1'); // varsayılan açık
+  const off = A.sessionEnv(base, { manager: false });
+  assert.equal(off.AGENT_OFFICE_APP, '1');
+  assert.equal('AGENT_OFFICE_MANAGER' in off, false); // uygulamanın kendi ortamından gelse bile
+  assert.equal(base.AGENT_OFFICE_MANAGER, '1'); // girdi değişmez
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });
@@ -591,13 +604,43 @@ const pathT = require('path');
 test('hafıza: slug Claude Code gibi, worktree ana klasörün hafızasını kullanır', () => {
   assert.equal(M.memorySlug('/Users/a/My Proj.x'), '-Users-a-My-Proj-x');
   assert.equal(M.memorySlug('/' + 'a'.repeat(250)), null);
-  assert.equal(M.memoryBase('/r/sub', '/r\n/r/.git\n'), '/r');
-  assert.equal(M.memoryBase('/r-wt-2', '/r-wt-2\n/r/.git\n'), '/r');
-  assert.equal(M.memoryBase('/x', ''), '/x');
-  assert.equal(M.memoryBase('/s', '/s\n/r/.git/modules/s\n'), '/s');
+  assert.equal(M.memorySlug('/a/s\u0327'), M.memorySlug('/a/\u015f')); // NFD path: same slug as NFC
   assert.equal(M.sharedMemoryDir({ configDir: null, home: '/h', base: '/r' }), null);
   assert.equal(M.sharedMemoryDir({ configDir: '/acc/w', home: '/h', base: '/r' }), '/h/.claude/projects/-r/memory');
   assert.equal(M.accountMemoryDir({ configDir: '/acc/w', base: '/r' }), '/acc/w/projects/-r/memory');
+});
+
+test('hafıza: anahtar klasör diskten bulunur (git root, worktree → ana kopya, symlink çözülür)', () => {
+  const root = fsT.realpathSync(fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-base-')));
+  const j = (...p) => pathT.join(root, ...p);
+  const w = (p, txt) => { fsT.mkdirSync(pathT.dirname(p), { recursive: true }); fsT.writeFileSync(p, txt); };
+  // main working copy and a linked worktree, laid out as git writes them
+  fsT.mkdirSync(j('r', '.git', 'worktrees', 'r-wt'), { recursive: true });
+  fsT.mkdirSync(j('r', 'sub'));
+  w(j('r-wt', '.git'), `gitdir: ${j('r', '.git', 'worktrees', 'r-wt')}\n`);
+  w(j('r', '.git', 'worktrees', 'r-wt', 'commondir'), '../..\n');
+  w(j('r', '.git', 'worktrees', 'r-wt', 'gitdir'), `${j('r-wt', '.git')}\n`);
+  fsT.mkdirSync(j('r-wt', 'deep', 'er'), { recursive: true });
+  assert.equal(M.memoryBase(j('r')), j('r'));
+  assert.equal(M.memoryBase(j('r', 'sub')), j('r'));
+  assert.equal(M.memoryBase(j('r-wt', 'deep', 'er')), j('r'));
+  // submodule: .git file into .git/modules (no commondir) → its own root
+  w(j('r', 'mod', '.git'), 'gitdir: ../.git/modules/mod\n');
+  fsT.mkdirSync(j('r', '.git', 'modules', 'mod'), { recursive: true });
+  assert.equal(M.memoryBase(j('r', 'mod')), j('r', 'mod'));
+  // worktree of a bare repository → the bare repository folder
+  fsT.mkdirSync(j('b.git', 'worktrees', 'bw'), { recursive: true });
+  w(j('bw', '.git'), `gitdir: ${j('b.git', 'worktrees', 'bw')}\n`);
+  w(j('b.git', 'worktrees', 'bw', 'commondir'), '../..\n');
+  assert.equal(M.memoryBase(j('bw')), j('b.git'));
+  // not a repository; reached through a symlink → the real path, as Claude Code's cwd
+  fsT.mkdirSync(j('plain'));
+  fsT.symlinkSync(j('plain'), j('link'));
+  if (!fsT.existsSync(pathT.join(pathT.parse(root).root, '.git'))) {
+    assert.equal(M.memoryBase(j('link')), j('plain'));
+    assert.equal(M.memoryBase(j('missing')), j('missing'));
+  }
+  fsT.rmSync(root, { recursive: true, force: true });
 });
 
 test('hafıza: --settings JSON\'una autoMemoryDirectory eklenir', () => {
@@ -620,10 +663,17 @@ test('hafıza: hesabın hafızası ~/.claude\'a birleşir, mevcut olan ezilmez',
   assert.equal(fsT.readFileSync(pathT.join(to, 'commit.md'), 'utf8'), 'home');
   assert.equal(fsT.readFileSync(pathT.join(to, 'new.md'), 'utf8'), 'new');
   assert.equal(fsT.readFileSync(pathT.join(to, 'MEMORY.md'), 'utf8'), '# Memory Index\n\n- [Commit](commit.md) — no attribution\n- [New](new.md) — x\n');
-  // idempotent; a missing source or target folder is fine
+  // idempotent; a memory deleted from ~/.claude is not copied back; a new account memory still is
   assert.deepEqual(M.mergeMemory(from, to), []);
+  fsT.rmSync(pathT.join(to, 'new.md'));
+  fsT.writeFileSync(pathT.join(from, 'later.md'), 'later');
+  assert.deepEqual(M.mergeMemory(from, to), ['later.md']);
+  assert.equal(fsT.existsSync(pathT.join(to, 'new.md')), false);
+  fsT.rmSync(pathT.join(from, 'later.md'));
+  // a missing source or target folder is fine
   assert.deepEqual(M.mergeMemory(pathT.join(root, 'none'), to), []);
   const fresh = pathT.join(root, 'fresh', 'memory');
+  fsT.rmSync(pathT.join(from, '.agent-office-merged.json'));
   assert.deepEqual(M.mergeMemory(from, fresh).sort(), ['commit.md', 'new.md']);
   assert.equal(fsT.readFileSync(pathT.join(fresh, 'MEMORY.md'), 'utf8'), '- [New](new.md) — x\n- [Commit](commit.md) — old\n');
   fsT.rmSync(root, { recursive: true, force: true });
@@ -640,6 +690,7 @@ test('terminal: ⌘Enter (macOS) ve Ctrl+Enter claude\'a ctrl+enter (hemen gönd
   assert.equal(K.translateKey(enter(), true), null);
   assert.equal(K.translateKey(enter({ shiftKey: true }), true), null);
   assert.equal(K.translateKey(enter({ altKey: true }), true), null);
+  assert.equal(K.translateKey(enter({ ctrlKey: true, isComposing: true }), false), null);
   assert.equal(K.translateKey(enter({ metaKey: true }), false), null);
   assert.equal(K.translateKey(enter({ metaKey: true, ctrlKey: true }), true), null);
   assert.equal(K.translateKey({ key: 's', ctrlKey: true }, true), null);
@@ -722,4 +773,177 @@ test('uyku: readSession oturum dosyasını kimliğiyle okur, garip kimlik ya da 
   assert.equal(S.readSession('../sessions/abc-1', root), undefined);
   assert.equal(S.readSession(undefined, root), undefined);
   fsT.rmSync(root, { recursive: true, force: true });
+});
+
+// ---- Windows (decisions are pure and take the platform/env as arguments, so they run on any OS)
+const W = require('path').win32;
+const filesAt = (...files) => (f) => files.includes(f);
+
+test('Windows: claude PATH\'te (PATHEXT sırası, Path anahtarı), yoksa kurulum klasörleri; hiç yoksa null', () => {
+  const env = { Path: 'C:\\Windows;C:\\Users\\a\\AppData\\Roaming\\npm;"C:\\Users\\a\\.local\\bin"', PATHEXT: '.COM;.EXE;.BAT;.CMD;.PS1' };
+  // .exe comes before .cmd in PATHEXT, but PATH order wins: npm's folder is earlier
+  assert.equal(OS.findClaude(env, filesAt('C:\\Users\\a\\AppData\\Roaming\\npm\\claude.cmd', 'C:\\Users\\a\\.local\\bin\\claude.exe')),
+    'C:\\Users\\a\\AppData\\Roaming\\npm\\claude.cmd');
+  assert.equal(OS.findClaude(env, filesAt('C:\\Users\\a\\.local\\bin\\claude.exe')), 'C:\\Users\\a\\.local\\bin\\claude.exe');
+  // an extensionless npm shim (a shell script) or a .ps1 is never picked
+  assert.equal(OS.findClaude(env, filesAt('C:\\Users\\a\\AppData\\Roaming\\npm\\claude', 'C:\\Users\\a\\AppData\\Roaming\\npm\\claude.ps1')), null);
+  // not on PATH: the native installer's folder, then npm's
+  const bare = { PATH: 'C:\\Windows', USERPROFILE: 'C:\\Users\\b', APPDATA: 'C:\\Users\\b\\AppData\\Roaming' };
+  assert.equal(OS.findClaude(bare, filesAt('C:\\Users\\b\\.local\\bin\\claude.exe')), 'C:\\Users\\b\\.local\\bin\\claude.exe');
+  assert.equal(OS.findClaude(bare, filesAt('C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd')), 'C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd');
+  assert.equal(OS.findClaude(bare, () => false), null);
+  assert.equal(OS.findOnPath('git.exe', { PATH: 'C:\\Git\\cmd' }, filesAt('C:\\Git\\cmd\\git.exe')), 'C:\\Git\\cmd\\git.exe');
+});
+
+test('Windows: .exe doğrudan, .cmd cmd.exe /d /s /c ile tek satır (tırnaklar korunur)', () => {
+  const args = ['--plugin-dir', 'C:\\Users\\a b\\AppData\\Roaming\\Agent Office\\plugin\\agent-office', '--settings', 'C:\\s\\p.json', '--continue'];
+  assert.deepEqual(OS.windowsCommand('C:\\Users\\a\\.local\\bin\\claude.exe', args, {}), { file: 'C:\\Users\\a\\.local\\bin\\claude.exe', args, verbatim: false });
+  const c = OS.windowsCommand('C:\\Users\\a b\\AppData\\Roaming\\npm\\claude.cmd', args, { ComSpec: 'C:\\Windows\\system32\\cmd.exe' });
+  assert.equal(c.file, 'C:\\Windows\\system32\\cmd.exe');
+  assert.equal(c.verbatim, true);
+  assert.deepEqual(c.args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.equal(c.args[3], '""C:\\Users\\a b\\AppData\\Roaming\\npm\\claude.cmd" --plugin-dir "C:\\Users\\a b\\AppData\\Roaming\\Agent Office\\plugin\\agent-office" --settings C:\\s\\p.json --continue"');
+  assert.equal(OS.windowsCommand('C:\\x\\claude.BAT', [], {}).file, 'cmd.exe');
+  assert.equal(OS.cmdQuote('a&b'), '"a&b"');
+  assert.equal(OS.cmdQuote('say "hi"'), '"say ""hi"""');
+});
+
+test('Windows: PATH\'e klasör eklenir (mevcut anahtar, bir kez); env değişken adı büyük/küçük harf duyarsız', () => {
+  assert.deepEqual(OS.withPathDir({ Path: 'C:\\A;C:\\B' }, 'C:\\U s'), { Path: 'C:\\A;C:\\B;C:\\U s' });
+  assert.deepEqual(OS.withPathDir({ Path: 'C:\\A;c:\\u s' }, 'C:\\U s'), { Path: 'C:\\A;c:\\u s' });
+  assert.deepEqual(OS.withPathDir({}, 'C:\\U'), { PATH: 'C:\\U' });
+  assert.equal(OS.envGet({ ComSpec: 'x' }, 'COMSPEC'), 'x');
+  assert.equal(OS.envGet({}, 'COMSPEC'), undefined);
+});
+
+test('Windows: Git Bash CLAUDE_CODE_GIT_BASH_PATH, git.exe\'nin yanı, sonra varsayılan klasörler', () => {
+  const bash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+  assert.equal(OS.findGitBash({ CLAUDE_CODE_GIT_BASH_PATH: 'D:\\g\\bash.exe' }, filesAt('D:\\g\\bash.exe', bash)), 'D:\\g\\bash.exe');
+  assert.equal(OS.findGitBash({ PATH: 'C:\\Program Files\\Git\\cmd' }, filesAt('C:\\Program Files\\Git\\cmd\\git.exe', bash)), bash);
+  assert.equal(OS.findGitBash({ ProgramFiles: 'C:\\Program Files' }, filesAt(bash)), bash);
+  assert.equal(OS.findGitBash({ LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local' }, filesAt('C:\\Users\\a\\AppData\\Local\\Programs\\Git\\bin\\bash.exe')),
+    'C:\\Users\\a\\AppData\\Local\\Programs\\Git\\bin\\bash.exe');
+  assert.equal(OS.findGitBash({ PATH: 'C:\\Windows' }, () => false), null);
+});
+
+test('Windows: Gezgin\'den kopyalanan dosyalar (CF_HDROP, FileNameW, uri-list, PowerShell çıktısı)', () => {
+  const names = ['C:\\Users\\a\\b c.png', 'D:\\x.txt'];
+  const wide = Buffer.concat([Buffer.alloc(20), Buffer.from(names.join('\0') + '\0\0', 'utf16le')]);
+  wide.writeUInt32LE(20, 0);
+  wide.writeUInt32LE(1, 16);
+  assert.deepEqual(OS.filesFromDropFiles(wide), names);
+  const ansi = Buffer.concat([Buffer.alloc(20), Buffer.from('C:\\a.txt\0\0', 'latin1')]);
+  ansi.writeUInt32LE(20, 0);
+  assert.deepEqual(OS.filesFromDropFiles(ansi), ['C:\\a.txt']);
+  assert.deepEqual(OS.filesFromDropFiles(Buffer.alloc(4)), []);
+  assert.deepEqual(OS.filesFromFileNameW(Buffer.from('C:\\ç d.png\0', 'utf16le')), ['C:\\ç d.png']);
+  assert.deepEqual(OS.filesFromFileNameW(Buffer.alloc(0)), []);
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="CF_HDROP"'), 'drop');
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="FileNameW"'), 'name');
+  assert.equal(OS.windowsClipboardKind('text/uri-list'), 'uri');
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="HTML Format"'), null);
+  assert.equal(OS.windowsClipboardKind('text/plain'), null);
+  assert.deepEqual(OS.filesFromUriList('file:///C:/Users/a%20b/x.png\r\nfile://srv/share/y.txt\r\nhttps://e.com/z', 'win32'),
+    ['C:\\Users\\a b\\x.png', '\\\\srv\\share\\y.txt']);
+  assert.deepEqual(OS.filesFromLines('C:\\a b.txt\r\n\\\\srv\\s\\c.txt\r\nWARNING: x\r\n'), ['C:\\a b.txt', '\\\\srv\\s\\c.txt']);
+});
+
+test('Windows: kısayollar Linux gibi Ctrl+Shift; güncelleyici macOS, Windows ve AppImage\'da', () => {
+  assert.deepEqual(OS.shortcuts('win32'), OS.shortcuts('linux'));
+  assert.equal(OS.isWindows('win32'), true);
+  assert.equal(OS.isWindows('darwin'), false);
+  assert.equal(OS.canSelfUpdate('darwin', {}), true);
+  assert.equal(OS.canSelfUpdate('win32', {}), true);
+  assert.equal(OS.canSelfUpdate('linux', {}), false);
+  assert.equal(OS.canSelfUpdate('linux', { APPIMAGE: '/x.AppImage' }), true);
+});
+
+test('Windows: görev çubuğu rozeti geçerli bir PNG', () => {
+  const png = OS.dotPng(32, 0xe5484d);
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(png.readUInt32BE(16), 32);
+  assert.equal(png.readUInt32BE(20), 32);
+});
+
+test('Windows: status line komutu tek çıplak sözcük; .cmd uygulamayı Node olarak çalıştırır', () => {
+  const s = JSON.parse(U.windowsStatusLineSettings({ padding: 1 }));
+  assert.deepEqual(s.statusLine, { type: 'command', command: 'agent-office-statusline.cmd', padding: 1 });
+  assert.equal('padding' in JSON.parse(U.windowsStatusLineSettings(null)).statusLine, false);
+  // no quotes, spaces or backslashes: Git Bash and PowerShell read it the same way
+  assert.match(U.WIN_CMD, /^[\w.-]+$/);
+  const cmd = U.windowsCmdFile('C:\\Users\\a 100%\\AppData\\Local\\Programs\\Agent Office\\Agent Office.exe');
+  assert.equal(cmd.split('\r\n')[3], 'set ELECTRON_RUN_AS_NODE=1');
+  assert.equal(cmd.split('\r\n')[4], '"C:\\Users\\a 100%%\\AppData\\Local\\Programs\\Agent Office\\Agent Office.exe" "%~dp0statusline.js"');
+});
+
+test('Windows: status line betiği (Node) girdiyi dosyaya yazar, kullanıcının komutunu aynı girdiyle çalıştırır', { skip: process.platform === 'win32' && 'runs the user command with /bin/sh here' }, () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { execFileSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-slw-'));
+  const script = path.join(dir, U.WIN_SCRIPT_NAME);
+  fs.writeFileSync(script, U.WIN_SCRIPT);
+  const out = path.join(dir, 'p.json');
+  const input = JSON.stringify({ rate_limits: { seven_day: { used_percentage: 3 } } });
+  const env = { PATH: process.env.PATH, AGENT_OFFICE_USAGE_OUT: out };
+  assert.equal(execFileSync(process.execPath, [script], { input, env }).toString(), '');
+  assert.equal(fs.readFileSync(out, 'utf8'), input);
+  const shown = execFileSync(process.execPath, [script], { input, env: { ...env, AGENT_OFFICE_STATUSLINE: 'wc -c | tr -d " "', AGENT_OFFICE_STATUSLINE_SHELL: '/bin/sh' } }).toString();
+  assert.equal(shown.trim(), String(input.length));
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['p.json', U.WIN_SCRIPT_NAME]);
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('Windows: hafıza ve geçmiş slug\'ı C:\\ yollarında da Claude Code gibi', () => {
+  assert.equal(M.memorySlug('C:\\Users\\a\\proj'), 'C--Users-a-proj');
+  // a .git file's gitdir on Windows uses forward slashes: the same slug
+  assert.equal(M.memorySlug('C:/Users/a/proj'), 'C--Users-a-proj');
+  assert.equal(W.basename(P.historyDir('C:\\Users\\a\\my.proj', null, 'C:\\Users\\a')), 'C--Users-a-my-proj');
+});
+
+test('terminal: resim yapıştırma tuşu ve yol tırnakları (Windows çift tırnak)', async () => {
+  const K = await import('../src/terminal-keys.mjs');
+  assert.equal(K.imagePasteKey('darwin'), '\x16');
+  assert.equal(K.imagePasteKey('linux'), '\x16');
+  assert.equal(K.imagePasteKey('win32'), '\x1bv');
+  assert.equal(K.quotePath('/a/b c', 'darwin'), "'/a/b c'");
+  assert.equal(K.quotePath("/a/it's", 'linux'), "'/a/it'\\''s'");
+  assert.equal(K.quotePath('/a/b', 'darwin'), '/a/b');
+  assert.equal(K.quotePath('C:\\Users\\a\\b.png', 'win32'), 'C:\\Users\\a\\b.png');
+  assert.equal(K.quotePath('C:\\Users\\a b\\c.png', 'win32'), '"C:\\Users\\a b\\c.png"');
+  assert.equal(K.quotePath('C:\\R&D\\x', 'win32'), '"C:\\R&D\\x"');
+});
+
+test('terminal: macOS Option ile klavye düzeninin ürettiği ASCII işaret yazılır, diğerleri Meta kalır', async () => {
+  const K = await import('../src/terminal-keys.mjs');
+  const opt = (key, code, m = {}) => ({ key, code, altKey: true, metaKey: false, ctrlKey: false, shiftKey: false, ...m });
+  // TR Q layout: Option+Q @, Option+7 {, Option+8 [; DE: Option+Shift+7 is a backslash
+  assert.equal(K.translateKey(opt('@', 'KeyQ'), true), '@');
+  assert.equal(K.translateKey(opt('{', 'Digit7'), true), '{');
+  assert.equal(K.translateKey(opt('[', 'Digit8'), true), '[');
+  assert.equal(K.translateKey(opt('\\', 'Digit7', { shiftKey: true }), true), '\\');
+  assert.equal(K.translateKey(opt('~', 'KeyN'), true), '~');
+  // US Option+p (π), letters/digits, keys without a character, dead keys: Meta (xterm sends ESC+key)
+  assert.equal(K.translateKey(opt('π', 'KeyP'), true), null);
+  assert.equal(K.translateKey(opt('p', 'KeyP'), true), null);
+  assert.equal(K.translateKey(opt('1', 'Digit1'), true), null);
+  assert.equal(K.translateKey(opt(' ', 'Space'), true), null);
+  assert.equal(K.translateKey(opt('ArrowLeft', 'ArrowLeft'), true), null);
+  assert.equal(K.translateKey(opt('Backspace', 'Backspace'), true), null);
+  assert.equal(K.translateKey(opt('Enter', 'Enter'), true), null);
+  assert.equal(K.translateKey(opt('Dead', 'KeyE'), true), null);
+  // IME composition, Linux Alt, Cmd/Ctrl held with Option: left to xterm
+  assert.equal(K.translateKey(opt('@', 'KeyQ', { isComposing: true }), true), null);
+  assert.equal(K.translateKey(opt('@', 'KeyQ'), false), null);
+  assert.equal(K.translateKey(opt('@', 'KeyQ', { metaKey: true }), true), null);
+  assert.equal(K.translateKey(opt('@', 'KeyQ', { ctrlKey: true }), true), null);
+});
+
+test('uyku: uyanış seçenekleri (kendi oturumu, açılışta "son oturumdan devam et" o anki ayarı, hesap değişince temiz)', () => {
+  const { wakeOptions } = require('../src/sleep.js');
+  assert.deepEqual(wakeOptions({ sessionId: 's1' }, false), { sessionId: 's1' });
+  assert.deepEqual(wakeOptions({ resume: true }, true), { resume: true });
+  assert.deepEqual(wakeOptions({ resume: true }, false), { resume: false });
+  assert.deepEqual(wakeOptions({}, true), { resume: false });
+  assert.deepEqual(wakeOptions(undefined, true), { resume: false });
 });

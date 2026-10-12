@@ -4,7 +4,8 @@
 //   2. write the version: app/package.json, app/package-lock.json (root + packages[""]), plugin/.claude-plugin/plugin.json → "Version X" commit
 //   3. cd app && npm run dist:release (signed + notarized dmg/zip)
 //   4. notarization check: each dmg is mounted, spctl -a -vv on its .app must say "Notarized Developer ID"
-//   5. push the commit (so the tag points at it), gh release create vX (dmg, zip, blockmap, latest-mac.yml)
+//   5. push the commit (so the tag points at it), gh release create vX (dmg, zip, blockmap, latest-mac.yml); publishing it
+//      starts the release-linux and release-windows workflows, which add the Linux packages and the Windows installer
 //   6. write the Homebrew cask, commit, push; copy it to the tap repo (isisever/homebrew-tap), commit, push
 // --dry-run: runs the checks (only reports failures), prints every step that changes something but does not run it.
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -175,3 +176,4 @@ try {
 }
 
 console.log(`\n${isDry ? 'Dry run done, nothing changed' : `Released ${tag}`}: https://github.com/${REPO}/releases/tag/${tag}`)
+console.log(`The Linux and Windows files arrive from the release-linux and release-windows workflows: https://github.com/${REPO}/actions`)

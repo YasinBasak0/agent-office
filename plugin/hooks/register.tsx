@@ -144,6 +144,23 @@ const PUBLISH_MS = 500
 // format reads a newer one wrong, so the app warns when it sees a format above its own
 const FORMAT = 2
 
+// Manager mode: the Agent Office app sets AGENT_OFFICE_MANAGER=1 (sidebar setting, on by default); anyone else may
+// opt in with the same variable. The section rides the system prompt of every request (prompt.compose), so it
+// survives --continue, /resume, /clear and compaction. Only a loop that can start agents (the Agent tool) gets it,
+// never an in-process teammate. The text never changes: it sits after the prompt cache boundary and stays cached.
+const MANAGER_SECTION_ID = 'agent-office:manager'
+const MANAGER_TEXT = `# Manager mode (Agent Office)
+
+You are the manager in Agent Office. Your agents are subagents you start with the Agent tool; the person watches them work at their desks.
+
+- For work with several parts, split it into independent pieces and delegate them to subagents, in parallel when they don't overlap (in separate git worktrees when they would touch the same files). You plan, review, integrate and verify. A small single-step task you do yourself: don't start an agent for it.
+- Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them.
+- Stop only for what genuinely needs the person: approving outward-facing or destructive actions (deploying to production, publishing, deleting data, spending money), credentials or logins, and decisions that are theirs to make. For those, finish everything else first, then ask in one short list.
+- Report honestly what you verified and what you did not.
+
+The person's own instructions (CLAUDE.md, explicit requests) take precedence over this.`
+const AGENT_TOOLS = ['Agent', 'Task']
+
 let workers: Worker[] = []
 let shells: Shell[] = []
 // shells whose Bash result said backgroundEndsWithFinalResponse: they die when their subagent answers,
@@ -173,6 +190,7 @@ let kittyListenOn = ''
 let kittyWindowId = ''
 let weztermPane = ''
 let isInApp = false // AGENT_OFFICE_APP: the session runs inside the Agent Office app
+let isWindows = false // OS=Windows_NT: no /bin/mv or /bin/rm, cmd.exe's move/del/rmdir instead
 
 async function publish($: EngineInterface, endedAt?: number) {
   if (!stateFile) return
@@ -403,7 +421,8 @@ async function readInbox($: EngineInterface) {
   // every row is submitted now: the viewer only appends, so move the file aside (atomic) and a task
   // typed meanwhile starts a new one; rows that landed in the old file before the move are still sent
   const aside = `${inboxFile}.${Date.now()}.old`
-  const moved = await $.process.run(['/bin/mv', '-f', '--', inboxFile, aside]).catch(() => undefined)
+  const mv = isWindows ? ['cmd.exe', '/d', '/c', 'move', '/y', winPath(inboxFile), winPath(aside)] : ['/bin/mv', '-f', '--', inboxFile, aside]
+  const moved = await $.process.run(mv).catch(() => undefined)
   if (moved?.exitCode !== 0) return
   try {
     await submitTasks($, await $.fs.read(aside))
@@ -436,10 +455,23 @@ async function submitTasks($: EngineInterface, raw: string) {
 async function remove($: EngineInterface, paths: string[]) {
   if (paths.length === 0) return
   try {
-    await $.process.run(['/bin/rm', '-rf', '--', ...paths])
+    if (!isWindows) {
+      await $.process.run(['/bin/rm', '-rf', '--', ...paths])
+      return
+    }
+    // Windows: rmdir for a folder (frames), del when that fails (a file)
+    for (const path of paths) {
+      const dir = await $.process.run(['cmd.exe', '/d', '/c', 'rmdir', '/s', '/q', winPath(path)])
+      if (dir.exitCode !== 0) await $.process.run(['cmd.exe', '/d', '/c', 'del', '/f', '/q', winPath(path)])
+    }
   } catch {
     // no rm here: nothing is removed
   }
+}
+
+// cmd.exe reads '/' as a switch: its commands get backslashes
+function winPath(path: string) {
+  return path.replace(/\//g, '\\')
 }
 
 // drops other sessions' state, inbox and frames once that session ended before today or went quiet for STALE_MS
@@ -767,7 +799,9 @@ async function statsText($: EngineInterface) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    const home = (await $.env.get('HOME')) ?? ''
+    // Windows: the user profile, as Node's os.homedir() there (the app reads the office from it); HOME is often unset
+    isWindows = (await $.env.get('OS')) === 'Windows_NT'
+    const home = (isWindows ? (await $.env.get('USERPROFILE')) || (await $.env.get('HOME')) : await $.env.get('HOME')) ?? ''
     const settings = await readSettings($, home)
     forgetMs = settings.forgetMinutes * 60_000
     const locale = (await $.env.get('LC_ALL')) || (await $.env.get('LC_MESSAGES')) || (await $.env.get('LANG')) || ''
@@ -784,7 +818,7 @@ export const register: Register = on => {
         : { name: 'office', description: t.description, argumentHint: t.argumentHint },
     )
     const id = await $.session.id()
-    project = (await $.session.root()).split('/').pop() ?? ''
+    project = (await $.session.root()).split(/[\\/]/).pop() ?? ''
     const root = `${home}/.claude/agent-office`
     rootDir = root
     sessionId = id
@@ -804,6 +838,15 @@ export const register: Register = on => {
     startTicker($)
 
     return next(e)
+  })
+
+  // manager mode (see MANAGER_TEXT): one section appended after the engine's own
+  on('prompt.compose', async ($, e, next) => {
+    const result = await next(e)
+    if ((await $.env.get('AGENT_OFFICE_MANAGER')) !== '1') return result
+    if (e.traits.includes('teammate') || !e.tools.some(tool => AGENT_TOOLS.includes(tool))) return result
+    if (result.sections.some(section => section.id === MANAGER_SECTION_ID)) return result
+    return { sections: [...result.sections, { id: MANAGER_SECTION_ID, text: MANAGER_TEXT, scope: 'session' as const }] }
   })
 
   on('session.end', async ($, e, next) => {

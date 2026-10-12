@@ -75,6 +75,16 @@ function ptyEnv(base, configDir = null) {
   return env;
 }
 
+// The env of a project's claude in the app, on top of ptyEnv: AGENT_OFFICE_APP marks the app (the plugin's /office
+// then gives the summary only); AGENT_OFFICE_MANAGER=1 turns on the plugin's manager mode (sidebar setting, default
+// on: the boss delegates to agents). Off, the variable is left out, even when the app itself was started with it.
+function sessionEnv(env, { manager = true } = {}) {
+  const out = { ...env, AGENT_OFFICE_APP: '1' };
+  if (manager) out.AGENT_OFFICE_MANAGER = '1';
+  else delete out.AGENT_OFFICE_MANAGER;
+  return out;
+}
+
 // --- login status (`claude auth status --json`)
 
 // The last JSON object in the output: rc files may print noise before/after it. A brace-counting scan
@@ -168,6 +178,6 @@ const loginAccountId = (ptyId) =>
   typeof ptyId === 'string' && ptyId.startsWith(LOGIN_PREFIX) ? ptyId.slice(LOGIN_PREFIX.length) : null;
 
 module.exports = {
-  DEFAULT_ID, DEFAULT_ACCOUNT, normalizeAccounts, addAccount, renameAccount, removeAccount, accountOf, ptyEnv,
+  DEFAULT_ID, DEFAULT_ACCOUNT, normalizeAccounts, addAccount, renameAccount, removeAccount, accountOf, ptyEnv, sessionEnv,
   lastJsonObject, authFromStatus, authFromRun, localizeAuth, claudeCommand, withAuth, loginPtyId, loginAccountId,
 };

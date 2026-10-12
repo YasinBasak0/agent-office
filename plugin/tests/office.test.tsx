@@ -7,19 +7,19 @@ type RunResult = { exitCode: number; stdout: string; stderr: string; isStdoutTru
 
 const ran = (exitCode: number, stdout = ''): RunResult => ({ exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 
-// a session in /work/my-app with the given environment; process.run answers from `run`, fs.read from `files`.
+// a session in /work/my-app (or `root`) with the given environment; process.run answers from `run`, fs.read from `files`.
 // `isTicking`: a mocked clock drives the plugin's ticker (advance it to run a tick)
 function setUp(
   on: Harness,
   env: Record<string, string>,
   run: (argv: readonly string[]) => RunResult = () => ran(1),
-  { files = {}, isTicking = false }: { files?: Record<string, string>; isTicking?: boolean } = {},
+  { files = {}, isTicking = false, root = '/work/my-app' }: { files?: Record<string, string>; isTicking?: boolean; root?: string } = {},
 ) {
   const writes: { path: string; text: string }[] = []
   const runs: (readonly string[])[] = []
   on('env.get', (_$, e) => ({ value: env[e.name] }))
   on('session.id', () => ({ value: 'session-1' }))
-  on('session.root', () => ({ value: '/work/my-app' }))
+  on('session.root', () => ({ value: root }))
   const commands: string[] = []
   const registered: { name: string; description?: string; argumentHint?: string }[] = []
   on('command.register', (_$, e) => {
@@ -126,6 +126,40 @@ test('inside the Agent Office app /office şerit answers in Turkish and opens no
   expect((reply as { text: string }).text).toContain('Ofis zaten Agent Ofis penceresinde görünüyor')
   expect((reply as { text: string }).text).toContain('/office istatistik')
   expect(runs).toEqual([])
+})
+
+// USERPROFILE is a POSIX-looking path in the Windows tests: the engine running them on macOS/Linux would resolve
+// C:\... as a relative path
+test('on Windows the state file goes under USERPROFILE and the project is the folder name', async ($, on) => {
+  const env = { OS: 'Windows_NT', USERPROFILE: '/win/Users/tester', HOME: '/home/other', AGENT_OFFICE_APP: '1' }
+  const { writes } = setUp(on, env, undefined, { root: 'C:\\work\\my-app' })
+  on('agent.spawn', () => ({ model: 'test-model', agentId: 'agent-1' }))
+
+  await $.session.start({ ...start, cwd: 'C:\\work\\my-app' })
+  const spawn = { prompt: 'scan', description: 'Scan the code', subagentType: 'Explore' }
+  await $.agent.spawn(spawn as Parameters<typeof $.agent.spawn>[0])
+
+  const last = writes[writes.length - 1]
+  expect(last?.path).toBe('/win/Users/tester/.claude/agent-office/sessions/session-1.json')
+  expect(JSON.parse(last?.text ?? '{}').project).toBe('my-app')
+})
+
+test('on Windows old session files are removed with cmd.exe, not /bin/rm', async ($, on) => {
+  const root = '/win/Users/tester/.claude/agent-office'
+  const old = Date.now() - 48 * 60 * 60_000
+  const files = { [`${root}/sessions/ended.json`]: JSON.stringify({ updatedAt: old, endedAt: old }) }
+  const { runs } = setUp(on, { OS: 'Windows_NT', USERPROFILE: '/win/Users/tester' }, undefined, { files, root: 'C:\\work\\my-app' })
+  const listing: Record<string, unknown[]> = {
+    [`${root}/sessions`]: [{ name: 'ended.json', kind: 'file', size: 0, mtimeMs: old, isLink: false }],
+  }
+  on('fs.list', (_$, e) => ({ value: (listing[e.path ?? ''] ?? []) as never }))
+
+  await $.session.start({ ...start, cwd: 'C:\\work\\my-app' })
+
+  const target = '\\win\\Users\\tester\\.claude\\agent-office\\sessions\\ended.json'
+  expect(runs.some(argv => argv[0] === '/bin/rm')).toBe(false)
+  expect(runs).toContainEqual(['cmd.exe', '/d', '/c', 'rmdir', '/s', '/q', target])
+  expect(runs).toContainEqual(['cmd.exe', '/d', '/c', 'del', '/f', '/q', target])
 })
 
 test('a spawned agent is written to the session state file', async ($, on) => {
@@ -990,4 +1024,48 @@ test('/office istatistik answers in Turkish and without deliveries says so; it o
   // the band stayed closed: /office şerit now opens it rather than closing it
   const opened = await $.command.run({ command: 'office', args: 'şerit' } as Parameters<typeof $.command.run>[0])
   expect(JSON.stringify(opened)).toContain('şeridi açıldı')
+})
+
+// manager mode: the engine's own prompt stands beneath the plugin as one shared section
+function setUpCompose(on: Harness, env: Record<string, string>) {
+  on('env.get', (_$, e) => ({ value: env[e.name] }))
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
+}
+const composing = { model: 'claude-test', promptModel: 'claude-test', surfaces: ['terminal'], outputStyle: null } as const
+const mainLoop = { ...composing, tools: ['Agent', 'Bash', 'Read'], traits: [] }
+
+test('inside the app with manager mode on, the manager section is appended to the system prompt once', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' })
+  const { sections } = await $.prompt.compose(mainLoop)
+  expect(sections.map(s => s.id)).toEqual(['intro', 'agent-office:manager'])
+  const manager = sections[1]
+  expect(manager?.scope).toBe('session')
+  expect(manager?.text).toContain('You are the manager in Agent Office')
+  expect(manager?.text).toContain("Don't end a turn with a list of remaining work")
+  expect(manager?.text).toContain('take precedence over this')
+  // the text is the same on every request (prompt cache)
+  const again = await $.prompt.compose(mainLoop)
+  expect(again.sections[1]?.text).toBe(manager?.text)
+})
+
+for (const [name, env] of [
+  ['inside the app with manager mode off', { HOME: '/home/tester', AGENT_OFFICE_APP: '1' }],
+  ['inside the app with AGENT_OFFICE_MANAGER=0', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '0' }],
+  ['outside the app without opting in', { HOME: '/home/tester' }],
+] as const) {
+  test(`${name} the system prompt is left alone`, async ($, on) => {
+    setUpCompose(on, env)
+    expect((await $.prompt.compose(mainLoop)).sections.map(s => s.id)).toEqual(['intro'])
+  })
+}
+
+test('without the app the plugin user opts in with AGENT_OFFICE_MANAGER=1', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_MANAGER: '1' })
+  expect((await $.prompt.compose(mainLoop)).sections.map(s => s.id)).toEqual(['intro', 'agent-office:manager'])
+})
+
+test('a loop that cannot start agents, or a teammate, gets no manager section', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' })
+  expect((await $.prompt.compose({ ...composing, tools: ['Bash', 'Read'], traits: [] })).sections.map(s => s.id)).toEqual(['intro'])
+  expect((await $.prompt.compose({ ...composing, tools: ['Agent'], traits: ['teammate'] })).sections.map(s => s.id)).toEqual(['intro'])
 })

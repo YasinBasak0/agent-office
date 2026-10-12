@@ -67,6 +67,8 @@
     "language": "Dil",
     "resume": "Son oturumdan devam et",
     "resumeTitle": "Uygulama açılınca her proje son Claude oturumundan devam eder (claude --continue)",
+    "manager": "Müdür modu — işleri ajanlara dağıt",
+    "managerTitle": "Müdür işi ajanlara böler, görevler bitene kadar devam eder ve yalnız sana gereken şeyler için durur (onaylar, girişler, senin kararların). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
     "sleep": "Boştaki oturumları uyut",
     "sleepTitle": "Bellek tasarrufu: bir proje Claude'unu ilk açıldığında başlatır; arka planda bu kadar süre boş kalan Claude kapatılır ve projeyi yeniden açınca oturumundan devam eder (claude --resume). Çalışırken, onay beklerken, ajan, arka plan kabuğu ya da zamanlanmış görev varken veya gönderilmemiş yazı varken asla.",
     "sleepOff": "Kapalı",
@@ -262,7 +264,10 @@
     "removeWorktree": "Kapat ve worktree'yi kaldır",
     "keepWorktree": "Kapat, klasör kalsın",
     "worktreeKept": "Git worktree'yi kaldırmadı; sekme açık kaldı.",
-    "worktreeKeptDetail": "{error}\n\nDeğişiklikleri commit'le ya da geri al ve sekmeyi yeniden kapat; ya da \"Kapat, klasör kalsın\"ı seç."
+    "worktreeKeptDetail": "{error}\n\nDeğişiklikleri commit'le ya da geri al ve sekmeyi yeniden kapat; ya da \"Kapat, klasör kalsın\"ı seç.",
+    "noClaude": "Claude Code bulunamadı.",
+    "noClaudeHelp": "Claude Code'u Windows için kur ({url}), yeni bir terminalde `claude` komutunun çalıştığına bak, sonra burada Enter'a basıp yeniden dene.",
+    "badge": "{count} proje seni bekliyor"
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",

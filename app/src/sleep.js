@@ -72,4 +72,12 @@ function sleepBlocker({ now, idleMs, lastActivityAt, hasDraft = false, isActive 
   return '';
 }
 
-module.exports = { SLEEP_CHOICES, DEFAULT_SLEEP, normalizeSleep, claudePidFile, hasScheduleTool, draftAfter, sleepBlocker };
+/**
+ * How a sleeping tab starts (startPty options). After a sleep: its own session (--resume <id>). Not started yet at
+ * launch ({ resume: true }): the "Continue last session" setting as it is now decides --continue. After an account
+ * change ({}): fresh.
+ * @param {{ sessionId?: string, resume?: boolean } | undefined} how @param {boolean} resumePref
+ */
+const wakeOptions = (how, resumePref) => (how?.sessionId ? { sessionId: how.sessionId } : { resume: Boolean(how?.resume) && resumePref !== false });
+
+module.exports = { wakeOptions, SLEEP_CHOICES, DEFAULT_SLEEP, normalizeSleep, claudePidFile, hasScheduleTool, draftAfter, sleepBlocker };

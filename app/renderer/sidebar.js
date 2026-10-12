@@ -82,6 +82,10 @@ export function mountSidebar(el, on) {
   const resumeLabel = h('span', {});
   const resumeBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setResume?.(e.target.checked) });
   const resumeRow = h('label', { class: 'sb-botcolor sb-langrow' }, resumeLabel, resumeBox);
+  // manager mode: the boss delegates the work to agents (plugin, AGENT_OFFICE_MANAGER); sessions started afterwards
+  const managerLabel = h('span', {});
+  const managerBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setManager?.(e.target.checked) });
+  const managerRow = h('label', { class: 'sb-botcolor sb-langrow' }, managerLabel, managerBox);
   // sleep idle background sessions after N minutes (0 = off); main's src/sleep.js has the rules
   const SLEEP_CHOICES = [0, 15, 30, 60];
   let sleepMinutes = 30;
@@ -102,6 +106,7 @@ export function mountSidebar(el, on) {
       acctList,
     ),
     resumeRow,
+    managerRow,
     sleepRow,
     langRow,
     themeRow,
@@ -120,6 +125,8 @@ export function mountSidebar(el, on) {
     langLabel.textContent = t('sidebar.language');
     resumeLabel.textContent = t('sidebar.resume');
     resumeRow.title = t('sidebar.resumeTitle');
+    managerLabel.textContent = t('sidebar.manager');
+    managerRow.title = t('sidebar.managerTitle');
     sleepLabel.textContent = t('sidebar.sleep');
     sleepRow.title = t('sidebar.sleepTitle');
     renderSleep();
@@ -356,6 +363,8 @@ export function mountSidebar(el, on) {
     },
     /** Setting to resume the last session on launch. */
     setResume(on) { resumeBox.checked = on !== false; },
+    /** Manager mode setting (the boss delegates to agents). */
+    setManager(on) { managerBox.checked = on !== false; },
     /** Minutes after which an idle background session sleeps (0 = off). */
     setSleep(minutes) {
       if (!SLEEP_CHOICES.includes(minutes)) return;
