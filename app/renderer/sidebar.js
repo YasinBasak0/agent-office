@@ -89,6 +89,14 @@ export function mountSidebar(el, on) {
   const managerLabel = h('span', {});
   const managerBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setManager?.(e.target.checked) });
   const managerRow = h('label', { class: 'sb-botcolor sb-langrow' }, managerLabel, managerBox);
+  // every session also gets the other office projects' MCP servers (contract v3.9); sessions started afterwards
+  const shareMcpLabel = h('span', {});
+  const shareMcpBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setShareMcp?.(e.target.checked) });
+  const shareMcpRow = h('label', { class: 'sb-botcolor sb-langrow' }, shareMcpLabel, shareMcpBox);
+  // an idle running session whose MCP servers changed restarts in its conversation (contract v3.11)
+  const reloadMcpLabel = h('span', {});
+  const reloadMcpBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setReloadMcp?.(e.target.checked) });
+  const reloadMcpRow = h('label', { class: 'sb-botcolor sb-langrow' }, reloadMcpLabel, reloadMcpBox);
   // sleep idle background sessions after N minutes (0 = off); main's src/sleep.js has the rules
   const SLEEP_CHOICES = [0, 15, 30, 60];
   let sleepMinutes = 30;
@@ -117,6 +125,8 @@ export function mountSidebar(el, on) {
     resumeRow,
     resumeWorkRow,
     managerRow,
+    shareMcpRow,
+    reloadMcpRow,
     sleepRow,
     langRow,
     themeRow,
@@ -141,6 +151,10 @@ export function mountSidebar(el, on) {
     resumeWorkRow.title = t('sidebar.resumeWorkTitle');
     managerLabel.textContent = t('sidebar.manager');
     managerRow.title = t('sidebar.managerTitle');
+    shareMcpLabel.textContent = t('sidebar.shareMcp');
+    shareMcpRow.title = t('sidebar.shareMcpTitle');
+    reloadMcpLabel.textContent = t('sidebar.reloadMcp');
+    reloadMcpRow.title = t('sidebar.reloadMcpTitle');
     sleepLabel.textContent = t('sidebar.sleep');
     sleepRow.title = t('sidebar.sleepTitle');
     renderSleep();
@@ -431,6 +445,10 @@ export function mountSidebar(el, on) {
     },
     /** Manager mode setting (the boss delegates to agents). */
     setManager(on) { managerBox.checked = on !== false; },
+    /** "Share MCP servers between projects" setting (v3.9). */
+    setShareMcp(on) { shareMcpBox.checked = on !== false; },
+    /** "Reload sessions when MCP changes" setting (v3.11). */
+    setReloadMcp(on) { reloadMcpBox.checked = on !== false; },
     /** Minutes after which an idle background session sleeps (0 = off). */
     setSleep(minutes) {
       if (!SLEEP_CHOICES.includes(minutes)) return;

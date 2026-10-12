@@ -80,6 +80,10 @@
     "resumeUnfinishedSkipped": "Dokunulmadı (gönderilmemiş yazı var): {names}",
     "manager": "Müdür modu — işleri ajanlara dağıt",
     "managerTitle": "Müdür işi ajanlara böler, görevler bitene kadar devam eder ve yalnız sana gereken şeyler için durur (onaylar, girişler, senin kararların). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
+    "shareMcp": "Projelerin MCP sunucularını paylaş",
+    "reloadMcp": "MCP değişince oturumları yenile",
+    "reloadMcpTitle": "Çalışan bir Claude'un alacağı MCP sunucuları değişince (claude mcp add/remove, düzenlenen .mcp.json, bir onay, eklenen bir proje) boşta kalır kalmaz aynı konuşmada yeniden başlar: çalışırken, ajan ya da arka plan kabuğu çalıştırırken, onay beklerken ya da isteminde gönderilmemiş yazı varken başlamaz.",
+    "shareMcpTitle": "Her projenin Claude'u ofisteki diğer projelerin MCP sunucularını da alır (yerel ve onaylı .mcp.json sunucuları, token'larıyla birlikte); böylece bir projenin sekmesinden başka bir proje üzerinde çalışabilirsin. Adı başka bir ayarla zaten alınmış bir sunucunun adına proje adı eklenir (sunucu-proje). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
     "shareDefault": "Varsayılan hesabın eklentilerini, skill'lerini ve MCP sunucularını kullan",
     "shareDefaultTitle": "Varsayılan hesap (~/.claude) için kurduğun eklentiler, kişisel skill'ler, ajanlar, komutlar, çıktı stilleri, MCP sunucuları (token'larıyla) ve CLAUDE.md bu hesapta da kullanılır. Bu hesabın kendi girişi, ayarları ve claude.ai'den eşitlenen skill'leri kendisinde kalır. Bu hesabın Claude oturumları bir sonraki başlayışta geçerli olur.",
     "sleep": "Boştaki oturumları uyut",
@@ -240,7 +244,8 @@
   },
   "terminal": {
     "exited": "— Claude kapandı — yeniden başlatmak için Enter —",
-    "asleep": "— Bellek için uykuda: açınca kaldığı yerden devam eder —"
+    "asleep": "— Bellek için uykuda: açınca kaldığı yerden devam eder —",
+    "mcpReloaded": "— MCP sunucuları yeniden yüklendi: Claude aynı konuşmada yeniden başladı —"
   },
   "main": {
     "defaultAccount": "Varsayılan",

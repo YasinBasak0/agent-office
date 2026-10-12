@@ -167,6 +167,57 @@ You are the manager in Agent Office: a dispatcher who hands the work to agents a
 - Report honestly what you verified and what you did not.
 
 The person's own instructions (CLAUDE.md, explicit requests) take precedence over this.`
+// The office directory (app contract v3.9): the app writes the projects of the office (name, folder, account, the
+// MCP servers this session sees for each, by those names; never a config or token) to a JSON file per tab and passes
+// its path in AGENT_OFFICE_DIRECTORY. Every loop in the app gets it as one section, so "the X project" means X's
+// folder and X's servers without searching the disk. The file does not change while the session runs, so the text
+// stays the same on every request (prompt cache).
+const PROJECTS_SECTION_ID = 'agent-office:projects'
+const DIRECTORY_MAX = 40 // projects listed
+const DIRECTORY_MCP_MAX = 20 // server names listed per project
+const DIRECTORY_FIELD_MAX = 200
+const DIRECTORY_DIR_MAX = 1024
+
+const oneLine = (value: unknown, max: number) => (typeof value === 'string' ? clip(value.replace(/\s+/g, ' ').trim(), max) : '')
+
+/** The office directory section's text from the app's file; undefined when it lists no project. */
+function directoryText(raw: string): string | undefined {
+  let data: unknown
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  const listed = data !== null && typeof data === 'object' ? (data as Record<string, unknown>).projects : undefined
+  if (!Array.isArray(listed)) return undefined
+  const lines: string[] = []
+  for (const item of listed) {
+    if (lines.length >= DIRECTORY_MAX) break
+    if (item === null || typeof item !== 'object') continue
+    const p = item as Record<string, unknown>
+    const name = oneLine(p.name, DIRECTORY_FIELD_MAX)
+    const dir = oneLine(p.dir, DIRECTORY_DIR_MAX)
+    if (!name || !dir) continue
+    const account = oneLine(p.account, DIRECTORY_FIELD_MAX)
+    const mcp = (Array.isArray(p.mcp) ? p.mcp : [])
+      .map(n => oneLine(n, DIRECTORY_FIELD_MAX))
+      .filter(Boolean)
+      .slice(0, DIRECTORY_MCP_MAX)
+    const facts = [account ? `account ${account}` : '', mcp.length ? `MCP: ${mcp.join(', ')}` : ''].filter(Boolean)
+    lines.push(`- ${name}${p.current === true ? " (this session's project)" : ''}: ${dir}${facts.length ? ` (${facts.join('; ')})` : ''}`)
+  }
+  if (!lines.length) return undefined
+  const more = (data as Record<string, unknown>).more
+  const rest = listed.length - lines.length + (typeof more === 'number' && more > 0 ? Math.floor(more) : 0)
+  if (rest > 0) lines.push(`- … and ${rest} more`)
+  return `# Projects in this Agent Office
+
+The person has these projects open in Agent Office, each with its own folder and account:
+${lines.join('\n')}
+
+When the person names one of these projects, they mean that folder: read and work there with absolute paths (in Bash, \`cd <folder> && …\`) instead of searching the disk for it. The MCP servers listed for a project are connected in this session under those names (tools \`mcp__<server>__…\`); use them for that project's work.`
+}
+
 // Manager mode's nudge: when the main loop has made NUDGE_AFTER tool calls of its own in a row this turn without
 // handing anything off, the reminder rides that call's result (tool.call `context`, read like a PostToolUse
 // hook's additionalContext). It is a message in the conversation, not system prompt text, so the cached prompt
@@ -982,13 +1033,21 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // manager mode (see MANAGER_TEXT): one section appended after the engine's own
+  // manager mode (see MANAGER_TEXT) and the office directory (see directoryText): sections appended after the engine's own
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
-    if ((await $.env.get('AGENT_OFFICE_MANAGER')) !== '1') return result
-    if (e.traits.includes('teammate') || !e.tools.some(tool => AGENT_TOOLS.includes(tool))) return result
-    if (result.sections.some(section => section.id === MANAGER_SECTION_ID)) return result
-    return { sections: [...result.sections, { id: MANAGER_SECTION_ID, text: MANAGER_TEXT, scope: 'session' as const }] }
+    const sections = [...result.sections]
+    const isLoopManager =
+      (await $.env.get('AGENT_OFFICE_MANAGER')) === '1' && !e.traits.includes('teammate') && e.tools.some(tool => AGENT_TOOLS.includes(tool))
+    if (isLoopManager && !sections.some(section => section.id === MANAGER_SECTION_ID)) {
+      sections.push({ id: MANAGER_SECTION_ID, text: MANAGER_TEXT, scope: 'session' as const })
+    }
+    const directoryFile = (await $.env.get('AGENT_OFFICE_APP')) ? await $.env.get('AGENT_OFFICE_DIRECTORY') : undefined
+    if (directoryFile && !sections.some(section => section.id === PROJECTS_SECTION_ID)) {
+      const text = directoryText(await $.fs.read(directoryFile).catch(() => ''))
+      if (text) sections.push({ id: PROJECTS_SECTION_ID, text, scope: 'session' as const })
+    }
+    return sections.length === result.sections.length ? result : { ...result, sections }
   })
 
   on('session.end', async ($, e, next) => {
