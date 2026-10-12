@@ -15,6 +15,8 @@
     "dist": "electron-builder --mac && rm -rf release/mac release/mac-arm64 release/builder-debug.yml",
     "predist:linux": "node scripts/sync-core.mjs",
     "dist:linux": "electron-builder --linux --publish never && rm -rf release/linux-unpacked release/builder-debug.yml",
+    "predist:win": "node scripts/sync-core.mjs",
+    "dist:win": "electron-builder --win --config scripts/win-builder-config.cjs --publish never && node -e \"for (const p of ['release/win-unpacked', 'release/builder-debug.yml']) require('fs').rmSync(p, { recursive: true, force: true })\"",
     "icon": "node scripts/make-icon.mjs",
     "predist:release": "node scripts/sync-core.mjs",
     "dist:release": "APPLE_KEYCHAIN_PROFILE=${APPLE_KEYCHAIN_PROFILE:-agent-office} electron-builder --mac -c.mac.identity=\"${CSC_NAME:-Savas Isisever (GLTH2M74NT)}\" && rm -rf release/mac release/mac-arm64 release/mac-universal release/builder-debug.yml"
@@ -110,6 +112,24 @@
         "!node_modules/node-pty/prebuilds/darwin-*/**"
       ],
       "syncDesktopName": true
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "AgentOffice-${version}-Setup.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "shortcutName": "Agent Office"
     },
     "deb": {
       "packageCategory": "devel",
