@@ -93,11 +93,18 @@ function ptyEnv(base, configDir = null) {
 
 // The env of a project's claude in the app, on top of ptyEnv: AGENT_OFFICE_APP marks the app (the plugin's /office
 // then gives the summary only); AGENT_OFFICE_MANAGER=1 turns on the plugin's manager mode (sidebar setting, default
-// on: the boss delegates to agents). Off, the variable is left out, even when the app itself was started with it.
+// on: the boss delegates to agents; per project since v3.10). Off, the variable is left out, even when the app itself
+// was started with it, and AGENT_OFFICE_FINISH=1 is set instead: the boss does the work itself, but the plugin's
+// finish guard still keeps it from stopping on a list of work it could do (manager mode has the guard built in).
 function sessionEnv(env, { manager = true } = {}) {
   const out = { ...env, AGENT_OFFICE_APP: '1' };
-  if (manager) out.AGENT_OFFICE_MANAGER = '1';
-  else delete out.AGENT_OFFICE_MANAGER;
+  if (manager) {
+    out.AGENT_OFFICE_MANAGER = '1';
+    delete out.AGENT_OFFICE_FINISH;
+  } else {
+    delete out.AGENT_OFFICE_MANAGER;
+    out.AGENT_OFFICE_FINISH = '1';
+  }
   return out;
 }
 

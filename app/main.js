@@ -562,7 +562,7 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   const args = R.claudeArgs([...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
-  let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: state.manager !== false });
+  let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: P.managerOf(state, project) });
   delete env.AGENT_OFFICE_STATUSLINE;
   if (sl?.userCommand) env.AGENT_OFFICE_STATUSLINE = sl.userCommand;
   if (IS_WIN) env = windowsStatusLineEnv(env, sl);
@@ -816,6 +816,38 @@ ipcMain.handle('projects:setAccount', (_e, id, accountId) => {
   commit(next);
   restartProject(id);
 });
+// Per-project manager mode (contract v3.10): true delegates, false does it itself, null follows the global setting.
+// It applies when a tab's claude starts next; a running tab that sits idle (no turn, no prompt typed, no agent or
+// shell of its session still working) restarts at once, resuming its own session. Returns the restarted pty ids.
+ipcMain.handle('projects:setManager', (_e, id, value) => {
+  const next = P.setProjectManager(state, id, value);
+  if (next === state) return { restarted: [] };
+  const was = P.managerOf(state, P.findProject(state, id));
+  commit(next);
+  const p = P.findProject(state, id);
+  if (!p || P.managerOf(state, p) === was) return { restarted: [] };
+  const restarted = [];
+  for (const pid of P.ptyIdsOf(p)) {
+    const sid = idleSession(pid);
+    if (!sid) continue;
+    startPty(pid, { sessionId: sid, resume: true });
+    restarted.push(pid);
+  }
+  return { restarted };
+});
+/** A running tab's session id when its claude can restart without losing anything, else ''. */
+function idleSession(pid) {
+  const t = terms.get(pid);
+  const r = P.resolvePty(state, pid);
+  if (!t || !r || activity.get(pid)?.draft) return '';
+  const { configDir } = A.accountOf(state, r.project);
+  const claude = readJson(Z.claudePidFile(configDir, app.getPath('home'), t.pid));
+  const sid = validSid(claude?.sessionId);
+  const session = sid ? office()?.readSession(sid) : undefined;
+  if (!sid || R.isTurnBusy({ claude, office: session })) return '';
+  const working = (session?.workers || []).some((w) => w && w.doneAt === undefined) || (session?.shells || []).some((x) => x && x.endAt === undefined);
+  return working ? '' : sid;
+}
 
 // --- accounts
 ipcMain.handle('accounts:list', () => accountList());

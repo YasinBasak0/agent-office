@@ -1229,5 +1229,7 @@ test('the manager text makes delegation the default and keeps trivial work as th
   expect(text).toContain('stays available to the person')
   expect(text).toContain('run_in_background')
   expect(text).toContain('Do it yourself only when it is trivial')
+  expect(text).toContain('Make technical choices yourself')
+  expect(text).toContain('Never end a turn with an offer')
   expect(text).not.toContain('A small single-step task you do yourself')
 })

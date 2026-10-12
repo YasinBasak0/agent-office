@@ -356,6 +356,15 @@ async function removeProject(p) {
   } catch (e) { console.error(e); }
 }
 
+/** Per-project manager mode (v3.10): true | false | null; main restarts the idle tabs, whose terminals start over. */
+async function setProjectManager(projectId, value) {
+  try {
+    const r = await api.projects.setManager?.(projectId, value);
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 async function setAccount(projectId, accountId) {
   // a new claude starts in every tab with the new account
   const proj = projects.find((p) => p.id === projectId);
@@ -427,6 +436,7 @@ sidebar = mountSidebar($('sidebar'), {
   removeProject,
   projectMenu: (p) => api.projects.menu?.(p.id).catch((e) => console.error(e)),
   setAccount,
+  setProjectManager,
   addAccount,
   renameAccount,
   removeAccount,

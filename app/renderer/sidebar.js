@@ -200,6 +200,24 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.account')), sel);
   }
 
+  // How the project's boss works (contract v3.10): the global setting, delegates (manager mode) or does it itself.
+  // Applies when the project's Claude starts next; main restarts its idle tabs right away.
+  const MANAGER_VALUES = { default: null, on: true, off: false };
+  function managerSelect(p) {
+    const now = typeof p.manager === 'boolean' ? (p.manager ? 'on' : 'off') : 'default';
+    const sel = h('select', {
+      class: 'sb-acct sb-mode',
+      title: t('sidebar.projectManagerTitle'),
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => on.setProjectManager?.(p.id, MANAGER_VALUES[e.target.value] ?? null),
+    },
+    h('option', { value: 'default', selected: now === 'default' }, t('sidebar.projectManagerDefault')),
+    h('option', { value: 'on', selected: now === 'on' }, t('sidebar.projectManagerOn')),
+    h('option', { value: 'off', selected: now === 'off' }, t('sidebar.projectManagerOff')));
+    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
+      h('span', { class: 'sb-acct-label' }, t('sidebar.projectManager')), sel);
+  }
+
   /** Warning in the project row if its account is not logged in; clicking opens the login overlay. */
   function loginBadge(p) {
     const a = accounts.find((x) => x.id === p.accountId);
@@ -235,6 +253,7 @@ export function mountSidebar(el, on) {
         }, '×'),
         h('div', { class: 'sb-meta' },
           accountSelect(p),
+          managerSelect(p),
           loginBadge(p),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),
