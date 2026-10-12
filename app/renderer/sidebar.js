@@ -81,6 +81,10 @@ export function mountSidebar(el, on) {
   const resumeLabel = h('span', {});
   const resumeBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setResume?.(e.target.checked) });
   const resumeRow = h('label', { class: 'sb-botcolor sb-langrow' }, resumeLabel, resumeBox);
+  // manager mode: the boss delegates the work to agents (plugin, AGENT_OFFICE_MANAGER); sessions started afterwards
+  const managerLabel = h('span', {});
+  const managerBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setManager?.(e.target.checked) });
+  const managerRow = h('label', { class: 'sb-botcolor sb-langrow' }, managerLabel, managerBox);
   const projHead = h('span', {});
   const acctHead = h('span', {});
   const addProjectBtn = h('button', { class: 'sb-add', id: 'sb-add-project', onclick: () => on.addProject() });
@@ -95,6 +99,7 @@ export function mountSidebar(el, on) {
       acctList,
     ),
     resumeRow,
+    managerRow,
     langRow,
     themeRow,
     botRow,
@@ -112,6 +117,8 @@ export function mountSidebar(el, on) {
     langLabel.textContent = t('sidebar.language');
     resumeLabel.textContent = t('sidebar.resume');
     resumeRow.title = t('sidebar.resumeTitle');
+    managerLabel.textContent = t('sidebar.manager');
+    managerRow.title = t('sidebar.managerTitle');
     langSelect.title = t('sidebar.languageTitle');
     themeLabel.textContent = t('sidebar.theme');
     renderLanguages();
@@ -340,6 +347,8 @@ export function mountSidebar(el, on) {
     },
     /** Setting to resume the last session on launch. */
     setResume(on) { resumeBox.checked = on !== false; },
+    /** Manager mode setting (the boss delegates to agents). */
+    setManager(on) { managerBox.checked = on !== false; },
     /** Bot color shown in the picker. */
     setBotColor(hex) { botInput.value = hex || '#3fb6a8'; },
     /** Project list, active project, working state and accounts. */

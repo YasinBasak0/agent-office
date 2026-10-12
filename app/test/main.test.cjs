@@ -129,6 +129,19 @@ test('ptyEnv: iç içe işaretleri ve üst CLAUDE_CONFIG_DIR atılır, hesabın 
   assert.equal(base.CLAUDE_CONFIG_DIR, '/parent');
 });
 
+test('sessionEnv: AGENT_OFFICE_APP her zaman, AGENT_OFFICE_MANAGER yalnız müdür modu açıkken', () => {
+  const base = A.ptyEnv({ PATH: '/bin', AGENT_OFFICE_MANAGER: '1' }, null);
+  const on = A.sessionEnv(base, { manager: true });
+  assert.equal(on.AGENT_OFFICE_APP, '1');
+  assert.equal(on.AGENT_OFFICE_MANAGER, '1');
+  assert.equal(on.PATH, '/bin');
+  assert.equal(A.sessionEnv(base).AGENT_OFFICE_MANAGER, '1'); // varsayılan açık
+  const off = A.sessionEnv(base, { manager: false });
+  assert.equal(off.AGENT_OFFICE_APP, '1');
+  assert.equal('AGENT_OFFICE_MANAGER' in off, false); // uygulamanın kendi ortamından gelse bile
+  assert.equal(base.AGENT_OFFICE_MANAGER, '1'); // girdi değişmez
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });

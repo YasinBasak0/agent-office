@@ -1025,3 +1025,47 @@ test('/office istatistik answers in Turkish and without deliveries says so; it o
   const opened = await $.command.run({ command: 'office', args: 'şerit' } as Parameters<typeof $.command.run>[0])
   expect(JSON.stringify(opened)).toContain('şeridi açıldı')
 })
+
+// manager mode: the engine's own prompt stands beneath the plugin as one shared section
+function setUpCompose(on: Harness, env: Record<string, string>) {
+  on('env.get', (_$, e) => ({ value: env[e.name] }))
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'You are Claude Code.', scope: 'shared' as const }] }))
+}
+const composing = { model: 'claude-test', promptModel: 'claude-test', surfaces: ['terminal'], outputStyle: null } as const
+const mainLoop = { ...composing, tools: ['Agent', 'Bash', 'Read'], traits: [] }
+
+test('inside the app with manager mode on, the manager section is appended to the system prompt once', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' })
+  const { sections } = await $.prompt.compose(mainLoop)
+  expect(sections.map(s => s.id)).toEqual(['intro', 'agent-office:manager'])
+  const manager = sections[1]
+  expect(manager?.scope).toBe('session')
+  expect(manager?.text).toContain('You are the manager in Agent Office')
+  expect(manager?.text).toContain("Don't end a turn with a list of remaining work")
+  expect(manager?.text).toContain('take precedence over this')
+  // the text is the same on every request (prompt cache)
+  const again = await $.prompt.compose(mainLoop)
+  expect(again.sections[1]?.text).toBe(manager?.text)
+})
+
+for (const [name, env] of [
+  ['inside the app with manager mode off', { HOME: '/home/tester', AGENT_OFFICE_APP: '1' }],
+  ['inside the app with AGENT_OFFICE_MANAGER=0', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '0' }],
+  ['outside the app without opting in', { HOME: '/home/tester' }],
+] as const) {
+  test(`${name} the system prompt is left alone`, async ($, on) => {
+    setUpCompose(on, env)
+    expect((await $.prompt.compose(mainLoop)).sections.map(s => s.id)).toEqual(['intro'])
+  })
+}
+
+test('without the app the plugin user opts in with AGENT_OFFICE_MANAGER=1', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_MANAGER: '1' })
+  expect((await $.prompt.compose(mainLoop)).sections.map(s => s.id)).toEqual(['intro', 'agent-office:manager'])
+})
+
+test('a loop that cannot start agents, or a teammate, gets no manager section', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' })
+  expect((await $.prompt.compose({ ...composing, tools: ['Bash', 'Read'], traits: [] })).sections.map(s => s.id)).toEqual(['intro'])
+  expect((await $.prompt.compose({ ...composing, tools: ['Agent'], traits: ['teammate'] })).sections.map(s => s.id)).toEqual(['intro'])
+})

@@ -66,6 +66,8 @@
     "language": "Dil",
     "resume": "Son oturumdan devam et",
     "resumeTitle": "Uygulama açılınca her proje son Claude oturumundan devam eder (claude --continue)",
+    "manager": "Müdür modu — işleri ajanlara dağıt",
+    "managerTitle": "Müdür işi ajanlara böler, görevler bitene kadar devam eder ve yalnız sana gereken şeyler için durur (onaylar, girişler, senin kararların). Bundan sonra başlayan Claude oturumlarında geçerli olur.",
     "languageTitle": "Arayüz dili (Otomatik sistem dilini izler)",
     "auto": "Otomatik",
     "theme": "Tema",

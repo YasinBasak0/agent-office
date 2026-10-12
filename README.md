@@ -84,6 +84,7 @@ Homebrew keeps showing the version it installed, because the app updates itself:
 | **See an account's usage** | The **5 h** and **Week** bars under the account: percentage used and reset time. They fill in once a project on that account has talked to Claude; hover for how old the value is. |
 | **See what an agent does** | Click the worker in the office. Esc closes the panel. |
 | **Pick up where you left off** | **Continue last session** at the bottom of the sidebar (on by default): when the app starts, each project continues its last Claude session (`claude --continue`) |
+| **Let the boss delegate** | **Manager mode — delegate to agents** at the bottom of the sidebar (on by default; see [The boss delegates](#the-boss-delegates)) |
 | **See what got done today** | Click the whiteboard: every delivery of the day with its project, duration, tool count and whether it succeeded |
 | **Today's summary in the terminal** | `/office stats` (Turkish: `/office istatistik`) in any project's Claude: today's deliveries, agent time, working agents and background shells as text |
 | **Change the language** | **Language** at the bottom of the sidebar: Auto (system language), English or Türkçe. The labels here are the English ones. |
@@ -92,6 +93,19 @@ Homebrew keeps showing the version it installed, because the app updates itself:
 | **Hide the sidebar** | ≡ in the title bar |
 
 The **Default** account is your normal Claude Code login in `~/.claude`. A new account starts empty: it does not share settings, MCP servers or `CLAUDE.md` with your default one. Project memory is the exception: every account reads and writes the project's memory in `~/.claude/projects/…/memory/`, the same one plain Claude Code uses, so your saved rules apply whichever account a project runs on.
+
+## The boss delegates
+
+Each project's Claude is the boss of its office. With **Manager mode — delegate to agents** on (the default), every Claude session the app starts gets a short extra section in its system prompt that tells it to act as a manager:
+
+- split work with several parts into independent pieces and hand them to subagents, in parallel when they don't overlap (in separate git worktrees when they would touch the same files), while it plans, reviews, integrates and verifies; a small one-step task it still does itself;
+- keep going until the task list is done instead of ending with a "remaining / next steps" list of work it could do now;
+- stop only for what needs you: approving outward-facing or destructive actions (production deploys, publishing, deleting data, spending money), credentials or logins, and decisions that are yours, asked together in one short list once everything else is done;
+- report honestly what it verified.
+
+Your own instructions (`CLAUDE.md`, what you ask for) come first. Being part of the system prompt, the section stays through `--continue`, `/resume`, `/clear` and compaction; subagents don't get it.
+
+To turn it off, untick **Manager mode** in the sidebar. The change applies to Claude sessions started afterwards (a new tab, a restart, the next launch); running ones keep what they started with. Plain Claude Code with the plugin gets it only when you set `AGENT_OFFICE_MANAGER=1` yourself.
 
 ## How it works
 
@@ -106,7 +120,7 @@ The **Default** account is your normal Claude Code login in `~/.claude`. A new a
 ```
 
 1. The app starts `claude` for each project in a pseudo-terminal, with the bundled plugin and, for non-default accounts, `CLAUDE_CONFIG_DIR` pointing at that account's folder.
-2. The plugin ([`plugin/`](plugin)) listens to Claude Code's hook events: subagents starting, calling tools and finishing. It writes a small state file per session.
+2. The plugin ([`plugin/`](plugin)) listens to Claude Code's hook events: subagents starting, calling tools and finishing. It writes a small state file per session. In manager mode it also adds the [manager section](#the-boss-delegates) to the system prompt.
 3. The app reads those files twice a second and draws the office.
 
 ## Privacy

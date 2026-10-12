@@ -489,7 +489,7 @@ function startPty(id, { resume = false } = {}) {
   const args = [...(dir ? ['--plugin-dir', dir] : []), ...(settingsArg ? ['--settings', settingsArg] : []), ...(isResume ? ['--continue'] : [])];
   const startedAt = Date.now();
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
-  let env = { ...A.ptyEnv(process.env, configDir), AGENT_OFFICE_APP: '1' };
+  let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: state.manager !== false });
   delete env.AGENT_OFFICE_STATUSLINE;
   if (sl?.userCommand) env.AGENT_OFFICE_STATUSLINE = sl.userCommand;
   if (IS_WIN) env = windowsStatusLineEnv(env, sl);
@@ -984,12 +984,14 @@ function buildMenu() {
   ]));
 }
 
-// --- preferences: resume = continue from the last session at startup; theme = 'auto' or a theme name (v3.1)
+// --- preferences: resume = continue from the last session at startup; theme = 'auto' or a theme name (v3.1);
+// manager = the boss delegates to agents (plugin manager mode, AGENT_OFFICE_MANAGER), for sessions started afterwards
 const themeSetting = (v) => (TH ? TH.normalizeThemeSetting(v) : 'auto');
-const prefs = () => ({ resume: state.resume !== false, theme: themeSetting(state.theme) });
+const prefs = () => ({ resume: state.resume !== false, theme: themeSetting(state.theme), manager: state.manager !== false });
 ipcMain.handle('prefs:get', () => prefs());
 ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.resume === 'boolean' && p.resume !== prefs().resume) commit({ ...state, resume: p.resume });
+  if (p && typeof p.manager === 'boolean' && p.manager !== prefs().manager) commit({ ...state, manager: p.manager });
   if (p && typeof p.theme === 'string' && themeSetting(p.theme) !== prefs().theme) commit({ ...state, theme: themeSetting(p.theme) });
   return prefs();
 });
@@ -1008,7 +1010,7 @@ app.whenReady().then(async () => {
   await loadI18n();
   await loadThemesLib();
   const raw = loadState();
-  state = { ...P.normalizeState(raw), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, theme: themeSetting(raw.theme) };
+  state = { ...P.normalizeState(raw), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, manager: raw.manager !== false, theme: themeSetting(raw.theme) };
   app.setAboutPanelOptions({ applicationName: app.getName(), applicationVersion: app.getVersion() });
   buildMenu();
   setupUpdates();
