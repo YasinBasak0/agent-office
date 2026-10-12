@@ -6,7 +6,7 @@ Thanks for helping. Issues and pull requests are welcome, small ones especially.
 
 | Folder | What it is |
 | --- | --- |
-| `app/` | The Electron app for macOS and Linux: `main.js` (window, ptys, accounts, notifications), `preload.js` (the `window.agentOffice` bridge), `renderer/` (sidebar, terminals, agent panel), `src/` (pure logic, tested with `node --test`) |
+| `app/` | The Electron app for macOS, Linux and Windows: `main.js` (window, ptys, accounts, notifications), `preload.js` (the `window.agentOffice` bridge), `renderer/` (sidebar, terminals, agent panel), `src/` (pure logic, tested with `node --test`) |
 | `plugin/` | The Claude Code plugin: `hooks/register.tsx` writes each session's state file; `viewer/office.mjs` draws the office in a terminal |
 | `plugin/viewer/core.mjs` | **The** office renderer, shared by both. `app/src/office/core.mjs` is a copy: edit the plugin file, then run `node app/scripts/sync-core.mjs` (`npm start` and `npm run dist` do it for you) |
 | `app/CONTRACT.md` | How the parts talk: the session file format, the `window.agentOffice` API, the office data. Update it when you change an interface |
@@ -16,6 +16,7 @@ Thanks for helping. Issues and pull requests are welcome, small ones especially.
 ```sh
 cd app && npm install && npm start      # the app from source
 node --test app/test/main.test.cjs       # main process logic
+node --test app/test/windows.test.cjs    # Windows-only checks (skipped elsewhere; CI's windows-build runs them)
 node --test app/test/locales.test.mjs    # locale files: same keys and placeholders, every key used in code exists
 node app/test/office.test.mjs            # office renderer and session reading
 node app/test/visual.test.mjs            # office pictures; UPDATE_SNAPSHOTS=1 to accept a deliberate change
@@ -25,9 +26,11 @@ npx -p typescript@5.6.3 tsc -p app       # type-check (needs app/node_modules)
 npx -y eslint@9 .                        # lint (eslint.config.mjs: recommended rules only, no formatting)
 ```
 
-The renderer also opens in a plain browser with a fake backend: serve `app/` with any static server and open `/renderer/index.html` (`?lang=en`, `?asking`, `?select=m-1`, `?platform=linux`, `?theme=sakura` and more, see the top of `renderer/dev-mock.js`). The theme gallery is read from `themes/`, so for it serve the repository root and open `/app/renderer/index.html`.
+The renderer also opens in a plain browser with a fake backend: serve `app/` with any static server and open `/renderer/index.html` (`?lang=en`, `?asking`, `?select=m-1`, `?platform=linux` or `win32`, `?theme=sakura` and more, see the top of `renderer/dev-mock.js`). The theme gallery is read from `themes/`, so for it serve the repository root and open `/app/renderer/index.html`.
 
 Linux packages: `cd app && npm install && npm run dist:linux` on a Linux machine (node-pty is compiled from source there: `python3`, `make`, a C++ compiler). CI's `linux-build` job does the same on every push and keeps the AppImage and `.deb` as artifacts.
+
+Windows installer: `cd app && npm install && npm run dist:win` (on Windows, or cross-built on macOS/Linux). It uses `scripts/win-builder-config.cjs`, which is package.json's build config with node-pty's win32-x64 prebuild let in (macOS and Linux packages leave every win32 prebuild out). CI's `windows-build` job builds it on every push, runs the Windows-only tests and starts a command through node-pty's ConPTY inside the packaged app. Nobody can run the Windows app in CI, so changes to the Windows paths in `main.js` need a try on a real Windows machine.
 
 CI runs all of this on every push and pull request.
 
@@ -36,7 +39,7 @@ CI runs all of this on every push and pull request.
 - **Strings**: every user-visible string of the app is in `app/locales/en.json` and `app/locales/tr.json`, read with `t('namespace.key', { var })` (renderer: `renderer/i18n.js`; main: `T(...)` in `main.js`). Add a new string to every locale file; `app/test/locales.test.mjs` fails otherwise. The words drawn in the office (`STRINGS` in `plugin/viewer/core.mjs`) and the plugin's hook messages are separate and stay in their files.
 - **Comments** are in English (the user-visible strings stay bilingual, see Strings above).
 - **No new runtime dependencies** without a good reason; the plugin has none at all.
-- **Platforms**: macOS and Linux. Keep differences behind small `process.platform` checks: pure helpers in `app/src/platform.js` (default shell, Linux clipboard files, menu shortcuts), and in the renderer `renderer/platform.js` (`platform-darwin` / `platform-linux` class on `<html>`, ⌘ vs Ctrl+Shift shortcuts). macOS behaviour must not change when you touch Linux code, and the other way round.
+- **Platforms**: macOS, Linux and (new) Windows. Keep differences behind small `process.platform` checks: pure helpers in `app/src/platform.js` (default shell, Linux and Windows clipboard files, menu shortcuts, finding and starting `claude` on Windows, Git Bash), `app/src/usage.js` (the Windows status line), `src/terminal-keys.mjs` (image paste key, path quoting), and in the renderer `renderer/platform.js` (`platform-darwin` / `platform-linux` / `platform-win32` class on `<html>`, ⌘ vs Ctrl+Shift shortcuts). Pass the platform and environment in as arguments so the tests cover every OS on any OS. macOS behaviour must not change when you touch Linux or Windows code, and the other way round.
 - Keep `app/CONTRACT.md` and the READMEs in step with what you change.
 
 ## Adding a translation
