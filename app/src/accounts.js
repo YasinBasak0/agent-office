@@ -96,8 +96,20 @@ function ptyEnv(base, configDir = null) {
 // on: the boss delegates to agents; per project since v3.10). Off, the variable is left out, even when the app itself
 // was started with it, and AGENT_OFFICE_FINISH=1 is set instead: the boss does the work itself, but the plugin's
 // finish guard still keeps it from stopping on a list of work it could do (manager mode has the guard built in).
-function sessionEnv(env, { manager = true } = {}) {
+//
+// agentModel (contract v3.14): the project's pinned subagent model ('sonnet' | 'haiku' | 'opus'), or null for Auto.
+// Pinned, AGENT_OFFICE_AGENT_MODEL carries it to the launch line, which exports CLAUDE_CODE_SUBAGENT_MODEL=<model>
+// and CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 after the shell's rc files (they cannot undo it; Windows gets both directly).
+// Claude Code 2.1.296 then drops the Agent tool's model parameter and runs every subagent, agent definitions with
+// a model included, on that model. Auto leaves the user's own CLAUDE_CODE_SUBAGENT_MODEL* alone.
+function sessionEnv(env, { manager = true, agentModel = null } = {}) {
   const out = { ...env, AGENT_OFFICE_APP: '1' };
+  delete out.AGENT_OFFICE_AGENT_MODEL;
+  if (agentModel) {
+    out.AGENT_OFFICE_AGENT_MODEL = agentModel;
+    out.CLAUDE_CODE_SUBAGENT_MODEL = agentModel;
+    out.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = '1';
+  }
   if (manager) {
     out.AGENT_OFFICE_MANAGER = '1';
     delete out.AGENT_OFFICE_FINISH;

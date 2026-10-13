@@ -168,6 +168,11 @@ window.agentOffice = {
       if (p) { if (typeof value === 'boolean') p.manager = value; else delete p.manager; changed(); }
       return { restarted: [] };
     },
+    setAgentModel: async (id, value) => {
+      const p = /** @type {any} */ (projects.find((x) => x.id === id));
+      if (p) { if (value) p.agentModel = value; else delete p.agentModel; changed(); }
+      return { restarted: [] };
+    },
     onChange: ev.projects.add,
   },
   tabs: {

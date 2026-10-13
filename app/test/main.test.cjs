@@ -181,6 +181,41 @@ test('proje başına müdür modu: normalizeState, setProjectManager, managerOf 
   assert.deepEqual(again.projects.map((p) => p.manager), [false, undefined, undefined, false]);
 });
 
+test('proje başına ajan modeli: normalizeState, setProjectAgentModel, agentModelOf (v3.14)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', agentModel: 'sonnet' },
+      { id: 'b', dir: '/b', agentModel: 'haiku' },
+      { id: 'c', dir: '/c', agentModel: 'gpt' },
+      { id: 'd', dir: '/d' },
+    ],
+  });
+  assert.deepEqual(s.projects.map((p) => P.agentModelOf(p)), ['sonnet', 'haiku', null, null]);
+  assert.equal('agentModel' in s.projects[2], false); // bilinmeyen değer yazılmaz (Otomatik)
+  assert.equal(P.setProjectAgentModel(s, 'a', 'sonnet'), s);
+  assert.equal(P.setProjectAgentModel(s, 'zz', 'opus'), s);
+  assert.equal(P.setProjectAgentModel(s, 'd', null), s);
+  assert.equal(P.setProjectAgentModel(s, 'd', 'fable'), s); // geçersiz = Otomatik
+  s = P.setProjectAgentModel(s, 'd', 'opus');
+  assert.equal(P.agentModelOf(P.findProject(s, 'd')), 'opus');
+  s = P.setProjectAgentModel(s, 'b', null); // Otomatik'e dönüş: alan silinir
+  assert.equal('agentModel' in P.findProject(s, 'b'), false);
+  const again = P.normalizeState(JSON.parse(JSON.stringify(s)));
+  assert.deepEqual(again.projects.map((p) => p.agentModel), ['sonnet', undefined, undefined, 'opus']);
+});
+
+test('sessionEnv: sabitlenmiş ajan modeli CLAUDE_CODE_SUBAGENT_MODEL(+_FORCE) olur; Otomatik kullanıcınınkine dokunmaz (v3.14)', () => {
+  const pinned = A.sessionEnv({ PATH: '/bin' }, { agentModel: 'haiku' });
+  assert.equal(pinned.CLAUDE_CODE_SUBAGENT_MODEL, 'haiku');
+  assert.equal(pinned.CLAUDE_CODE_SUBAGENT_MODEL_FORCE, '1');
+  assert.equal(pinned.AGENT_OFFICE_AGENT_MODEL, 'haiku'); // the launch line re-exports it after the rc files
+  const auto = A.sessionEnv({ PATH: '/bin', AGENT_OFFICE_AGENT_MODEL: 'opus', CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' }, { agentModel: null });
+  assert.equal(auto.AGENT_OFFICE_AGENT_MODEL, undefined);
+  assert.equal(auto.CLAUDE_CODE_SUBAGENT_MODEL, 'sonnet');
+  assert.equal(auto.CLAUDE_CODE_SUBAGENT_MODEL_FORCE, undefined);
+  assert.equal(A.sessionEnv({ PATH: '/bin' }).AGENT_OFFICE_AGENT_MODEL, undefined);
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });
@@ -1670,6 +1705,46 @@ test('office MCP: a session start adds the other projects\' servers from each pr
   assert.equal(r.mcpConfig, null);
   assert.deepEqual(r.mcpNames, { [conn]: ['flow', 'accsrv'] });
   assert.deepEqual(sources.map((f) => fsT.readFileSync(f, 'utf8')), before);
+});
+
+test('office MCP: a relative command or path argument is resolved against its own project\'s folder', () => {
+  const B = pathT.resolve('/work/b');
+  const has = (p) => p === pathT.join(B, 'server.py') || p === pathT.resolve('/work/shared/x.json');
+  const r = (server) => SC.resolveServerPaths(server, B, { exists: has });
+  assert.deepEqual(r({ command: './venv/bin/python', args: ['./server.py', '--config', '../shared/x.json', './missing.py', '-m'] }),
+    { command: pathT.join(B, 'venv', 'bin', 'python'), args: [pathT.join(B, 'server.py'), '--config', pathT.resolve('/work/shared/x.json'), './missing.py', '-m'] });
+  assert.deepEqual(r({ type: 'stdio', command: 'venv/bin/python' }), { type: 'stdio', command: pathT.join(B, 'venv', 'bin', 'python') });
+  assert.equal(r({ command: '../tools/run' }).command, pathT.resolve('/work/tools/run'));
+  // bare names (PATH lookups), absolute paths, ~ and ${VAR} paths and remote servers stay as they are (same object)
+  for (const server of [
+    { command: 'npx', args: ['-y', '@scope/pkg'] }, { command: 'uvx', args: ['tool'] }, { command: 'python3', args: ['-m', 'srv'] },
+    { command: '/usr/local/bin/node', args: ['/abs/srv.js'] }, { command: '~/bin/srv' }, { command: '${HOME}/bin/srv' },
+    { type: 'http', url: 'https://x', command: './nope' }, { type: 'sse', url: 'https://x' },
+  ]) assert.equal(r(server), server);
+  const noDir = { command: './x' };
+  assert.equal(SC.resolveServerPaths(noDir, ''), noDir); // no folder: untouched
+});
+
+test('office MCP: another project\'s relative stdio server is shared with absolute paths; the session\'s own are untouched', (t) => {
+  const root = fsT.realpathSync(fsT.mkdtempSync(pathT.join(osT.tmpdir(), 'ao-office-rel-')));
+  t.after(() => fsT.rmSync(root, { recursive: true, force: true }));
+  const j = (...p) => pathT.join(root, ...p);
+  const w = (p, v) => { fsT.mkdirSync(pathT.dirname(p), { recursive: true }); fsT.writeFileSync(p, JSON.stringify(v)); };
+  const home = j('home'); const a = j('a'); const b = j('b');
+  w(pathT.join(b, 'server.py'), '');
+  const rel = { command: './venv/bin/python', args: ['./server.py', './gone.py'] };
+  w(pathT.join(home, '.claude.json'), { projects: { [a]: { mcpServers: { mine: rel } }, [b]: { mcpServers: { py: rel } } } });
+  w(pathT.join(b, '.mcp.json'), { mcpServers: { tool: { command: 'uvx', args: ['tool'] } } });
+  w(pathT.join(b, '.claude', 'settings.local.json'), { enableAllProjectMcpServers: true });
+  const office = { share: true, current: a, projects: [{ name: 'a', dir: a, configDir: null }, { name: 'b', dir: b, configDir: null }] };
+  const plan = SC.mcpPlan({ account: { id: 'default', configDir: null }, home, cwd: a, office });
+  // same relative config as a's own "mine", but a different server once resolved: added, not deduplicated away
+  assert.deepEqual(plan.servers, {
+    py: { command: pathT.join(b, 'venv', 'bin', 'python'), args: [pathT.join(b, 'server.py'), './gone.py'] },
+    tool: { command: 'uvx', args: ['tool'] },
+  });
+  assert.deepEqual(plan.own.local, { mine: rel }); // Claude Code runs the session's own servers in its folder
+  assert.deepEqual(JSON.parse(fsT.readFileSync(pathT.join(home, '.claude.json'), 'utf8')).projects[b].mcpServers.py, rel); // source untouched
 });
 
 test('office directory: the current project first and marked, account names, MCP names, short lists', () => {

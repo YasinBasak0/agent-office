@@ -114,6 +114,39 @@ function projectServers({ dir, accountConfig, defaultConfig = null, projectMcp =
   return { ...approvedProjectServers(projectMcp, approvals), ...fromDefault, ...own };
 }
 
+// A stdio server runs in the folder of the session that starts it, so a relative command or path argument written
+// for one project (`"command": "./venv/bin/python"`) fails with ENOENT in another project's tab. A server shared
+// from a folder other than the session's own gets them made absolute against that folder: a command that starts
+// with ./ or ../ or holds a path separator (bare names like npx, uvx or python3 are looked up on PATH and stay, and so
+// do ~ and ${VAR} paths, which Claude Code expands itself), and an argument that starts with ./ or ../ and exists there. Claude Code's stdio config has no cwd field (2.1.296:
+// type, command, args, env, timeout, alwaysLoad), so none is added. The source config is never changed.
+const isRelativePath = (v) => /^\.\.?[\\/]/.test(v);
+const isRelativeCommand = (v) =>
+  !path.isAbsolute(v) && !path.win32.isAbsolute(v) && !/^~|\$/.test(v) && (isRelativePath(v) || /[\\/]/.test(v));
+const exists = (p) => { try { fs.accessSync(p); return true; } catch { return false; } };
+
+/** A server config with its relative command and path arguments made absolute against dir (same object if none). */
+function resolveServerPaths(server, dir, { exists: has = exists } = {}) {
+  if (!isObj(server) || !dir || (server.type !== undefined && server.type !== 'stdio')) return server;
+  const out = { ...server };
+  let changed = false;
+  if (typeof server.command === 'string' && server.command && isRelativeCommand(server.command)) {
+    out.command = path.resolve(dir, server.command);
+    changed = true;
+  }
+  if (Array.isArray(server.args)) {
+    const args = server.args.map((a) => (typeof a === 'string' && isRelativePath(a) && has(path.resolve(dir, a)) ? path.resolve(dir, a) : a));
+    if (args.some((a, i) => a !== server.args[i])) { out.args = args; changed = true; }
+  }
+  return changed ? out : server;
+}
+/** Every server of a { name: config } map resolved against dir (see resolveServerPaths). */
+function resolveServers(servers, dir, opts) {
+  const out = {};
+  for (const [name, server] of Object.entries(servers)) out[name] = resolveServerPaths(server, dir, opts);
+  return out;
+}
+
 /** JSON with sorted keys: two configs are the same server when these match. */
 function canonical(v) {
   if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
@@ -397,9 +430,10 @@ function readProjectServers({ home, dir, configDir, share, read = readJson }) {
  * The MCP side of prepareShared, reading only: what the tab's --mcp-config holds and the names for the office
  * directory. Also what a running tab's MCP fingerprint is made of (see mcpFingerprint).
  * → { servers: { name: config }, mcpNames, own: { user, local, project, approvals } } (own: the session's own
- * servers, which Claude Code loads by itself)
+ * servers, which Claude Code loads by itself). Another project's servers come with their relative paths resolved
+ * against that project's folder (resolveServerPaths).
  */
-function mcpPlan({ account, home, cwd, office = null, read = readJson }) {
+function mcpPlan({ account, home, cwd, office = null, read = readJson, exists: has = exists }) {
   const configDir = account?.configDir;
   const claudeDir = path.join(home, '.claude');
   const isDefault = !configDir || samePath(configDir, claudeDir);
@@ -420,7 +454,7 @@ function mcpPlan({ account, home, cwd, office = null, read = readJson }) {
     };
     const others = projects
       .filter((p) => p.dir !== office.current)
-      .map((p) => ({ key: p.dir, name: String(p.name || path.basename(p.dir)), servers: readProjectServers({ home, dir: p.dir, configDir: p.configDir, share: p.share !== false, read }) }));
+      .map((p) => ({ key: p.dir, name: String(p.name || path.basename(p.dir)), servers: resolveServers(readProjectServers({ home, dir: p.dir, configDir: p.configDir, share: p.share !== false, read }), p.dir, { exists: has }) }));
     const r = officeMcpServers({ have, others });
     added = r.servers;
     Object.assign(mcpNames, r.names);
@@ -510,7 +544,7 @@ const sharedArgs = ({ pluginDirs = [], mcpConfig }) => [
 ];
 
 module.exports = {
-  MARKER, shareEnabled, sharedMcpServers, approvedProjectServers, projectServers, officeMcpServers, canonical, slugOf,
+  MARKER, shareEnabled, sharedMcpServers, resolveServerPaths, resolveServers, approvedProjectServers, projectServers, officeMcpServers, canonical, slugOf,
   sharedPlugins, pluginManifest, stageName, linkPlan, listClaudeDir,
   syncLinks, stagePlugin, prepareShared, mcpPlan, mcpFingerprint, sharedArgs, mcpFileName, staleMcpFiles, pruneMcpFiles,
 };

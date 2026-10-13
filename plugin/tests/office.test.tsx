@@ -1052,6 +1052,44 @@ test('inside the app with manager mode on, the manager section is appended to th
   expect(again.sections[1]?.text).toBe(manager?.text)
 })
 
+// model per agent (app contract v3.14): the boss picks with the Agent tool's model parameter, unless the project pins it
+test('the manager brief says one scoped task per agent and which model each kind of job gets', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' })
+  const text = (await $.prompt.compose(mainLoop)).sections[1]?.text ?? ''
+  expect(text).toContain('One scoped task per agent')
+  expect(text).toContain('start a fresh agent for the next task')
+  expect(text).toContain('"haiku" for searches and lookups')
+  expect(text).toContain('"sonnet" for mechanical edits, test and build runs and routine fixes')
+  expect(text).toContain('design, hard debugging and reviews')
+  expect(text).not.toContain('{{MODEL}}')
+})
+
+// a model set without forcing it is only the default for agents started without one: the boss still picks
+test('CLAUDE_CODE_SUBAGENT_MODEL without _FORCE keeps the model advice', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })
+  expect((await $.prompt.compose(mainLoop)).sections[1]?.text).toContain('"haiku" for searches and lookups')
+})
+
+for (const [model, shown] of [['sonnet', 'Sonnet'], ['HAIKU', 'Haiku'], ['opus', 'Opus'], ['claude-sonnet-4-6', 'claude-sonnet-4-6'], ['', 'your own model']] as const) {
+  test(`a project that pins agents to "${model}" gets the pinned line instead of the model advice`, async ($, on) => {
+    const env: Record<string, string> = { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' }
+    if (model) env.CLAUDE_CODE_SUBAGENT_MODEL = model
+    setUpCompose(on, env)
+    const manager = (await $.prompt.compose(mainLoop)).sections[1]
+    expect(manager?.scope).toBe('session')
+    expect(manager?.text).toContain(`Every agent of this session runs on ${shown} (the person's setting in Agent Office)`)
+    expect(manager?.text).toContain("don't set the Agent tool's model parameter")
+    expect(manager?.text).not.toContain('"haiku" for searches')
+    expect(manager?.text).toContain('One scoped task per agent')
+    expect((await $.prompt.compose(mainLoop)).sections[1]?.text).toBe(manager?.text)
+  })
+}
+
+test('CLAUDE_CODE_SUBAGENT_MODEL_FORCE=0 is no pin', async ($, on) => {
+  setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_MANAGER: '1', CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '0', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' })
+  expect((await $.prompt.compose(mainLoop)).sections[1]?.text).toContain('"haiku" for searches and lookups')
+})
+
 for (const [name, env] of [
   ['inside the app with manager mode off', { HOME: '/home/tester', AGENT_OFFICE_APP: '1' }],
   ['inside the app with AGENT_OFFICE_MANAGER=0', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '0' }],

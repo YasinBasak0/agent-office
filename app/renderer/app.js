@@ -366,6 +366,15 @@ async function setProjectManager(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/** Per-project subagent model (v3.14): 'sonnet' | 'haiku' | 'opus' | null (Auto); main restarts the idle tabs. */
+async function setAgentModel(projectId, value) {
+  try {
+    const r = await api.projects.setAgentModel?.(projectId, value);
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 async function setAccount(projectId, accountId) {
   // a new claude starts in every tab with the new account
   const proj = projects.find((p) => p.id === projectId);
@@ -438,6 +447,7 @@ sidebar = mountSidebar($('sidebar'), {
   projectMenu: (p) => api.projects.menu?.(p.id).catch((e) => console.error(e)),
   setAccount,
   setProjectManager,
+  setAgentModel,
   addAccount,
   renameAccount,
   removeAccount,

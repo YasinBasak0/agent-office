@@ -156,13 +156,15 @@ const FORMAT = 2
 // never an in-process teammate. The text never changes: it sits after the prompt cache boundary and stays cached.
 // Delegation is the default: the boss is a dispatcher who stays free to talk while agents work in the background.
 const MANAGER_SECTION_ID = 'agent-office:manager'
-const MANAGER_TEXT = `# Manager mode (Agent Office)
+const MANAGER_TEMPLATE = `# Manager mode (Agent Office)
 
 You are the manager in Agent Office: a dispatcher who hands the work to agents and stays available to the person. Your agents are subagents you start with the Agent tool; they work in the background (set run_in_background if your Agent tool has it) while the person watches them at their desks, and you are told when each one finishes. The person can only talk to you between your turns, so keep your own turns short.
 
 - Delegate by default. Anything that takes real work goes to an agent: investigating or reading code beyond a quick look, editing files, running builds, tests or long commands, batches of MCP calls. Independent pieces go to separate agents started in the same message so they run in parallel (in separate git worktrees when they would touch the same files). Give each agent a self-contained brief: the goal, the folder, what done looks like and how to check it.
 - Your own tool use is for quick orientation (a few reads to brief agents well), reviewing what agents report, integrating or merging their work, and the final check. If you find yourself several steps into the work itself, stop and hand the rest to an agent.
 - Do it yourself only when it is trivial: an answer you already know, or a single quick command or lookup. Changing files, writing tests and running builds are never trivial here, however small the change looks: an agent does them, so you stay free for the person.
+- One scoped task per agent. When an agent's job is done, start a fresh agent for the next task rather than sending the finished one more work: a continued agent re-reads its whole, ever-growing context on every request.
+- {{MODEL}}
 - While agents run, answer the person, take new requests and dispatch them. Don't redo an agent's work or wait on it in silence.
 - A job for another project: work in that project's folder with absolute paths (in Bash, \`cd <folder> && …\`) and have your agents do the same, so Agent Office shows the work under that project.
 - Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them, or dispatch them.
@@ -171,6 +173,27 @@ You are the manager in Agent Office: a dispatcher who hands the work to agents a
 - Report honestly what you verified and what you did not.
 
 The person's own instructions (CLAUDE.md, explicit requests) take precedence over this.`
+// Model per agent (app contract v3.14): with no pin the boss picks; Agent Office's per-project "Agent model" pins it
+// with CLAUDE_CODE_SUBAGENT_MODEL + CLAUDE_CODE_SUBAGENT_MODEL_FORCE (Claude Code 2.1.296 then drops the Agent tool's
+// model parameter and runs every subagent on that model), and the brief says so instead.
+const MODEL_AUTO =
+  'Pick each agent\'s model with the Agent tool\'s model parameter: "haiku" for searches and lookups, "sonnet" for mechanical edits, test and build runs and routine fixes; leave it out (your own model) for design, hard debugging and reviews.'
+const modelPinned = (model: string) =>
+  `Every agent of this session runs on ${model} (the person's setting in Agent Office), so don't set the Agent tool's model parameter.`
+
+/** The manager brief; pinned: the model every subagent is forced to (CLAUDE_CODE_SUBAGENT_MODEL_FORCE), else ''. */
+function managerText(pinned = ''): string {
+  return MANAGER_TEMPLATE.replace('{{MODEL}}', pinned ? modelPinned(pinned) : MODEL_AUTO)
+}
+
+const FORCE_OFF = new Set(['', '0', 'false', 'no', 'off'])
+/** The pinned subagent model's display name from the env, or '' when agents are not pinned. */
+function pinnedModel(force: string | undefined, model: string | undefined): string {
+  if (FORCE_OFF.has((force ?? '').trim().toLowerCase())) return ''
+  const m = (model ?? '').trim()
+  if (!m || m.toLowerCase() === 'inherit' || m.toLowerCase() === 'default') return 'your own model'
+  return /^(opus|sonnet|haiku|fable)$/i.test(m) ? m[0].toUpperCase() + m.slice(1).toLowerCase() : clip(m, 80)
+}
 // The office directory (app contract v3.9): the app writes the projects of the office (name, folder, account, the
 // MCP servers this session sees for each, by those names; never a config or token) to a JSON file per tab and passes
 // its path in AGENT_OFFICE_DIRECTORY. Every loop in the app gets it as one section, so "the X project" means X's
@@ -1138,14 +1161,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // manager mode (see MANAGER_TEXT) and the office directory (see directoryText): sections appended after the engine's own
+  // manager mode (see managerText) and the office directory (see directoryText): sections appended after the engine's own
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
     const sections = [...result.sections]
     const isLoopManager =
       (await $.env.get('AGENT_OFFICE_MANAGER')) === '1' && !e.traits.includes('teammate') && e.tools.some(tool => AGENT_TOOLS.includes(tool))
     if (isLoopManager && !sections.some(section => section.id === MANAGER_SECTION_ID)) {
-      sections.push({ id: MANAGER_SECTION_ID, text: MANAGER_TEXT, scope: 'session' as const })
+      const pinned = pinnedModel(await $.env.get('CLAUDE_CODE_SUBAGENT_MODEL_FORCE'), await $.env.get('CLAUDE_CODE_SUBAGENT_MODEL'))
+      sections.push({ id: MANAGER_SECTION_ID, text: managerText(pinned), scope: 'session' as const })
     }
     const directoryFile = (await $.env.get('AGENT_OFFICE_APP')) ? await $.env.get('AGENT_OFFICE_DIRECTORY') : undefined
     if (directoryFile && !sections.some(section => section.id === PROJECTS_SECTION_ID)) {

@@ -23,6 +23,7 @@ function normalizeState(raw, { id = newId } = {}) {
       name: projectName(p.dir),
       accountId: known.has(p.accountId) ? p.accountId : DEFAULT_ID,
       ...withManager(p.manager),
+      ...withAgentModel(p.agentModel),
       ...withTabs(normalizeTabs(p.tabs)),
     });
   }
@@ -208,6 +209,28 @@ function setProjectManager(state, id, value) {
 /** Does this project's boss delegate? Its own setting, else the global one (on by default). */
 const managerOf = (state, project) => (typeof project?.manager === 'boolean' ? project.manager : state.manager !== false);
 
+// --- per-project subagent model (contract v3.14)
+// Project.agentModel: 'sonnet' | 'haiku' | 'opus' runs every subagent of the project's sessions on that model;
+// absent = Auto: the boss picks per agent (the plugin's manager brief). Never written for Auto.
+const AGENT_MODELS = ['sonnet', 'haiku', 'opus'];
+const agentModelValue = (v) => (AGENT_MODELS.includes(v) ? v : null);
+const withAgentModel = (v) => (agentModelValue(v) ? { agentModel: v } : {});
+
+/** value: 'sonnet' | 'haiku' | 'opus' | null (Auto). Same state when nothing changes. */
+function setProjectAgentModel(state, id, value) {
+  const p = findProject(state, id);
+  const v = agentModelValue(value);
+  if (!p || (p.agentModel ?? null) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { agentModel: _, ...rest } = x;
+    return v === null ? rest : { ...rest, agentModel: v };
+  }) };
+}
+
+/** The model the project pins its subagents to, or null (Auto). */
+const agentModelOf = (project) => agentModelValue(project?.agentModel);
+
 // Claude Code's session history folder: <account folder or ~/.claude>/projects/<path, non-alphanumerics → '-'>
 // (tried: /Users/a/.claude → -Users-a--claude). If it has a .jsonl, `claude --continue` finds a session to resume.
 const historyDir = (projectDir, configDir, home) =>
@@ -219,4 +242,5 @@ module.exports = {
   nextTabNumber, worktreeRoot, worktreeBranch, worktreeDir, addTab, removeTab, sessionAliases, projectPlaces,
   newId, projectName, normalizeState, findProject, findByDir,
   addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
+  AGENT_MODELS, setProjectAgentModel, agentModelOf,
 };
