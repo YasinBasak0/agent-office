@@ -1997,3 +1997,164 @@ test('yarım iş butonu: istem tek satır, köşeli yapıştırma içinde; Enter
   assert.ok(!/["%!^]/.test(UNFINISHED_PROMPT));
   assert.deepEqual(claudeArgs(['--x'], ['--resume', 's1'], UNFINISHED_PROMPT), ['--x', '--resume', 's1', UNFINISHED_PROMPT]);
 });
+
+// ---- token usage per project (contract v3.13, src/token-usage.js)
+const TU = require('../src/token-usage.js');
+const tuFs = require('fs');
+const tuPath = require('path');
+const tuOs = require('os');
+
+/** One transcript line of an assistant response. */
+function aLine({ id = 'msg_1', req = 'req_1', t = '2026-10-13T10:00:00.000Z', model = 'claude-opus-5-5', input = 10, w5 = 100, w1 = 0, read = 1000, output = 50, side = false, cc = true } = {}) {
+  const usage = { input_tokens: input, cache_creation_input_tokens: w5 + w1, cache_read_input_tokens: read, output_tokens: output };
+  if (cc) usage.cache_creation = { ephemeral_5m_input_tokens: w5, ephemeral_1h_input_tokens: w1 };
+  return JSON.stringify({ type: 'assistant', timestamp: t, requestId: req, isSidechain: side, message: { id, model, role: 'assistant', usage, content: [] } });
+}
+
+test('token kullanımı: satır okuma, 5 dk / 1 sa ayrımı, sentetik ve kullanıcı satırları atlanır', () => {
+  const r = TU.parseLine(aLine({ w5: 30, w1: 70 }));
+  assert.deepEqual({ ...r }, { key: 'msg_1|req_1', t: Date.parse('2026-10-13T10:00:00.000Z'), model: 'claude-opus-5-5', sub: false, input: 10, w5: 30, w1: 70, read: 1000, output: 50 });
+  // no cache_creation split: every write counts as 5 minutes
+  const old = TU.parseLine(aLine({ w5: 40, w1: 0, cc: false }));
+  assert.equal(old.w5, 40);
+  assert.equal(old.w1, 0);
+  assert.equal(TU.parseLine(aLine({ model: '<synthetic>' })), null);
+  assert.equal(TU.parseLine(JSON.stringify({ type: 'user', timestamp: '2026-10-13T10:00:00Z', message: { usage: {} } })), null);
+  assert.equal(TU.parseLine('{"type":"assistant","usage" broken'), null);
+  assert.equal(TU.parseLine(aLine({ side: true })).sub, true);
+});
+
+test('token kullanımı: fiyat tablosu ve tam fiyat karşılığı', () => {
+  assert.deepEqual(TU.priceOf('claude-opus-5-5'), { input: 4, read: 0.05 });
+  assert.deepEqual(TU.priceOf('claude-opus-5[1m]'), { input: 5, read: 0.1 });
+  assert.deepEqual(TU.priceOf('claude-fable-5-1'), { input: 10, read: 0.025 });
+  assert.deepEqual(TU.priceOf('claude-haiku-4-5-20251001'), { input: 1, read: 0.1 });
+  assert.deepEqual(TU.priceOf('something-new'), { input: 5, read: 0.1 });
+  assert.deepEqual(TU.WEIGHTS, { input: 1, write5m: 1.25, write1h: 2, read: 0.1, output: 5 });
+  // opus 5: 1000 input + 1000×1.25 + 1000×2 + 10000×0.1 + 100×5 = 5750 full-price tokens, $5/M
+  const w = TU.weigh({ model: 'claude-opus-5', input: 1000, w5: 1000, w1: 1000, read: 10000, output: 100 });
+  assert.equal(Math.round(w.fpt), 5750);
+  assert.ok(Math.abs(w.usd - 5750 * 5 / 1e6) < 1e-12);
+  assert.ok(Math.abs(w.cost.read - 1000 * 5 / 1e6) < 1e-12);
+});
+
+test('token kullanımı: aynı yanıt (message.id, requestId) bir kez sayılır, en çok çıktılı kopya kalır', () => {
+  const m = new Map();
+  for (const out of [5, 50, 20]) TU.keep(m, TU.parseLine(aLine({ output: out })));
+  TU.keep(m, TU.parseLine(aLine({ req: 'req_2', output: 7 })));
+  assert.equal(m.size, 2);
+  assert.equal(m.get('msg_1|req_1').output, 50);
+  // across files: the sub-agent copy marks it as a sub-agent's
+  const a = new Map([['k', { key: 'k', output: 9, sub: false }]]);
+  const b = new Map([['k', { key: 'k', output: 3, sub: true }]]);
+  const merged = TU.mergeRecords([a, b]);
+  assert.equal(merged.size, 1);
+  assert.deepEqual(merged.get('k'), { key: 'k', output: 9, sub: true });
+});
+
+test('token kullanımı: bugün / 7 gün / eklendiğinden beri, saatlik kovalar, ana oturum ve alt ajanlar, modeller', () => {
+  const now = new Date(2026, 9, 13, 15, 30).getTime();
+  const H = 3600e3;
+  const rec = (key, t, extra = {}) => ({ key, t, model: 'claude-opus-5', sub: false, input: 100, w5: 0, w1: 0, read: 0, output: 0, ...extra });
+  const recs = new Map([
+    ['a', rec('a', now - 10 * 60e3)],                                      // this hour
+    ['b', rec('b', now - 2 * H, { sub: true, model: 'claude-haiku-5-5' })], // today, 13:xx, sub-agent
+    ['c', rec('c', TU.startOfDay(now) - H)],                               // yesterday 23:xx: last 24 h, not today
+    ['d', rec('d', now - 3 * 24 * H)],                                     // this week
+    ['e', rec('e', now - 20 * 24 * H)],                                    // before the week
+    ['f', rec('f', now - 40 * 24 * H)],                                    // before the project was added
+  ]);
+  const r = TU.summarize(recs, { now, since: now - 30 * 24 * H });
+  assert.equal(r.today.total, 200);
+  assert.equal(r.week.total, 400);
+  assert.equal(r.all.total, 500);
+  assert.equal(r.today.main.total, 100);
+  assert.equal(r.today.sub.total, 100);
+  assert.equal(r.today.sub.requests, 1);
+  assert.deepEqual(r.today.models.map((m) => m.model), ['claude-opus-5', 'claude-haiku-5-5']); // by $
+  assert.equal(r.hours.length, 24);
+  assert.equal(r.hours[23].at, new Date(2026, 9, 13, 15, 0).getTime());
+  assert.equal(r.hours[23].total, 100);
+  assert.equal(r.hours[21].total, 100);
+  assert.equal(r.hours.reduce((n, h) => n + h.total, 0), 300);
+  assert.ok(Math.abs(r.today.fpt - 200) < 1e-9); // input only: full price
+  assert.equal(r.firstAt, now - 20 * 24 * H);
+  // without `since`: everything in the transcripts
+  assert.equal(TU.summarize(recs, { now }).all.total, 600);
+  assert.equal(TU.summarize(recs, { now }).since, null);
+  assert.deepEqual(TU.brief(r), { usd: r.today.usd, total: 200, pct: 1 });
+});
+
+test('token kullanımı: projenin klasörleri (sekmeler, worktree’ler; başka projenin klasörü değil)', () => {
+  const names = ['-r-shop', '-r-shop-wt-2', '-r-shop--claude-worktrees-x', '-r-shop-api', '-r-shop-wt-other', '-r-notes', '-tmp-tab'];
+  assert.deepEqual(TU.projectFolders(names, ['/r/shop', '/tmp/tab'], ['/r/shop-api', '/r/shop-wt-other']),
+    ['-r-shop', '-r-shop-wt-2', '-r-shop--claude-worktrees-x', '-tmp-tab']);
+  assert.equal(TU.slugOf('/Users/a/.claude'), '-Users-a--claude');
+});
+
+test('token kullanımı: artımlı okuma, yarım satır, alt ajan dosyası, kısalan ve değişen dosya', async () => {
+  const root = tuFs.mkdtempSync(tuPath.join(tuOs.tmpdir(), 'ao-tokens-'));
+  const dir = tuPath.join(root, '-r-shop');
+  tuFs.mkdirSync(tuPath.join(dir, 'sess1', 'subagents'), { recursive: true });
+  const main = tuPath.join(dir, 'sess1.jsonl');
+  const sub = tuPath.join(dir, 'sess1', 'subagents', 'agent-a1.jsonl');
+  const user = JSON.stringify({ type: 'user', message: { content: 'x'.repeat(5000) } });
+  tuFs.writeFileSync(main, `${user}\n${aLine({ id: 'm1', output: 5 })}\n${aLine({ id: 'm1', output: 40 })}\n`);
+  tuFs.writeFileSync(sub, `${aLine({ id: 's1', req: 'rs1' })}\n`);
+  const sc = new TU.UsageScanner({ chunkSize: 1024 }); // small chunks: lines cross chunk borders
+  let recs = await sc.scanFolders([dir]);
+  assert.equal(recs.size, 2);
+  assert.equal(recs.get('m1|req_1').output, 40);
+  assert.equal(recs.get('s1|rs1').sub, true);
+  assert.equal(recs.get('m1|req_1').sub, false);
+  const first = sc.bytesRead;
+  assert.equal(first, tuFs.statSync(main).size + tuFs.statSync(sub).size);
+
+  // nothing new: nothing is read
+  await sc.scanFolders([dir]);
+  assert.equal(sc.bytesRead, first);
+
+  // a half-written line is not counted and is read again once finished
+  const next = aLine({ id: 'm2', req: 'req_9', output: 7 });
+  tuFs.appendFileSync(main, next.slice(0, 40));
+  recs = await sc.scanFolders([dir]);
+  assert.equal(recs.size, 2);
+  tuFs.appendFileSync(main, next.slice(40) + '\n');
+  const before = sc.bytesRead;
+  recs = await sc.scanFolders([dir]);
+  assert.equal(recs.size, 3);
+  assert.equal(sc.bytesRead - before, next.length + 1); // only the new line (from its start)
+
+  // truncated (smaller than what was read): read again from the start
+  tuFs.writeFileSync(main, `${aLine({ id: 'm9', req: 'r9', output: 1 })}\n`);
+  recs = await sc.scanFolders([dir]);
+  assert.deepEqual([...recs.keys()].sort(), ['m9|r9', 's1|rs1']);
+
+  // replaced by another file (rotation, same or larger size): read again from the start
+  const repl = `${aLine({ id: 'mA', req: 'rA', output: 1 })}\n${aLine({ id: 'mB', req: 'rB', output: 1 })}\n`;
+  tuFs.writeFileSync(main + '.new', repl);
+  tuFs.renameSync(main + '.new', main);
+  recs = await sc.scanFolders([dir]);
+  assert.deepEqual([...recs.keys()].sort(), ['mA|rA', 'mB|rB', 's1|rs1']);
+
+  // a deleted transcript is forgotten
+  tuFs.rmSync(sub);
+  recs = await sc.scanFolders([dir]);
+  assert.deepEqual([...recs.keys()].sort(), ['mA|rA', 'mB|rB']);
+
+  // a file last written before `since` is not read at all
+  const sc2 = new TU.UsageScanner();
+  const recs2 = await sc2.scanFolders([dir], { since: Date.now() + 3600e3 });
+  assert.equal(recs2.size, 0);
+  assert.equal(sc2.bytesRead, 0);
+  tuFs.rmSync(root, { recursive: true, force: true });
+});
+
+test('proje eklenme zamanı (v3.13): addProject yazar, normalizeState korur, eskilerde yok', () => {
+  const r = P.addProject(empty(), '/p/when', { id: () => 'w', now: () => 1234 });
+  assert.equal(r.project.addedAt, 1234);
+  const again = P.normalizeState(JSON.parse(JSON.stringify(r.state)));
+  assert.equal(again.projects[0].addedAt, 1234);
+  const old = P.normalizeState({ projects: [{ id: 'o', dir: '/o', accountId: 'default', addedAt: 'x' }] });
+  assert.equal('addedAt' in old.projects[0], false);
+});

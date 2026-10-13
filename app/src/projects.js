@@ -22,6 +22,7 @@ function normalizeState(raw, { id = newId } = {}) {
       dir: p.dir,
       name: projectName(p.dir),
       accountId: known.has(p.accountId) ? p.accountId : DEFAULT_ID,
+      ...(Number.isFinite(p.addedAt) ? { addedAt: p.addedAt } : {}), // v3.13; projects from before have none
       ...withManager(p.manager),
       ...withTabs(normalizeTabs(p.tabs)),
     });
@@ -161,11 +162,11 @@ const findProject = (state, id) => state.projects.find((p) => p.id === id) || nu
 const findByDir = (state, dir) => state.projects.find((p) => p.dir === dir) || null;
 
 // If the folder is in the list it is only activated; otherwise it is added and activated.
-function addProject(state, dir, { id = newId, accountId = DEFAULT_ID } = {}) {
+function addProject(state, dir, { id = newId, accountId = DEFAULT_ID, now = Date.now } = {}) {
   const old = findByDir(state, dir);
   if (old) return { state: { ...state, activeId: old.id }, project: old, isNew: false };
   const acc = state.accounts.some((a) => a.id === accountId) ? accountId : DEFAULT_ID;
-  const project = { id: id(), dir, name: projectName(dir), accountId: acc };
+  const project = { id: id(), dir, name: projectName(dir), accountId: acc, addedAt: now() };
   return { state: { ...state, projects: [...state.projects, project], activeId: project.id }, project, isNew: true };
 }
 

@@ -147,7 +147,10 @@
     "used": "{name}: {pct}% used",
     "wasReset": "Has reset",
     "resetsAt": "Resets: {when}",
-    "lastInfo": "Last value: {ago} (from an open Claude session on this account)"
+    "lastInfo": "Last value: {ago} (from an open Claude session on this account)",
+    "costLine": "≈ {usd} today · {pct}%",
+    "costNone": "No tokens today",
+    "costTitle": "This project's token usage today: the estimated cost at API list prices and how much of the full price that is (cache reads are cheap). Click for details."
   },
   "panel": {
     "types": {
@@ -405,5 +408,55 @@
     "timeout": "timed out",
     "noClaude": "claude not found",
     "noShell": "shell not found"
+  },
+  "usage": {
+    "title": "Token usage",
+    "close": "Close (Esc)",
+    "period": {
+      "today": "Today",
+      "week": "7 days",
+      "all": "Since added"
+    },
+    "loading": "Reading the transcripts…",
+    "failed": "Could not read the usage.",
+    "none": "Nothing yet.",
+    "tokens": "tokens",
+    "usdTitle": "Estimated at API list prices, not a bill: a Pro or Max plan pays a flat fee.",
+    "fullPrice": "Costs what {tokens} tokens would at full price — {pct}",
+    "fullPriceTitle": "Each kind is weighted by its price relative to input tokens: input 1×, cache write 1.25× (kept 5 minutes) or 2× (kept 1 hour), cache read 0.1× (less on some models), output 5×.",
+    "sinceAdded": "Since the project was added, {date}",
+    "sinceFirst": "Since the first transcript, {date}",
+    "byKind": "By kind",
+    "kind": {
+      "output": "Output",
+      "input": "Input",
+      "write": "Cache write",
+      "read": "Cache read"
+    },
+    "kindTitle": {
+      "output": "What the model wrote (text, code, tool calls): 5× the input price",
+      "input": "New context that was not in the cache: the full input price",
+      "write": "Context stored in the prompt cache: 1.25× the input price when kept 5 minutes, 2× when kept 1 hour",
+      "read": "Context the model had already seen, served from the cache: a tenth of the input price"
+    },
+    "writeSplit": "5 min {m5} · 1 h {h1}",
+    "shares": "{tok} of tokens · {cost} of cost",
+    "byPart": "Main session and sub-agents",
+    "part": {
+      "main": "Main session",
+      "sub": "Sub-agents"
+    },
+    "partShare": {
+      "one": "{pct} of cost · {tokens} tokens · {n} request",
+      "other": "{pct} of cost · {tokens} tokens · {n} requests"
+    },
+    "byModel": "By model",
+    "modelShare": "{pct} of cost · {tokens} tokens",
+    "last24h": "Last 24 hours",
+    "hourTitle": "{from}:00–{to}:00 · {tokens} tokens · ≈ {usd}",
+    "legendTokens": "tokens",
+    "legendCost": "cost",
+    "noteRead": "A cache read is context the model has already seen; it costs a tenth of the full price.",
+    "noteEstimate": "$ is an estimate at API list prices, not a bill."
   }
 }

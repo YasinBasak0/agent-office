@@ -70,6 +70,11 @@ contextBridge.exposeInMainWorld('agentOffice', {
     set: (setting) => ipcRenderer.invoke('language:set', setting),
     onChange: listen('language:changed'),                           // { setting, lang, languages }
   },
+  tokens: {                                             // v3.13: token usage per project, from the transcripts
+    report: (projectId) => ipcRenderer.invoke('tokens:report', projectId), // TokenReport | null
+    brief: () => ipcRenderer.invoke('tokens:brief'),    // [{ id, usd, total, pct }] for today
+    onBrief: listen('tokens:brief'),                    // the same, about once a minute
+  },
   office: {
     onData: listen('office:data'),
     themes: () => ipcRenderer.invoke('office:themes'),   // gallery + user themes.json (contract v3.1)
