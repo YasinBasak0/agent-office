@@ -15,7 +15,7 @@ All UI text is Turkish.
 ## Model
 
 ```ts
-type Project = { id: string; dir: string; name: string; accountId: string }   // name = basename(dir); id stable (random)
+type Project = { id: string; dir: string; name: string; accountId: string; addedAt?: number }   // name = basename(dir); id stable (random); addedAt: v3.13
 type Account = { id: string; label: string; configDir: string | null; auth: AccountAuth; shareDefault?: false }  // 'default': label 'Varsayılan', configDir null (system ~/.claude); shareDefault: v3.6
 type AccountAuth = { state: 'checking' | 'in' | 'out' | 'error'; email?: string; method?: string; error?: string }
 // from `claude auth status --json` run with that account's CLAUDE_CONFIG_DIR: loggedIn → 'in' (email, authMethod), else 'out'
@@ -55,6 +55,9 @@ agentOffice.pty.onExit(cb: (projectId: string, code: number) => void): () => voi
 agentOffice.pty.restart(projectId: string): void
 
 agentOffice.office.onData(cb: (data: OfficeData) => void): () => void
+agentOffice.tokens.report(projectId: string): Promise<TokenReport | null>   // v3.13
+agentOffice.tokens.brief(): Promise<TokenBrief[]>                       // v3.13
+agentOffice.tokens.onBrief(cb: (list: TokenBrief[]) => void): () => void  // v3.13, about once a minute
 agentOffice.office.themes(): Promise<Record<string, ThemeSpec>>
 agentOffice.clipboard.hasImage(): Promise<boolean>
 agentOffice.clipboard.read(): Promise<{ hasImage: boolean, text: string, files: string[] }>  // files: copied in Finder (osascript), on Linux a file manager (text/uri-list via Electron, wl-paste or xclip), on Windows Explorer (CF_HDROP / FileNameW via Electron, else PowerShell's Get-Clipboard)
@@ -516,3 +519,36 @@ type JournalEntry = {
 - **Read** (`prompt.submit`, only with `AGENT_OFFICE_APP`, not for a `task-notification` origin). When the journal's mtime is past the session's cursor, it is read and parsed (broken lines skipped). Shown: entries of other sessions, after `cursor − 60 s` and not in `seen` (lines can land slightly out of time order), that concern this project: one of `dirs` or `repos[].dir` is the project's normalized folder or below it (case-insensitive, `/` and `\` alike; a worktree tab's folder normalizes to the main working copy), or the project's name (≥ 3 characters, whole word) is in the prompt or a commit subject, or in the summary of a turn that did work. The cursor moves to the newest entry read and the ids are remembered (≤ 200), so each entry is shown once; a new session's cursor starts 24 h back, a resumed one keeps its own. The news are added as one `context` entry beside the prompt (a conversation attachment, never system prompt, so the prompt cache stays): *Office news (other Agent Office sessions' work that concerns this project, from the office journal):* then per entry `- [HH:MM] <project> boss (account <A>) — commits in <repo> (<branch>): <hash> "<subject>", …; asked: "<prompt>"; summary: <≤ 220>; transcript: <path>` (the date before the time when not today). The newest 8 within 2000 characters, oldest first; the rest as `- … and N more in <journal path>`.
 - **Pull on demand.** The office directory section (v3.9) ends with one more paragraph when the journal is on: *Every session's turns are logged in the office journal `<path>` (JSON lines: time, project, folders touched, new commits, the prompt, a short summary and the transcript path): when the person refers to work done in another project or session, read it, and the transcripts it lists, rather than guessing.* The path does not change during a session, so the section stays cached.
 - **Tests.** `plugin/tests/journal.test.tsx` (`claude plugin test`: writing, worktree mapping, redaction, skipped turns, subagents, selection, caps, the directory sentence) and `plugin/tests/journal-git.mjs` (`node --test`, Node 23.6+: commit detection, worktrees and the append against real git).
+
+## Token usage per project (v3.13)
+
+Usage is very uneven between projects, and almost all of it is cache reads (98% of tokens over a week of real use; sub-agents about 70% of the $). The project row shows today's cost and a panel shows where it goes. Main reads Claude Code's transcripts; nothing new is written.
+
+```ts
+type TokenKinds = { input: number; write5m: number; write1h: number; read: number; output: number }
+type TokenPart = { total: number; fpt: number; usd: number; requests: number }
+type TokenTotals = TokenPart & {
+  tokens: TokenKinds                       // token counts by kind
+  cost: TokenKinds                         // the $ by kind
+  main: TokenPart; sub: TokenPart          // main loop vs sub-agents
+  models: (TokenPart & { model: string })[] // by $, descending; '[1m]' suffix dropped
+}
+type TokenReport = {
+  projectId: string; name: string; now: number
+  since: number | null                     // Project.addedAt; null for projects added before v3.13 (then: all transcripts)
+  firstAt: number | null                   // the oldest response counted in `all`
+  today: TokenTotals                       // since local midnight
+  week: TokenTotals                        // the last 7 × 24 h
+  all: TokenTotals                         // since `since`
+  hours: { at: number; total: number; fpt: number; usd: number }[]   // 24 local hours, the last one is the current hour
+}
+type TokenBrief = { id: string; usd: number; total: number; pct: number }  // today; pct = fpt / total (0..1)
+```
+
+- **Source** (`src/token-usage.js`, no Electron). A project's transcript folders are `<account config or ~/.claude>/projects/<slug>` for its folder and each tab's folder (slug: non-alphanumerics → `-`), plus worktrees of its folder made elsewhere (`<slug>-wt-…`, Claude Code's `<slug>--claude-worktrees-…`) unless that name is exactly another project's folder. Every `.jsonl` below them counts, `<session>/subagents/agent-*.jsonl` included (a sub-agent's, as is a line with `isSidechain`). An assistant line's `message.usage` gives input, cache write (`cache_creation.ephemeral_5m/1h_input_tokens`; without the split all of `cache_creation_input_tokens` counts as 5 min), cache read and output. A response is written once per content block, so lines are deduplicated by `(message.id, requestId)`, keeping the copy with the most output tokens; `<synthetic>` responses are skipped.
+- **Price.** Full-price equivalent (fpt) weighs each kind against the model's input price: input 1, cache write 5 min 1.25, 1 h 2, cache read 0.1, output 5; `PRICES` holds each model family's input $/M and, where it is not 0.1, its cache read multiple (Fable/Mythos $10 ×0.025, Opus 5.5 $4 ×0.05, Opus 5 and 4.5–4.8 $5, Sonnet 5.x $2, older Sonnet $3, Haiku 5.x $0.10, Haiku 4.5 $1, unknown $5). $ = fpt × input price. It is an estimate at API list prices, not a bill. Claude Code's `cost-state` lines are not used: they hold per-session running totals without times, and only some sessions have them.
+- **Reading.** `UsageScanner` keeps per file its inode, size, mtime and the byte offset after its last complete line, and reads only the bytes after it, in 1 MB chunks with a `setImmediate` between them; a file that did not change is not opened, a file smaller than the offset or with another inode is read from the start, a half-written last line is read again next time, a deleted file is forgotten, a file last written before `since` is not read. Lines are filtered on the bytes (`"usage"` and `"assistant"`) before `JSON.parse`. Scans run one at a time. A first read of 600 MB of transcripts takes about 1.3 s; a re-read with nothing new, a few ms.
+- **Main.** `tokens:report` scans and summarizes one project; `tokens:brief` every project. Main pushes `tokens:brief` 8 s after the window opens and then every 60 s. `Project.addedAt` is set by `addProject` and kept by `normalizeState`.
+- **Sidebar.** Under the project's meta line, a dashed button "≈ $12 today · 9%" (`TokenBrief`; "No tokens today" when there were none) opens the panel; clicking it again closes it.
+- **Panel** (`renderer/usage-panel.js`, the agent panel's look, over the office's left side; Esc or × closes; re-read every 15 s while open). Period switch Today / 7 days / Since added; total tokens and ≈ $; "Costs what X tokens would at full price — N%"; rows Output, Input, Cache write (5 min / 1 h split), Cache read with a bar (share of tokens) and the shares of tokens and of cost; main session vs sub-agents and by model with $ bars; a 24-hour chart with a token bar and a cost bar per hour (each scaled to its own maximum); a note that a cache read is context the model has already seen at a tenth of the full price, and that $ is an estimate.
+- **Dev mock.** `?usage[=n]` opens project n's panel with made-up numbers.

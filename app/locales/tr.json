@@ -146,7 +146,10 @@
     "used": "{name}: %{pct} kullanıldı",
     "wasReset": "Sıfırlandı",
     "resetsAt": "Sıfırlanma: {when}",
-    "lastInfo": "Son bilgi: {ago} (bu hesapta açık bir Claude oturumundan)"
+    "lastInfo": "Son bilgi: {ago} (bu hesapta açık bir Claude oturumundan)",
+    "costLine": "≈ {usd} bugün · %{pct}",
+    "costNone": "Bugün token yok",
+    "costTitle": "Bu projenin bugünkü token kullanımı: API liste fiyatlarıyla tahmini maliyet ve bunun tam fiyatın ne kadarı olduğu (önbellek okuması ucuzdur). Ayrıntı için tıklayın."
   },
   "panel": {
     "types": {
@@ -386,5 +389,52 @@
     "timeout": "zaman aşımı",
     "noClaude": "claude bulunamadı",
     "noShell": "kabuk bulunamadı"
+  },
+  "usage": {
+    "title": "Token kullanımı",
+    "close": "Kapat (Esc)",
+    "period": {
+      "today": "Bugün",
+      "week": "7 gün",
+      "all": "Eklendiğinden beri"
+    },
+    "loading": "Konuşma kayıtları okunuyor…",
+    "failed": "Kullanım okunamadı.",
+    "none": "Henüz yok.",
+    "tokens": "token",
+    "usdTitle": "API liste fiyatlarıyla tahmin, fatura değil: Pro ya da Max planı sabit ücret öder.",
+    "fullPrice": "{tokens} tokenın tam fiyatına denk — {pct}",
+    "fullPriceTitle": "Her tür, girdi tokenına göre fiyatıyla tartılır: girdi 1×, önbellek yazma 1,25× (5 dakika tutulur) ya da 2× (1 saat tutulur), önbellek okuma 0,1× (bazı modellerde daha az), çıktı 5×.",
+    "sinceAdded": "Proje eklendiğinden beri, {date}",
+    "sinceFirst": "İlk konuşma kaydından beri, {date}",
+    "byKind": "Türe göre",
+    "kind": {
+      "output": "Çıktı",
+      "input": "Girdi",
+      "write": "Önbellek yazma",
+      "read": "Önbellek okuma"
+    },
+    "kindTitle": {
+      "output": "Modelin yazdıkları (metin, kod, araç çağrıları): girdi fiyatının 5 katı",
+      "input": "Önbellekte olmayan yeni bağlam: tam girdi fiyatı",
+      "write": "İstem önbelleğine yazılan bağlam: 5 dakika tutulursa girdi fiyatının 1,25 katı, 1 saat tutulursa 2 katı",
+      "read": "Modelin daha önce gördüğü, önbellekten gelen bağlam: girdi fiyatının onda biri"
+    },
+    "writeSplit": "5 dk {m5} · 1 sa {h1}",
+    "shares": "tokenların {tok} · maliyetin {cost}",
+    "byPart": "Ana oturum ve alt ajanlar",
+    "part": {
+      "main": "Ana oturum",
+      "sub": "Alt ajanlar"
+    },
+    "partShare": "{pct} maliyet · {tokens} token · {n} istek",
+    "byModel": "Modele göre",
+    "modelShare": "{pct} maliyet · {tokens} token",
+    "last24h": "Son 24 saat",
+    "hourTitle": "{from}:00–{to}:00 · {tokens} token · ≈ {usd}",
+    "legendTokens": "token",
+    "legendCost": "maliyet",
+    "noteRead": "Önbellek okuması, modelin daha önce gördüğü bağlamdır; tam fiyatın onda biri.",
+    "noteEstimate": "$ tutarı API liste fiyatlarıyla bir tahmindir, fatura değil."
   }
 }

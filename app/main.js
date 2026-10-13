@@ -19,6 +19,7 @@ const SC = require('./src/shared-config.js');
 const OD = require('./src/office-directory.js');
 const MR = require('./src/mcp-reload.js');
 const R = require('./src/resume.js');
+const TU = require('./src/token-usage.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -555,6 +556,42 @@ function scanUsage() {
   if (changed) sendAccounts();
 }
 
+// --- token usage per project (contract v3.13, src/token-usage.js): read from the transcripts incrementally
+const tokenScanner = new TU.UsageScanner();
+/** The project's transcript folders in its account's config folder (its folder, tab folders, worktrees). */
+function tokenFolders(p) {
+  const { configDir } = A.accountOf(state, p);
+  const root = path.join(configDir || path.join(app.getPath('home'), '.claude'), 'projects');
+  let names = [];
+  try { names = fs.readdirSync(root); } catch {}
+  const dirs = [p.dir, ...P.tabsOf(p).map((t) => t.dir).filter(Boolean)];
+  const others = state.projects.filter((x) => x.id !== p.id).map((x) => x.dir);
+  return TU.projectFolders(names, dirs, others).map((n) => path.join(root, n));
+}
+async function tokenReport(id) {
+  const p = P.findProject(state, id);
+  if (!p) return null;
+  const since = Number.isFinite(p.addedAt) ? p.addedAt : null;
+  const recs = await tokenScanner.scanFolders(tokenFolders(p), { since: since ?? 0 });
+  return { projectId: p.id, name: p.name, ...TU.summarize(recs, { since }) };
+}
+/** Today's line for every project's row: [{ id, usd, total, pct }]. */
+async function tokenBriefs() {
+  const out = [];
+  for (const p of state.projects) {
+    try { const r = await tokenReport(p.id); if (r) out.push({ id: p.id, ...TU.brief(r) }); } catch (e) { console.error('token usage:', e.message); }
+  }
+  return out;
+}
+let tokenBusy = false;
+async function pushTokenBriefs() {
+  if (tokenBusy || !win || win.isDestroyed()) return;
+  tokenBusy = true;
+  try { send('tokens:brief', await tokenBriefs()); } finally { tokenBusy = false; }
+}
+ipcMain.handle('tokens:report', (_e, id) => tokenReport(id));
+ipcMain.handle('tokens:brief', () => tokenBriefs());
+
 // Accounts other than default use the project's ~/.claude memory (see src/memory.js): the account's own memories
 // are merged into it first, then the session gets autoMemoryDirectory pointing there. null: Claude Code's default.
 function projectMemoryDir(cwd, configDir) {
@@ -841,14 +878,18 @@ const restartProject = (projectId) => {
 const sessionAliases = () => P.sessionAliases(state.projects);
 
 let usagePoll = null;
+let tokenPoll = null;
 let sleepPoll = null;
 let turnPoll = null;
 function startPolling() {
   clearInterval(poll);
   clearInterval(usagePoll);
+  clearInterval(tokenPoll);
   clearInterval(sleepPoll);
   clearInterval(turnPoll);
   usagePoll = setInterval(scanUsage, 3000);
+  tokenPoll = setInterval(pushTokenBriefs, 60000);
+  setTimeout(pushTokenBriefs, 8000); // the first full read waits until the window has settled
   sleepPoll = setInterval(sleepIdle, 30000);
   turnPoll = setInterval(checkTurns, 1500);
   let tick = 0;

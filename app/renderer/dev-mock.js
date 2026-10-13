@@ -10,6 +10,7 @@
 // e.g. ?select=m-1, ?select=shell:sh-1). ?noShells → old data (no shells field).
 // ?tabs → three tabs in the first project (main, same folder, git worktree) with the worktree tab open (contract v3.0);
 // "+" adds a fake tab without a worktree, ⇧⌘T one with a worktree; × closes without asking.
+// ?usage[=<n>] → opens project n's token usage panel (v3.13; default the first) after a moment.
 // ?theme=<name> → theme picker setting (v3.1; e.g. ?theme=sakura, ?theme=forest); default auto. The gallery is read from
 // ../../themes/*.json, so it is there under Electron's loadFile or a static server at the repo root (/app/renderer/index.html).
 import { galleryThemes, mergeThemes } from '../src/themes.mjs';
@@ -263,6 +264,15 @@ window.agentOffice = {
     set: async (v) => { langSetting = known(v) ? v : 'auto'; setTimeout(() => langEv.emit(langInfo())); },
     onChange: langEv.add,
   },
+  tokens: {
+    report: async (id) => {
+      const i = Math.max(0, projects.findIndex((p) => p.id === id));
+      await new Promise((r) => setTimeout(r, 120)); // main reads the transcripts
+      return mockTokenReport(i, projects[i]);
+    },
+    brief: async () => mockBriefs(),
+    onBrief: (cb) => { const h = setTimeout(() => cb(mockBriefs()), 300); return () => clearTimeout(h); }, // main: ~8 s after start
+  },
   office: {
     today: async () => {
       const now = Date.now();
@@ -284,6 +294,47 @@ window.agentOffice = {
   clipboard: { hasImage: async () => false, read: async () => ({ hasImage: false, text: '', files: [] }), onPaste: () => () => {}, nativePaste: () => document.execCommand('paste') },
   pathForFile: () => '',
 };
+
+// ---- fake token usage (contract v3.13): like main's src/token-usage.js summarize, opus 5.5 prices ----
+function mockTotals(scale, subShare) {
+  const tk = { input: 2.1e4, write5m: 4.2e5, write1h: 1.9e5, read: 4.6e7, output: 3.1e5 };
+  for (const k in tk) tk[k] = Math.round(tk[k] * scale);
+  const k = 4 / 1e6;
+  const cost = { input: tk.input * k, write5m: tk.write5m * 1.25 * k, write1h: tk.write1h * 2 * k, read: tk.read * 0.05 * k, output: tk.output * 5 * k };
+  const total = Object.values(tk).reduce((a, b) => a + b, 0);
+  const usd = Object.values(cost).reduce((a, b) => a + b, 0);
+  const n = Math.round(380 * scale);
+  const part = (f) => ({ total: Math.round(total * f), fpt: (usd * f) / k, usd: usd * f, requests: Math.round(n * f) });
+  return {
+    tokens: tk, cost, total, fpt: usd / k, usd, requests: n, main: part(1 - subShare), sub: part(subShare),
+    models: [{ model: 'claude-opus-5-5', ...part(0.93) }, { model: 'claude-haiku-5-5', ...part(0.07) }],
+  };
+}
+function mockTokenReport(i, p) {
+  const now = Date.now();
+  const top = new Date(now);
+  top.setMinutes(0, 0, 0);
+  const s = [1, 0.35, 0.06][i % 3];
+  const hours = Array.from({ length: 24 }, (_, h) => {
+    const at = top.getTime() - (23 - h) * 3600e3;
+    const hr = new Date(at).getHours();
+    const busy = hr >= 9 && hr <= 23 ? Math.abs(Math.sin(h * 1.7)) * s : 0;
+    const total = Math.round(busy * 9e6);
+    return { at, total, fpt: total * 0.085, usd: total * 0.085 * 4e-6 * (0.7 + (h % 5) * 0.15) };
+  });
+  return {
+    projectId: p?.id, name: p?.name, now, since: now - 12 * 86400e3, firstAt: now - 11 * 86400e3,
+    today: mockTotals(2.4 * s, 0.7), week: mockTotals(11 * s, 0.68), all: mockTotals(19 * s, 0.66), hours,
+  };
+}
+const mockBrief = (r) => ({ usd: r.today.usd, total: r.today.total, pct: r.today.fpt / r.today.total });
+const mockBriefs = () => projects.map((p, i) => ({ id: p.id, ...mockBrief(mockTokenReport(i, p)) }));
+if (q.has('usage')) {
+  setTimeout(() => {
+    const n = Math.max(1, Number(q.get('usage')) || 1);
+    /** @type {HTMLElement | null} */ (document.querySelectorAll('.sb-cost')[n - 1])?.click();
+  }, 900);
+}
 
 // ---- fake agents: prompt/detail/history/result for the details panel; one in the old format (no fields) ----
 const T0 = Date.now();

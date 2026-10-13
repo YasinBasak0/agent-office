@@ -42,6 +42,14 @@ function agoText(ms, now) {
 }
 const STALE_MS = 30 * 60e3;
 
+/** "$3.52" under $10, "$170" above (an estimate at list prices; contract v3.13). */
+const usdText = (v) => `$${(Number(v) || 0).toLocaleString(locale(), { maximumFractionDigits: v < 10 ? 2 : 0, minimumFractionDigits: v < 10 && v > 0 ? 2 : 0 })}`;
+/** The project row's usage line: "≈ $12 today · 16%" (16% = full-price equivalent of today's tokens). */
+function costText(b) {
+  const pct = Math.round((Number(b?.pct) || 0) * 100);
+  return b && b.total > 0 ? t('sidebar.costLine', { usd: usdText(b.usd), pct }) : t('sidebar.costNone');
+}
+
 export function mountSidebar(el, on) {
   let projects = [];
   let accounts = [];
@@ -50,6 +58,7 @@ export function mountSidebar(el, on) {
   let asleep = new Set(); // projects whose main claude sleeps (src/sleep.js)
   let attn = new Map(); // projectId → 'permission' | 'done' (main's notification state)
   let stats = new Map();
+  let briefs = new Map(); // projectId → { usd, total, pct } today's token usage (main's tokens:brief, v3.13)
   let projKey = '';
   let acctKey = '';
   let editing = null; // { id: string | null } — account name being edited (null id = new account)
@@ -271,6 +280,10 @@ export function mountSidebar(el, on) {
           loginBadge(p),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),
+        h('button', {
+          class: 'sb-cost', hidden: !briefs.has(p.id), title: t('sidebar.costTitle'),
+          onclick: (e) => { e.stopPropagation(); on.openUsage?.(p); },
+        }, costText(briefs.get(p.id))),
       );
     }));
     if (!projects.length) projList.append(h('li', { class: 'sb-empty' }, t('sidebar.noProjects')));
@@ -469,6 +482,17 @@ export function mountSidebar(el, on) {
       if (pk !== projKey) { projKey = pk; renderProjects(); }
       const ak = JSON.stringify(accounts);
       if (ak !== acctKey && !editing) { acctKey = ak; renderAccounts(); }
+    },
+    /** Today's token usage per project: [{ id, usd, total, pct }] (contract v3.13); the line opens the usage panel. */
+    setTokenBriefs(list) {
+      briefs = new Map((Array.isArray(list) ? list : []).filter((b) => b && b.id).map((b) => [b.id, b]));
+      for (const li of projList.querySelectorAll('.sb-proj')) {
+        const btn = li.querySelector('.sb-cost');
+        if (!btn) continue;
+        const b = briefs.get(li.dataset.id);
+        btn.hidden = !b;
+        btn.textContent = costText(b);
+      }
     },
     /** OfficeData.projects: working / delivered / boss by project name. */
     setStats(list) {

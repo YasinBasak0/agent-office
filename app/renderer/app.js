@@ -454,6 +454,7 @@ sidebar = mountSidebar($('sidebar'), {
   setReloadMcp: (on) => api.prefs?.set({ reloadMcp: on }).then((p) => sidebar.setReloadMcp(p?.reloadMcp)).catch((e) => console.error(e)),
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
+  openUsage: (p) => usagePanel?.show(p),
 });
 
 login = mountLogin(document.body, { getTheme: () => theme, onClose: () => focusActive() });
@@ -622,6 +623,20 @@ try {
 } catch (e) {
   console.warn('Ajan paneli yüklenemedi:', e.message);
 }
+
+// ---- Token usage of a project (usage-panel.js, v3.13): opened from the "≈ $… today" line in its row ----
+let usagePanel = null;
+try {
+  const { mountUsagePanel } = await import('./usage-panel.js');
+  usagePanel = mountUsagePanel($('usage-panel'), {
+    anchor: $('office'),
+    load: (id) => api.tokens?.report(id) ?? Promise.resolve(null),
+    onClose: () => focusActive(),
+  });
+} catch (e) {
+  console.warn('Kullanım paneli yüklenemedi:', e.message);
+}
+api.tokens?.onBrief?.((list) => sidebar.setTokenBriefs(list));
 
 // ---- Office: separate module; without it only the terminal runs ----
 try {
