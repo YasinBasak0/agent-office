@@ -680,8 +680,10 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   const print = mcpFingerprintOf(account, project, cwd);
   const args = R.claudeArgs([...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
   const startedAt = Date.now();
-  const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; exec claude "$@"';
-  let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: P.managerOf(state, project) });
+  // after the rc files: the account's folder, and the project's pinned subagent model (contract v3.14, accounts.js sessionEnv)
+  const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; '
+    + '[ -n "$AGENT_OFFICE_AGENT_MODEL" ] && export CLAUDE_CODE_SUBAGENT_MODEL="$AGENT_OFFICE_AGENT_MODEL" CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1; exec claude "$@"';
+  let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: P.managerOf(state, project), agentModel: P.agentModelOf(project) });
   delete env.AGENT_OFFICE_STATUSLINE;
   delete env.AGENT_OFFICE_DIRECTORY;
   if (directory) env.AGENT_OFFICE_DIRECTORY = directory;
@@ -957,6 +959,19 @@ ipcMain.handle('projects:setManager', (_e, id, value) => {
   commit(next);
   const p = P.findProject(state, id);
   if (!p || P.managerOf(state, p) === was) return { restarted: [] };
+  return { restarted: restartIdle(p) };
+});
+// Per-project subagent model (contract v3.14): 'sonnet' | 'haiku' | 'opus' pins every subagent, null = Auto (the
+// boss picks per agent). Applies like the manager setting: next start, idle tabs at once. Returns the restarted pty ids.
+ipcMain.handle('projects:setAgentModel', (_e, id, value) => {
+  const next = P.setProjectAgentModel(state, id, value);
+  if (next === state) return { restarted: [] };
+  commit(next);
+  const p = P.findProject(state, id);
+  return { restarted: p ? restartIdle(p) : [] };
+});
+/** Restarts the project's idle tabs, each resuming its own session; returns their pty ids. */
+function restartIdle(p) {
   const restarted = [];
   for (const pid of P.ptyIdsOf(p)) {
     const sid = idleSession(pid);
@@ -964,8 +979,8 @@ ipcMain.handle('projects:setManager', (_e, id, value) => {
     startPty(pid, { sessionId: sid, resume: true });
     restarted.push(pid);
   }
-  return { restarted };
-});
+  return restarted;
+}
 /** A running tab's session id when its claude can restart without losing anything, else ''. */
 function idleSession(pid) {
   const t = terms.get(pid);
