@@ -306,7 +306,10 @@ let termProgram = ''
 let kittyListenOn = ''
 let kittyWindowId = ''
 let weztermPane = ''
-let isInApp = false // AGENT_OFFICE_APP: the session runs inside the Agent Office app
+let isInApp = false // AGENT_OFFICE_APP: the session runs inside the Agent Office app (and is not nested, below)
+// a claude started from inside another claude (a `claude -p` in a Bash call, a separate-process teammate): it inherits
+// the parent's env, AGENT_OFFICE_* included, so it must not act as an office session (app contract v3.12, nested)
+let isNested = false
 let isManager = false // AGENT_OFFICE_MANAGER=1: manager mode, with its nudge
 // manager mode's nudge (NUDGE_AFTER): the main loop's own calls in a row this turn, and whether it was nudged
 let ownSteps = 0
@@ -1097,11 +1100,21 @@ function withNudge(answer: ToolCallResult): ToolCallResult {
   return { ...answer, context: [...(answer.context ?? []), NUDGE_TEXT] }
 }
 
+// Claude Code gives every child process CLAUDECODE=1, CLAUDE_CODE_CHILD_SESSION=1 and its own CLAUDE_CODE_SESSION_ID,
+// but never sets them on itself (2.1.300, tried: a mod's $.env.get sees the env the process started with). A top-level
+// claude has none of them (the app also clears them from its tabs' env, accounts.js ptyEnv); a nested one has them
+async function nestedOf($: EngineInterface): Promise<boolean> {
+  if (await $.env.get('CLAUDECODE')) return true
+  if (await $.env.get('CLAUDE_CODE_CHILD_SESSION')) return true
+  const parent = await $.env.get('CLAUDE_CODE_SESSION_ID')
+  return Boolean(parent) && parent !== (await $.session.id().catch(() => ''))
+}
+
 // the finish guard (finish.ts, contract v3.10): `answer` (what the Stop hooks beneath said) with a block added when
 // the main loop's final message lists work it could still do. A cue goes to the fast-model judge ($.model.classify)
 // unless AGENT_OFFICE_FINISH_JUDGE=0 or `isJudged` is false (the hook's .catch after a failure or a slow judge)
 async function guardStop<R extends { block?: string }>($: EngineInterface, e: StopInput, answer: R, isJudged: boolean): Promise<R> {
-  if (answer.block) return answer
+  if (answer.block || isNested) return answer
   const mode = finishModeOf(await $.env.get('AGENT_OFFICE_MANAGER'), await $.env.get('AGENT_OFFICE_FINISH'))
   const found = finishCandidate(mode, e)
   if (!found) return answer
@@ -1129,9 +1142,11 @@ export const register: Register = on => {
     kittyListenOn = (await $.env.get('KITTY_LISTEN_ON')) ?? ''
     kittyWindowId = (await $.env.get('KITTY_WINDOW_ID')) ?? ''
     weztermPane = (await $.env.get('WEZTERM_PANE')) ?? ''
-    // inside the Agent Office app the app itself is the office: /office only gives today's summary
-    isInApp = Boolean(await $.env.get('AGENT_OFFICE_APP'))
-    isManager = (await $.env.get('AGENT_OFFICE_MANAGER')) === '1'
+    // nested (nestedOf): no state file, journal, news, ticker, manager brief, directory or finish guard; /office
+    // works as outside the app. Otherwise inside the Agent Office app the app is the office: /office gives the summary
+    isNested = await nestedOf($)
+    isInApp = !isNested && Boolean(await $.env.get('AGENT_OFFICE_APP'))
+    isManager = !isNested && (await $.env.get('AGENT_OFFICE_MANAGER')) === '1'
     await $.command.register(
       isInApp
         ? { name: 'office', description: t.appDescription, argumentHint: t.appArgumentHint }
@@ -1142,7 +1157,7 @@ export const register: Register = on => {
     project = sessionRoot.split(/[\\/]/).pop() ?? ''
     sessionCwd = (await $.session.cwd().catch(() => '')) || sessionRoot
     sessionId = id
-    stateFile = `${root}/sessions/${id}.json`
+    stateFile = isNested ? '' : `${root}/sessions/${id}.json`
     viewerFile = `${$.plugin.root}/viewer/office.mjs`
     inboxFile = `${root}/inbox/${id}.jsonl`
     framesDir = `${root}/frames/${id}`
@@ -1153,6 +1168,7 @@ export const register: Register = on => {
     // a new session must not resubmit old tasks
     inboxSeen = await read($, inboxAtom)
     if (inboxSeen === 0) inboxSeen = await update($, inboxAtom, () => Date.now())
+    if (isNested) return next(e)
     await publish($)
     await startJournal($, home).catch(() => undefined)
     if (home) await cleanUp($, root, id).catch(() => undefined)
@@ -1164,6 +1180,7 @@ export const register: Register = on => {
   // manager mode (see managerText) and the office directory (see directoryText): sections appended after the engine's own
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
+    if (isNested || (await nestedOf($))) return result
     const sections = [...result.sections]
     const isLoopManager =
       (await $.env.get('AGENT_OFFICE_MANAGER')) === '1' && !e.traits.includes('teammate') && e.tools.some(tool => AGENT_TOOLS.includes(tool))

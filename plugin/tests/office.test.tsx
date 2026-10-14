@@ -74,6 +74,15 @@ test('inside the Agent Office app /office is registered for the summary only and
   expect(writes.some(w => w.path.endsWith('/sessions/session-1.json'))).toBe(true)
 })
 
+// a claude started inside another one (app contract v3.12, nested sessions) inherits AGENT_OFFICE_APP: it writes no
+// state file, so it never shows in the office, and /office works as outside the app
+test('a nested claude inside the app writes no state file and registers /office as outside the app', async ($, on) => {
+  const { registered, writes } = setUp(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1', CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'parent-1' })
+  await $.session.start(start)
+  expect(registered[0]?.argumentHint).toBe('[band|stats]')
+  expect(writes.filter(w => w.path.includes('/sessions/'))).toEqual([])
+})
+
 test('inside the Agent Office app the Turkish hint names only istatistik', async ($, on) => {
   const { registered } = setUp(on, { HOME: '/home/tester', LANG: 'tr_TR.UTF-8', AGENT_OFFICE_APP: '1' })
   await $.session.start(start)
@@ -1110,6 +1119,14 @@ test('a loop that cannot start agents, or a teammate, gets no manager section', 
   setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1' })
   expect((await $.prompt.compose({ ...composing, tools: ['Bash', 'Read'], traits: [] })).sections.map(s => s.id)).toEqual(['intro'])
   expect((await $.prompt.compose({ ...composing, tools: ['Agent'], traits: ['teammate'] })).sections.map(s => s.id)).toEqual(['intro'])
+})
+
+test('a nested claude gets neither the manager section nor the directory', async ($, on) => {
+  const env = { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1', AGENT_OFFICE_DIRECTORY: '/ud/directory/p1.json', CLAUDECODE: '1' }
+  setUpCompose(on, env)
+  on('fs.read', () => ({ value: JSON.stringify({ format: 1, projects: [{ name: 'a', dir: '/a', account: 'Default', mcp: [], current: true }] }) }))
+  on('session.id', () => ({ value: 'session-1' }))
+  expect((await $.prompt.compose(mainLoop)).sections.map(s => s.id)).toEqual(['intro'])
 })
 
 // the office directory (app contract v3.9): the app's per-tab file becomes one section for every loop in the app

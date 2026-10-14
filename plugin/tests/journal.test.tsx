@@ -262,6 +262,32 @@ test('outside the app, or for a background notification, no news is added', asyn
   expect(contextOf(await submit($, 'hi'))).toBe('')
 })
 
+// a claude started inside another one (a `claude -p` in a boss's Bash call) inherits the app's env: it is not an
+// office session, so it neither writes the journal nor gets news (app contract v3.12, nested sessions)
+for (const [name, env] of [
+  ['CLAUDECODE=1', { CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ID: 'parent-1' }],
+  ["only a parent's CLAUDE_CODE_SESSION_ID", { CLAUDE_CODE_SESSION_ID: 'parent-1' }],
+] as const) {
+  test(`a nested session (${name}) writes no journal entry and gets no news`, async ($, on) => {
+    const entries = [entry({ id: 'a', at: Date.now() - 1000, dirs: ['/work/my-app'], summary: 'news' })]
+    const { appended, gitCalls } = setUp(on, { files: { [JOURNAL]: journalOf(entries) }, env })
+    await $.session.start(start)
+    expect(contextOf(await submit($, 'hi'))).toBe('')
+    await $.turn.start({ text: 'build it', turnId: 'turn-1' })
+    await $.tool.call({ tool: 'Bash', command: 'cd /work/shop && make' } as never)
+    await complete($, 'Built it and committed the result.')
+    expect(appended.length).toBe(0)
+    expect(gitCalls.length).toBe(0)
+  })
+}
+
+test("the session's own CLAUDE_CODE_SESSION_ID does not make it nested", async ($, on) => {
+  const entries = [entry({ id: 'a', at: Date.now() - 1000, dirs: ['/work/my-app'], summary: 'news' })]
+  setUp(on, { files: { [JOURNAL]: journalOf(entries) }, env: { CLAUDE_CODE_SESSION_ID: 'session-1' } })
+  await $.session.start(start)
+  expect(contextOf(await submit($, 'hi'))).toContain('news')
+})
+
 test('news are capped at 8 entries and 2000 characters, the rest counted with the journal path', async ($, on) => {
   const now = Date.now()
   const entries = Array.from({ length: 12 }, (_, i) => entry({ id: `n${i}`, at: now - 20_000 + i * 1000, dirs: ['/work/my-app'], summary: `change ${i} ${'x'.repeat(100)}` }))
