@@ -375,6 +375,15 @@ async function setAgentModel(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/** Per-project context cap (v3.15): 200000 | 400000 | null (Auto); main restarts the idle tabs. */
+async function setContextCap(projectId, value) {
+  try {
+    const r = await api.projects.setContextCap?.(projectId, value);
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 async function setAccount(projectId, accountId) {
   // a new claude starts in every tab with the new account
   const proj = projects.find((p) => p.id === projectId);
@@ -448,6 +457,7 @@ sidebar = mountSidebar($('sidebar'), {
   setAccount,
   setProjectManager,
   setAgentModel,
+  setContextCap,
   addAccount,
   renameAccount,
   removeAccount,

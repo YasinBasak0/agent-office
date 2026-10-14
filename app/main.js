@@ -680,10 +680,14 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   const print = mcpFingerprintOf(account, project, cwd);
   const args = R.claudeArgs([...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
   const startedAt = Date.now();
-  // after the rc files: the account's folder, and the project's pinned subagent model (contract v3.14, accounts.js sessionEnv)
+  // after the rc files: the account's folder, the project's pinned subagent model (contract v3.14) and its context
+  // cap (v3.15; accounts.js sessionEnv)
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; '
-    + '[ -n "$AGENT_OFFICE_AGENT_MODEL" ] && export CLAUDE_CODE_SUBAGENT_MODEL="$AGENT_OFFICE_AGENT_MODEL" CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1; exec claude "$@"';
-  let env = A.sessionEnv(A.ptyEnv(process.env, configDir), { manager: P.managerOf(state, project), agentModel: P.agentModelOf(project) });
+    + '[ -n "$AGENT_OFFICE_AGENT_MODEL" ] && export CLAUDE_CODE_SUBAGENT_MODEL="$AGENT_OFFICE_AGENT_MODEL" CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1; '
+    + '[ -n "$AGENT_OFFICE_CONTEXT_CAP" ] && export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AGENT_OFFICE_CONTEXT_CAP"; exec claude "$@"';
+  let env = A.sessionEnv(A.ptyEnv(process.env, configDir), {
+    manager: P.managerOf(state, project), agentModel: P.agentModelOf(project), contextCap: P.contextCapOf(project),
+  });
   delete env.AGENT_OFFICE_STATUSLINE;
   delete env.AGENT_OFFICE_DIRECTORY;
   if (directory) env.AGENT_OFFICE_DIRECTORY = directory;
@@ -965,6 +969,15 @@ ipcMain.handle('projects:setManager', (_e, id, value) => {
 // boss picks per agent). Applies like the manager setting: next start, idle tabs at once. Returns the restarted pty ids.
 ipcMain.handle('projects:setAgentModel', (_e, id, value) => {
   const next = P.setProjectAgentModel(state, id, value);
+  if (next === state) return { restarted: [] };
+  commit(next);
+  const p = P.findProject(state, id);
+  return { restarted: p ? restartIdle(p) : [] };
+});
+// Per-project context cap (contract v3.15): 200000 | 400000 tokens (CLAUDE_CODE_AUTO_COMPACT_WINDOW), null = Auto.
+// Applies like the agent model: next start, idle tabs at once. Returns the restarted pty ids.
+ipcMain.handle('projects:setContextCap', (_e, id, value) => {
+  const next = P.setProjectContextCap(state, id, value);
   if (next === state) return { restarted: [] };
   commit(next);
   const p = P.findProject(state, id);

@@ -62,6 +62,15 @@ test('manager mode: a final message with next steps blocks the stop and says to 
   expect(judged).toEqual([LIST])
 })
 
+// a claude started inside another one (app contract v3.12, nested sessions): its parent decides when it is done
+test('a nested claude is never held back by the finish guard', async ($, on) => {
+  const { judged } = setUp(on, { ...MANAGER, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'parent-1' })
+  await $.session.start(start)
+  await prompt($, 'add a sum function')
+  expect((await stop($, LIST)).block).toBeUndefined()
+  expect(judged).toEqual([])
+})
+
 test('a message with no work cue stops without asking the judge', async ($, on) => {
   const { judged } = setUp(on, MANAGER)
   await $.session.start(start)

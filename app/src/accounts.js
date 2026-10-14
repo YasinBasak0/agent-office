@@ -102,13 +102,23 @@ function ptyEnv(base, configDir = null) {
 // and CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1 after the shell's rc files (they cannot undo it; Windows gets both directly).
 // Claude Code 2.1.296 then drops the Agent tool's model parameter and runs every subagent, agent definitions with
 // a model included, on that model. Auto leaves the user's own CLAUDE_CODE_SUBAGENT_MODEL* alone.
-function sessionEnv(env, { manager = true, agentModel = null } = {}) {
+//
+// contextCap (contract v3.15): the project's auto-compact window in tokens (200000 | 400000), or null for Auto.
+// Capped, AGENT_OFFICE_CONTEXT_CAP carries it to the launch line, which exports CLAUDE_CODE_AUTO_COMPACT_WINDOW=<n>
+// after the rc files. Claude Code 2.1.300 then compacts when the context nears min(n, model window) − ~33k, in the
+// main session and in every subagent (same process). Auto leaves the user's own CLAUDE_CODE_AUTO_COMPACT_WINDOW alone.
+function sessionEnv(env, { manager = true, agentModel = null, contextCap = null } = {}) {
   const out = { ...env, AGENT_OFFICE_APP: '1' };
   delete out.AGENT_OFFICE_AGENT_MODEL;
+  delete out.AGENT_OFFICE_CONTEXT_CAP;
   if (agentModel) {
     out.AGENT_OFFICE_AGENT_MODEL = agentModel;
     out.CLAUDE_CODE_SUBAGENT_MODEL = agentModel;
     out.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = '1';
+  }
+  if (contextCap) {
+    out.AGENT_OFFICE_CONTEXT_CAP = String(contextCap);
+    out.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(contextCap);
   }
   if (manager) {
     out.AGENT_OFFICE_MANAGER = '1';

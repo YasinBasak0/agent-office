@@ -216,6 +216,44 @@ test('sessionEnv: sabitlenmiş ajan modeli CLAUDE_CODE_SUBAGENT_MODEL(+_FORCE) o
   assert.equal(A.sessionEnv({ PATH: '/bin' }).AGENT_OFFICE_AGENT_MODEL, undefined);
 });
 
+test('proje başına bağlam sınırı: normalizeState, setProjectContextCap, contextCapOf (v3.15)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', contextCap: 200000 },
+      { id: 'b', dir: '/b', contextCap: 400000 },
+      { id: 'c', dir: '/c', contextCap: 300000 },
+      { id: 'd', dir: '/d', contextCap: '200000' },
+      { id: 'e', dir: '/e' },
+    ],
+  }, { id });
+  assert.deepEqual(s.projects.map((p) => P.contextCapOf(p)), [200000, 400000, null, null, null]);
+  assert.equal('contextCap' in s.projects[2], false); // unknown values are not written (Auto)
+  assert.equal('contextCap' in s.projects[3], false);
+  assert.equal(P.setProjectContextCap(s, 'a', 200000), s);
+  assert.equal(P.setProjectContextCap(s, 'zz', 400000), s);
+  assert.equal(P.setProjectContextCap(s, 'e', null), s);
+  assert.equal(P.setProjectContextCap(s, 'e', 123), s); // invalid = Auto
+  s = P.setProjectContextCap(s, 'e', 400000);
+  assert.equal(P.contextCapOf(P.findProject(s, 'e')), 400000);
+  s = P.setProjectContextCap(s, 'b', null); // back to Auto: the field goes
+  assert.equal('contextCap' in P.findProject(s, 'b'), false);
+  const again = P.normalizeState(JSON.parse(JSON.stringify(s)), { id });
+  assert.deepEqual(again.projects.map((p) => p.contextCap), [200000, undefined, undefined, undefined, 400000]);
+});
+
+test('sessionEnv: bağlam sınırı CLAUDE_CODE_AUTO_COMPACT_WINDOW olur; Otomatik kullanıcınınkine dokunmaz (v3.15)', () => {
+  const capped = A.sessionEnv({ PATH: '/bin' }, { contextCap: 200000 });
+  assert.equal(capped.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000'); // plain tokens: Claude Code reads no "200k"
+  assert.equal(capped.AGENT_OFFICE_CONTEXT_CAP, '200000'); // the launch line re-exports it after the rc files
+  const auto = A.sessionEnv({ PATH: '/bin', AGENT_OFFICE_CONTEXT_CAP: '400000', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' }, { contextCap: null });
+  assert.equal(auto.AGENT_OFFICE_CONTEXT_CAP, undefined);
+  assert.equal(auto.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '500000');
+  assert.equal(A.sessionEnv({ PATH: '/bin' }).CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+  const both = A.sessionEnv({ PATH: '/bin' }, { agentModel: 'sonnet', contextCap: 400000 });
+  assert.equal(both.CLAUDE_CODE_SUBAGENT_MODEL, 'sonnet');
+  assert.equal(both.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '400000');
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });
