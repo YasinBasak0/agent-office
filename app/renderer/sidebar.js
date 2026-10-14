@@ -258,6 +258,22 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.agentModel')), sel);
   }
 
+  // When the project's Claude summarizes its conversation (contract v3.15): Auto (Claude Code's own window) or a cap
+  // in tokens. Applies like the agent model: next start, idle tabs right away.
+  function contextCapSelect(p) {
+    const now = [200000, 400000].includes(p.contextCap) ? String(p.contextCap) : 'auto';
+    const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
+    const sel = h('select', {
+      class: 'sb-acct sb-mode',
+      title: t('sidebar.contextCapTitle'),
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => on.setContextCap?.(p.id, e.target.value === 'auto' ? null : Number(e.target.value)),
+    },
+    opt('auto', t('sidebar.contextCapAuto')), opt('200000', '200K'), opt('400000', '400K'));
+    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
+      h('span', { class: 'sb-acct-label' }, t('sidebar.contextCap')), sel);
+  }
+
   /** Warning in the project row if its account is not logged in; clicking opens the login overlay. */
   function loginBadge(p) {
     const a = accounts.find((x) => x.id === p.accountId);
@@ -295,6 +311,7 @@ export function mountSidebar(el, on) {
           accountSelect(p),
           managerSelect(p),
           agentModelSelect(p),
+          contextCapSelect(p),
           loginBadge(p),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),

@@ -25,6 +25,7 @@ function normalizeState(raw, { id = newId } = {}) {
       ...(Number.isFinite(p.addedAt) ? { addedAt: p.addedAt } : {}), // v3.13; projects from before have none
       ...withManager(p.manager),
       ...withAgentModel(p.agentModel),
+      ...withContextCap(p.contextCap),
       ...withTabs(normalizeTabs(p.tabs)),
     });
   }
@@ -232,6 +233,28 @@ function setProjectAgentModel(state, id, value) {
 /** The model the project pins its subagents to, or null (Auto). */
 const agentModelOf = (project) => agentModelValue(project?.agentModel);
 
+// --- per-project context cap (contract v3.15)
+// Project.contextCap: 200000 | 400000 tokens makes Claude Code auto-compact earlier (CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+// accounts.js sessionEnv); absent = Auto: Claude Code's own window (the model's, 1M on a 1M model). Never written for Auto.
+const CONTEXT_CAPS = [200000, 400000];
+const contextCapValue = (v) => (CONTEXT_CAPS.includes(v) ? v : null);
+const withContextCap = (v) => (contextCapValue(v) ? { contextCap: v } : {});
+
+/** value: 200000 | 400000 | null (Auto). Same state when nothing changes. */
+function setProjectContextCap(state, id, value) {
+  const p = findProject(state, id);
+  const v = contextCapValue(value);
+  if (!p || (p.contextCap ?? null) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { contextCap: _, ...rest } = x;
+    return v === null ? rest : { ...rest, contextCap: v };
+  }) };
+}
+
+/** The project's auto-compact window in tokens, or null (Auto). */
+const contextCapOf = (project) => contextCapValue(project?.contextCap);
+
 // Claude Code's session history folder: <account folder or ~/.claude>/projects/<path, non-alphanumerics → '-'>
 // (tried: /Users/a/.claude → -Users-a--claude). If it has a .jsonl, `claude --continue` finds a session to resume.
 const historyDir = (projectDir, configDir, home) =>
@@ -244,4 +267,5 @@ module.exports = {
   newId, projectName, normalizeState, findProject, findByDir,
   addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
   AGENT_MODELS, setProjectAgentModel, agentModelOf,
+  CONTEXT_CAPS, setProjectContextCap, contextCapOf,
 };
