@@ -20,6 +20,7 @@ const OD = require('./src/office-directory.js');
 const MR = require('./src/mcp-reload.js');
 const R = require('./src/resume.js');
 const TU = require('./src/token-usage.js');
+const PD = require('./src/project-data.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -799,7 +800,7 @@ function unfinishedTabs() {
         busy = R.isTurnBusy({ claude, office: sid ? office()?.readSession(sid) : undefined });
       } else {
         const how = asleep.get(id);
-        // asleep {} = start fresh (account change): its old session belongs to another account
+        // asleep {} = start fresh
         if (how?.sessionId) sid = validSid(how.sessionId);
         else if (continues && (!how || how.resume)) sid = validSid(TIO.newestSession(r.dir, configDir, home));
       }
@@ -874,12 +875,39 @@ function sleepIdle() {
   }
   if (slept) broadcast();
 }
-// Restarts all of the project's tabs (account change).
-// A sleeping tab stays asleep and starts fresh when shown (its session belongs to the old account).
-const restartProject = (projectId) => {
+// A project moved to another account (contract v3.16): its tabs stop, its Claude Code data (transcripts, file
+// history, prompt history, the .claude.json projects entry; src/project-data.js) is copied into the new account's
+// folder and merged there, and each tab starts again in the conversation it was in (--resume <its session>, else
+// --continue for a tab that continues), like an MCP reload. A tab cut off mid-turn is told to carry on. A sleeping
+// tab stays asleep and wakes into its own session. from: the project's account before the change.
+function moveProject(projectId, from) {
   const p = P.findProject(state, projectId);
-  if (p) for (const id of P.ptyIdsOf(p)) if (asleep.has(id)) asleep.set(id, {}); else startPty(id);
-};
+  if (!p) return;
+  const home = app.getPath('home');
+  const plan = [];
+  for (const id of P.ptyIdsOf(p)) {
+    const r = P.resolvePty(state, id);
+    if (asleep.has(id)) continue;
+    let sid = lastSid.get(id) || '';
+    let busy = false;
+    if (terms.has(id)) {
+      const live = liveSession(id, from.configDir);
+      if (live?.sessionId) sid = live.sessionId;
+      busy = Boolean(sid) && R.isTurnBusy({ claude: live?.claude, office: office()?.readSession(sid) });
+      killPty(id);
+    }
+    plan.push({ id, opts: PD.restartAfterMove({ sessionId: validSid(sid) || null, continues: !r?.tab || Boolean(r.tab.worktree), busy }, R.UNFINISHED_PROMPT) });
+  }
+  const to = A.accountOf(state, p);
+  try {
+    PD.moveProjectData({
+      from: from.configDir || null, to: to.configDir || null, home,
+      dirs: [p.dir, ...P.tabsOf(p).map((t) => t.dir).filter(Boolean)],
+      otherDirs: state.projects.filter((x) => x.id !== p.id).map((x) => x.dir),
+    });
+  } catch (e) { console.error('proje verisi taşınamadı:', e.message); }
+  for (const { id, opts } of plan) startPty(id, opts);
+}
 // Worktree session names → project name (see projects.js sessionAliases): the office and notifications count them toward the project.
 const sessionAliases = () => P.sessionAliases(state.projects);
 
@@ -948,10 +976,11 @@ ipcMain.handle('projects:setActive', (_e, id) => {
 ipcMain.handle('projects:setAccount', (_e, id, accountId) => {
   const p = P.findProject(state, id);
   if (!p || p.accountId === accountId) return;
+  const from = A.accountOf(state, p);
   const next = P.setProjectAccount(state, id, accountId);
   if (next === state) return;
   commit(next);
-  restartProject(id);
+  moveProject(id, from);
 });
 // Per-project manager mode (contract v3.10): true delegates, false does it itself, null follows the global setting.
 // It applies when a tab's claude starts next; a running tab that sits idle (no turn, no prompt typed, no agent or
@@ -1022,14 +1051,15 @@ ipcMain.handle('accounts:rename', (_e, id, label) => { commit(A.renameAccount(st
 ipcMain.handle('accounts:setShare', (_e, id, on) => { commit(A.setAccountShare(state, id, on), { accounts: true }); });
 // The folder is not deleted: its login and history are not lost if an account is deleted by mistake.
 ipcMain.handle('accounts:remove', (_e, id) => {
+  const from = accountById(id);
   const r = A.removeAccount(state, id);
-  if (r.state === state) return;
+  if (r.state === state || !from) return;
   killPty(A.loginPtyId(id));
   auths.delete(id);
   usages.delete(id);
   try { fs.rmSync(path.join(usageRoot(), id), { recursive: true, force: true }); } catch {}
   commit(r.state, { accounts: true });
-  for (const pid of r.moved) restartProject(pid);
+  for (const pid of r.moved) moveProject(pid, from);
 });
 
 ipcMain.handle('accounts:refreshAuth', async (_e, id) => {

@@ -36,6 +36,7 @@
 //
 // Never shared: logins (.credentials.json, keychain, oauthAccount and primaryApiKey in .claude.json), the account's
 // own synced skills and plugins, history, projects and transcripts, policy and remote settings, settings.json.
+// (A project's own transcripts and state follow it when its account changes: project-data.js, contract v3.16.)
 const fs = require('fs');
 const path = require('path');
 
