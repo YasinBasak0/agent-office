@@ -158,7 +158,15 @@
     "lastInfo": "Son bilgi: {ago} (bu hesapta açık bir Claude oturumundan)",
     "costLine": "≈ {usd} bugün · %{pct}",
     "costNone": "Bugün token yok",
-    "costTitle": "Bu projenin bugünkü token kullanımı: API liste fiyatlarıyla tahmini maliyet ve bunun tam fiyatın ne kadarı olduğu (önbellek okuması ucuzdur). Ayrıntı için tıklayın."
+    "costTitle": "Bu projenin bugünkü token kullanımı: API liste fiyatlarıyla tahmini maliyet ve bunun tam fiyatın ne kadarı olduğu (önbellek okuması ucuzdur). Ayrıntı için tıklayın.",
+    "fallback": "Limit dolunca yedek hesaba geç",
+    "fallbackTitle": "Bir projenin hesabının kullanım limiti dolunca proje yedek hesabına (proje satırında seçilir) geçer ve her sekme oradaki kendi konuşmasına devam eder; limitte duran sekmeler işini sürdürür. İlk hesabın limiti sıfırlanıp sekmeler boşta kalınca proje geri döner. Giriş yapılmamış ya da limiti dolu yedek hesap atlanır.",
+    "backup": "Yedek hesap",
+    "backupTitle": "Projenin kendi hesabının kullanım limiti dolunca devam edeceği hesap. Boştaki herhangi biri, kotası kalan giriş yapılmış başka bir hesabı seçer. “Limit dolunca yedek hesaba geç” açık olmalı (varsayılan açık).",
+    "backupNone": "Yok",
+    "backupAuto": "Boştaki herhangi biri",
+    "onBackup": "yedekte · {home} hesabına dönecek",
+    "onBackupTitle": "{home} hesabının limiti dolunca buraya geçti. O limit sıfırlanıp tüm sekmeler boşta kalınca {home} hesabına geri döner."
   },
   "panel": {
     "types": {
@@ -391,7 +399,11 @@
       "sessionExists": "Bu oturum bu bilgisayarda zaten var.",
       "longPath": "Bu klasörün yolu Claude Code'un oturum klasörü adı için fazla uzun. Daha kısa yollu bir klasör seç.",
       "gitFailed": "git başarısız oldu."
-    }
+    },
+    "fallbackSwitched": "{from} hesabının limiti doldu, {to} hesabından devam ediliyor",
+    "fallbackReturned": "{to} hesabının limiti sıfırlandı, {from} hesabından {to} hesabına geri dönüldü",
+    "fallbackStuck": "{from} hesabının limiti doldu; devam edecek yedek hesap yok (giriş yapılmamış ya da onun da limiti dolu)",
+    "fallbackLoop": "{from} hesabının limiti doldu, ama bu proje son zamanda birkaç kez hesap değiştirdi; {from} hesabında kalınıyor"
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",

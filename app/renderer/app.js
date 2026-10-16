@@ -384,6 +384,14 @@ async function setContextCap(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/** Per-project backup account (v3.17): null (none) | 'auto' | an account id; nothing restarts. */
+async function setBackup(projectId, value) {
+  try {
+    await api.projects.setBackup?.(projectId, value);
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 async function setAccount(projectId, accountId) {
   // a new claude starts in every tab with the new account
   const proj = projects.find((p) => p.id === projectId);
@@ -458,6 +466,7 @@ sidebar = mountSidebar($('sidebar'), {
   setProjectManager,
   setAgentModel,
   setContextCap,
+  setBackup,
   addAccount,
   renameAccount,
   removeAccount,
@@ -472,6 +481,7 @@ sidebar = mountSidebar($('sidebar'), {
   setManager: (on) => api.prefs?.set({ manager: on }).then((p) => sidebar.setManager(p?.manager)).catch((e) => console.error(e)),
   setShareMcp: (on) => api.prefs?.set({ shareMcp: on }).then((p) => sidebar.setShareMcp(p?.shareMcp)).catch((e) => console.error(e)),
   setReloadMcp: (on) => api.prefs?.set({ reloadMcp: on }).then((p) => sidebar.setReloadMcp(p?.reloadMcp)).catch((e) => console.error(e)),
+  setFallback: (on) => api.prefs?.set({ fallback: on }).then((p) => sidebar.setFallback(p?.fallback)).catch((e) => console.error(e)),
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
   openUsage: (p) => usagePanel?.show(p),
@@ -552,6 +562,7 @@ api.prefs?.get().then((p) => {
   sidebar.setManager(p?.manager);
   sidebar.setShareMcp(p?.shareMcp);
   sidebar.setReloadMcp(p?.reloadMcp);
+  sidebar.setFallback(p?.fallback);
   sidebar.setSleep(p?.sleepMinutes);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
   applyThemeChoice();
@@ -685,6 +696,14 @@ applyLanguage(initialLang);
 
 api.projects.onChange(applyProjects);
 api.accounts.onChange?.(setAccounts);
+// Backup account at the usage limit (v3.17): main moved the project (its terminals start over in the same
+// conversations) or found no account to move to; the notice shows over each of its terminals.
+api.accounts.onFallback?.((ev) => {
+  const proj = projects.find((p) => p.id === ev?.projectId);
+  const ids = proj ? ptyIdsOf(proj) : [ev?.projectId];
+  if (ev?.kind === 'switched' || ev?.kind === 'returned') for (const id of ids) panes.get(id)?.term.reset({ restarting: true });
+  for (const id of ids) hint(id, ev?.text || '');
+});
 setStats(null);
 try { setAccounts(await api.accounts.list()); } catch (e) { console.error(e); }
 try { applyProjects(await api.projects.list()); } catch (e) { console.error(e); render(); }

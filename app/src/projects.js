@@ -26,6 +26,8 @@ function normalizeState(raw, { id = newId } = {}) {
       ...withManager(p.manager),
       ...withAgentModel(p.agentModel),
       ...withContextCap(p.contextCap),
+      ...withBackup(p.backupAccount, known),
+      ...withHome(p.homeAccount, known, known.has(p.accountId) ? p.accountId : DEFAULT_ID),
       ...withTabs(normalizeTabs(p.tabs)),
     });
   }
@@ -186,9 +188,14 @@ function setActive(state, id) {
   return findProject(state, id) ? { ...state, activeId: id } : state;
 }
 
+// A change made by the user: the project stays on that account (any automatic move's home is forgotten, v3.17).
 function setProjectAccount(state, id, accountId) {
   if (!state.accounts.some((a) => a.id === accountId)) return state;
-  return { ...state, projects: state.projects.map((p) => (p.id === id ? { ...p, accountId } : p)) };
+  return { ...state, projects: state.projects.map((p) => {
+    if (p.id !== id) return p;
+    const { homeAccount: _, ...rest } = p;
+    return { ...rest, accountId };
+  }) };
 }
 
 // --- per-project manager mode (contract v3.10)
@@ -255,6 +262,50 @@ function setProjectContextCap(state, id, value) {
 /** The project's auto-compact window in tokens, or null (Auto). */
 const contextCapOf = (project) => contextCapValue(project?.contextCap);
 
+// --- backup account at the usage limit (contract v3.17, src/fallback.js)
+// Project.backupAccount: 'auto' (any other logged-in account not at its limit) or an account id; absent = none.
+// Project.homeAccount: the account the project was on before an automatic move to a backup; it goes back there once
+// that account's limit resets. Never written when there is no automatic move in progress.
+const withBackup = (v, known) => (v === 'auto' || (typeof v === 'string' && known.has(v)) ? { backupAccount: v } : {});
+const withHome = (v, known, accountId) => (typeof v === 'string' && known.has(v) && v !== accountId ? { homeAccount: v } : {});
+
+/** value: null (none) | 'auto' | an account id. Same state when nothing changes or the account is unknown. */
+function setProjectBackup(state, id, value) {
+  const p = findProject(state, id);
+  const v = value === 'auto' || state.accounts.some((a) => a.id === value) ? value : null;
+  if (!p || (p.backupAccount ?? null) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { backupAccount: _, ...rest } = x;
+    return v === null ? rest : { ...rest, backupAccount: v };
+  }) };
+}
+
+/** The project's backup setting: 'auto', an account id, or null (none). */
+const backupOf = (project) => (typeof project?.backupAccount === 'string' && project.backupAccount ? project.backupAccount : null);
+
+/**
+ * An automatic move at the usage limit: the project goes to accountId and remembers where it came from (the first
+ * account of a chain stays the home). Moving onto the home itself forgets it.
+ */
+function fallbackTo(state, id, accountId) {
+  const p = findProject(state, id);
+  if (!p || p.accountId === accountId || !state.accounts.some((a) => a.id === accountId)) return state;
+  const home = p.homeAccount || p.accountId;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { homeAccount: _, ...rest } = x;
+    return home === accountId ? { ...rest, accountId } : { ...rest, accountId, homeAccount: home };
+  }) };
+}
+
+/** Back to the home account (its limit reset): the home is forgotten. Same state when there is none. */
+function returnHome(state, id) {
+  const p = findProject(state, id);
+  if (!p?.homeAccount || !state.accounts.some((a) => a.id === p.homeAccount)) return state;
+  return fallbackTo(state, id, p.homeAccount);
+}
+
 // Claude Code's session history folder: <account folder or ~/.claude>/projects/<path, non-alphanumerics → '-'>
 // (tried: /Users/a/.claude → -Users-a--claude). If it has a .jsonl, `claude --continue` finds a session to resume.
 const historyDir = (projectDir, configDir, home) =>
@@ -268,4 +319,5 @@ module.exports = {
   addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
   AGENT_MODELS, setProjectAgentModel, agentModelOf,
   CONTEXT_CAPS, setProjectContextCap, contextCapOf,
+  setProjectBackup, backupOf, fallbackTo, returnHome,
 };

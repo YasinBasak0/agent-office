@@ -106,6 +106,10 @@ export function mountSidebar(el, on) {
   const reloadMcpLabel = h('span', {});
   const reloadMcpBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setReloadMcp?.(e.target.checked) });
   const reloadMcpRow = h('label', { class: 'sb-botcolor sb-langrow' }, reloadMcpLabel, reloadMcpBox);
+  // a project at the usage limit moves to its backup account, and back after the reset (contract v3.17)
+  const fallbackLabel = h('span', {});
+  const fallbackBox = h('input', { type: 'checkbox', class: 'sb-check', onchange: (e) => on.setFallback?.(e.target.checked) });
+  const fallbackRow = h('label', { class: 'sb-botcolor sb-langrow' }, fallbackLabel, fallbackBox);
   // sleep idle background sessions after N minutes (0 = off); main's src/sleep.js has the rules
   const SLEEP_CHOICES = [0, 15, 30, 60];
   let sleepMinutes = 30;
@@ -136,6 +140,7 @@ export function mountSidebar(el, on) {
     managerRow,
     shareMcpRow,
     reloadMcpRow,
+    fallbackRow,
     sleepRow,
     langRow,
     themeRow,
@@ -164,6 +169,8 @@ export function mountSidebar(el, on) {
     shareMcpRow.title = t('sidebar.shareMcpTitle');
     reloadMcpLabel.textContent = t('sidebar.reloadMcp');
     reloadMcpRow.title = t('sidebar.reloadMcpTitle');
+    fallbackLabel.textContent = t('sidebar.fallback');
+    fallbackRow.title = t('sidebar.fallbackTitle');
     sleepLabel.textContent = t('sidebar.sleep');
     sleepRow.title = t('sidebar.sleepTitle');
     renderSleep();
@@ -274,6 +281,30 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.contextCap')), sel);
   }
 
+  // The account the project continues on when its own reaches the usage limit (contract v3.17): none, any other
+  // logged-in account with quota left, or one account. Nothing restarts when it changes.
+  function backupSelect(p) {
+    const now = p.backupAccount === 'auto' || accounts.some((a) => a.id === p.backupAccount) ? p.backupAccount : 'none';
+    const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
+    const sel = h('select', {
+      class: 'sb-acct sb-mode sb-backup',
+      title: t('sidebar.backupTitle'),
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => on.setBackup?.(p.id, e.target.value === 'none' ? null : e.target.value),
+    },
+    opt('none', t('sidebar.backupNone')), opt('auto', t('sidebar.backupAuto')),
+    ...accounts.filter((a) => a.id !== p.accountId || a.id === now).map((a) => opt(a.id, labelOf(a))));
+    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
+      h('span', { class: 'sb-acct-label' }, t('sidebar.backup')), sel);
+  }
+
+  /** On a backup after its own account's usage limit: a tag naming the account it goes back to. */
+  function onBackupTag(p) {
+    const home = accounts.find((a) => a.id === p.homeAccount);
+    if (!home) return null;
+    return h('span', { class: 'sb-tag sb-onbackup', title: t('sidebar.onBackupTitle', { home: labelOf(home) }) }, t('sidebar.onBackup', { home: labelOf(home) }));
+  }
+
   /** Warning in the project row if its account is not logged in; clicking opens the login overlay. */
   function loginBadge(p) {
     const a = accounts.find((x) => x.id === p.accountId);
@@ -312,6 +343,8 @@ export function mountSidebar(el, on) {
           managerSelect(p),
           agentModelSelect(p),
           contextCapSelect(p),
+          backupSelect(p),
+          onBackupTag(p),
           loginBadge(p),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),
@@ -497,6 +530,8 @@ export function mountSidebar(el, on) {
     setShareMcp(on) { shareMcpBox.checked = on !== false; },
     /** "Reload sessions when MCP changes" setting (v3.11). */
     setReloadMcp(on) { reloadMcpBox.checked = on !== false; },
+    /** "Backup account at the usage limit" setting (v3.17). */
+    setFallback(on) { fallbackBox.checked = on !== false; },
     /** Minutes after which an idle background session sleeps (0 = off). */
     setSleep(minutes) {
       if (!SLEEP_CHOICES.includes(minutes)) return;

@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     setManager: (id, value) => ipcRenderer.invoke('projects:setManager', id, value),   // true | false | null (global setting); { restarted: pty ids } (v3.10)
     setAgentModel: (id, value) => ipcRenderer.invoke('projects:setAgentModel', id, value), // 'sonnet' | 'haiku' | 'opus' | null (Auto); { restarted: pty ids } (v3.14)
     setContextCap: (id, value) => ipcRenderer.invoke('projects:setContextCap', id, value), // 200000 | 400000 | null (Auto); { restarted: pty ids } (v3.15)
+    setBackup: (id, value) => ipcRenderer.invoke('projects:setBackup', id, value), // null (none) | 'auto' | account id (v3.17)
     menu: (id) => ipcRenderer.invoke('projects:menu', id),   // right click: native menu (move the session to another computer, v3.4)
     onChange: listen('projects:changed'),
   },
@@ -33,6 +34,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     setShare: (id, on) => ipcRenderer.invoke('accounts:setShare', id, on),   // use Default's plugins, skills, MCP servers (v3.6)
     remove: (id) => ipcRenderer.invoke('accounts:remove', id),
     onChange: listen('accounts:changed'),
+    onFallback: listen('account:fallback'),             // v3.17: { projectId, kind: 'switched' | 'returned' | 'stuck', text, from?, to?, ptyIds?, reason? }
     refreshAuth: (id) => ipcRenderer.invoke('accounts:refreshAuth', id),
     login: (id) => ipcRenderer.invoke('accounts:login', id),
     logout: (id) => ipcRenderer.invoke('accounts:logout', id),
@@ -64,7 +66,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     install: () => ipcRenderer.send('update:install'),
   },
   prefs: {
-    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, shareMcp: boolean, reloadMcp: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7, shareMcp: v3.9, reloadMcp: v3.11)
+    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, shareMcp: boolean, reloadMcp: boolean, fallback: boolean, sleepMinutes: 0 | 15 | 30 | 60 } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7, shareMcp: v3.9, reloadMcp: v3.11, fallback: v3.17)
     set: (p) => ipcRenderer.invoke('prefs:set', p),
   },
   language: {
