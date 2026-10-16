@@ -117,6 +117,12 @@ function mergeFile(src, dst) {
 /**
  * Merges the tree under src into dst (regular files only; links are skipped). skip(rel): leave this entry out.
  * Returns the counts { copied, merged } (merged: a file both had that changed in dst).
+ * @param {string} src
+ * @param {string} dst
+ * @param {{ skip?: (rel: string) => boolean, depth?: number }} [opts]
+ * @param {string} [rel]
+ * @param {{ copied: number, merged: number }} [out]
+ * @returns {{ copied: number, merged: number }}
  */
 function mergeTree(src, dst, { skip = () => false, depth = 8 } = {}, rel = '', out = { copied: 0, merged: 0 }) {
   let entries;
