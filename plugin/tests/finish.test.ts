@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
-import { FINISH_REASON_MANAGER, FINISH_REASON_SOLO, JUDGE_LABELS, heuristicBlocks } from '../hooks/finish'
+import { FINISH_REASON_MANAGER, FINISH_REASON_SOLO, JUDGE_LABELS, assistantsPart, finishCues, heuristicBlocks } from '../hooks/finish'
 
 // the finish guard (app contract v3.10): classic.Stop blocks a main-loop stop whose final message lists work
 // the loop could still do, in manager mode and with AGENT_OFFICE_FINISH=1
@@ -12,6 +12,26 @@ const MANAGER = { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANA
 const LIST = 'Added `sum()` with tests.\n\n## Next steps\n- add docs\n- wire it into the CLI'
 const APPROVAL = 'Everything is built and tested. Shall I deploy it to production?'
 const DONE = 'Added `sum()` with tests; all of them pass.'
+// two real final reports the guard blocked: what is left is the person's (update, choose, tell me if it fails), a
+// future event, a wait for data, and a list of what was not verified
+const RELEASES_TR = [
+  'İki sürüm de yayında: 0.8.9 ve 0.9.0.',
+  '',
+  '**0.8.9:** Bitiş bekçisi artık ajanların bildirimlerini bekliyor; testler geçti, imzalı sürüm ve Homebrew cask güncellendi.',
+  '',
+  '**0.9.0:** Kullanım limitine gelince proje yedek hesapla devam ediyor. Testler ve tip denetimi geçti, sürüm imzalandı ve yayınlandı.',
+  '',
+  '**Doğrulanmayanlar:**',
+  '- Gerçek bir kullanım limitinde geçiş henüz denenmedi; bu ancak ilk gerçek limitte yapılabilir.',
+  '- Yedek hesabın oturumunun süresi dolmuşsa ne olacağı kontrol edilmedi.',
+  '',
+  'Sende yüklü olan hâlâ 0.8.8; uygulamanın içinden güncellersen ikisi birden gelir. Yedek hesap proje başına açılıyor, kullanmak istediğin projelerde bunu seçmen gerekiyor. İlk gerçek limitte proje yedek hesaba geçmezse haber ver, o konuşmanın kaydına bakıp düzeltirim.',
+].join('\n')
+const DATA_LATER = [
+  'Both judge modes are now logged per session, with the label and the time it took.',
+  '',
+  'The comparison between the judge and the heuristic still needs real usage: it can only be done after a few days of data. Until then, you can keep the judge on (the default), or set `AGENT_OFFICE_FINISH_JUDGE=0` in the projects where you want the heuristic alone. If blocks feel too frequent, you could also lower the limit to one per prompt.',
+].join('\n')
 
 // a session in /work/my-app; the judge ($.model.classify) answers with `label` (a function: per call), or fails;
 // the Stop hooks beneath answer `beneath`
@@ -77,6 +97,22 @@ test('a message with no work cue stops without asking the judge', async ($, on) 
   for (const message of [DONE, 'Which header colour do you prefer, blue or green?', '', 'Hepsi tamamlandı, kalan iş yok.'])
     expect((await stop($, message)).block).toBeUndefined()
   expect(judged).toEqual([])
+})
+
+test('a report whose rest is the person\'s, a future event or a wait stops without asking the judge', async ($, on) => {
+  const { judged } = setUp(on, MANAGER)
+  await $.session.start(start)
+  await prompt($, 'release both')
+  for (const message of [RELEASES_TR, DATA_LATER]) {
+    expect(finishCues(message)).toEqual({ isWork: false, isAsk: false, isSoft: false })
+    expect((await stop($, message)).block).toBeUndefined()
+  }
+  expect(judged).toEqual([])
+  // the judge reads only the assistant's part: the report's opening stays, the person's steps go
+  expect(assistantsPart(RELEASES_TR)).toContain('İki sürüm de yayında')
+  expect(assistantsPart(RELEASES_TR)).not.toContain('haber ver')
+  expect(assistantsPart(RELEASES_TR)).not.toContain('Doğrulanmayanlar')
+  expect(assistantsPart(LIST)).toBe(LIST)
 })
 
 test("the judge's label decides a message with a cue", async ($, on) => {
@@ -210,6 +246,12 @@ const BLOCKS: string[] = [
   "With your permission, I'll run the full test suite next.",
   'Turkish letters are dropped. If your titles use them, I can add a character map in the next version.',
   'It only handles ASCII. If your blog has Turkish titles, the next step would be adding a transliteration map.',
+  // a list stays a list when some of its items are the person's
+  "## Next steps\n- add tests\n- you'll need to set the env var on Vercel",
+  'Kalanlar:\n- README\n- Uygulamayı güncellersen yeni ayar görünür.',
+  'Done for now. The settings page is not implemented yet; you can use the old one meanwhile.',
+  "If you'd like, I can add a retry once the API fails again.",
+  'Eklentiyi sen seçersen kurulumu ben yaparım; testler henüz yapılmadı.',
 ]
 const STOPS: string[] = [
   DONE,
@@ -231,6 +273,15 @@ const STOPS: string[] = [
   'Build passes. İzin verirsen canlıya alırım.',
   "Everything else is done; with your permission I'll publish 1.2.0 to npm.",
   'Here is the plan:\n```\n// TODO: next steps\n```\nAll implemented and verified.',
+  RELEASES_TR,
+  DATA_LATER,
+  // the person's steps, future events, waits, and what was not verified
+  'Sürüm yayında. Uygulamayı içinden güncellemelisin; ayarı kullanmak istediğin projede sen seç.',
+  'Done. You can now run it with `npm start`; you will need to restart the app once.',
+  'Fixed. If the crash happens again, let me know and I will look at the logs.',
+  'Kaydedildi. Bir hata çıkarsa haber ver, sonra bakarım.',
+  'Ölçüm açık. Karşılaştırma ancak birkaç gün sonra yapılabilir.',
+  'Released 1.4.0.\n\n**Not verified:**\n- the Windows build still needs a real machine\n- the next steps of the wizard on a slow network',
 ]
 
 test('the heuristic: lists, next steps and offers block; finished reports and requests to the person stop', () => {
