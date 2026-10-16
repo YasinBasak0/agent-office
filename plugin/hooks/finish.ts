@@ -8,8 +8,9 @@
 // On in manager mode (AGENT_OFFICE_MANAGER=1) and in the "does it itself" mode (AGENT_OFFICE_FINISH=1, the app's
 // per-project setting): delegating or not, no project ends a turn on a to-do list.
 //
-// Deciding: a heuristic over the text (Turkish and English) finds the cues; a message with none stops at once, no
-// model call. One with a work cue, or only a soft one (next, later, could, also, sonra, eksik, …), goes to a
+// Deciding: first the person's part is taken out (steps only they can take, "haber ver" / "let me know if…", waits
+// on a future event or on days of data, a "not verified" section), then a heuristic over the rest (Turkish and
+// English) finds the cues; a message with none stops at once, no model call. One with a work cue, or only a soft one (next, later, could, also, sonra, eksik, …), goes to a
 // fast-model judge ($.model.classify) when the judge is on; its label decides. When the judge fails, names no label
 // or runs past the hook's budget, the heuristic decides alone: a work cue with no request to the person blocks;
 // with one, or with only soft cues, it stops (a wrong stop costs one prompt from the person, a
@@ -30,7 +31,7 @@ export const FINISH_REASON_SOLO =
 // the judge's labels: the classifier answers with one of them, so each says what it means
 export const JUDGE_LABELS = [
   'lists or offers more work the assistant could still do itself now',
-  'asks the user for an approval, credentials or a decision only the user can make',
+  'asks the user for an approval, credentials or a decision only the user can make, or leaves them a step only they can take',
   'reports finished work with nothing left to do',
 ] as const
 
@@ -66,29 +67,36 @@ const NOTHING_LEFT = new RegExp(
   'gu',
 )
 
-// the work cues: a list of what is left, next steps, or an offer to do more
-const WORK_CUES: RegExp[] = [
-  // a heading, or a line led by one (markdown heading, bold, a list number, or a plain "Label:")
-  re(
-    String.raw`(?:^|[.!:;]\s+)[\s#*_-]*(?:\d+[.)]\s*)?(?:next steps?|remaining(?: work| tasks| items| steps)?|still to do|to ?dos?|follow[- ]?ups?|future work|left to do|what'?s left|open items|pending(?: work| tasks| items)?|possible improvements|suggested (?:improvements|next steps)|kalanlar|kalan (?:işler|adımlar|görevler|maddeler)|sonraki adımlar?|bir sonraki adım|yapılacaklar|eksikler|açık kalanlar|bekleyen işler|sonra yapılabilecekler|ileride yapılabilecekler|öneriler)>[^\n]{0,40}?(?::|\*\*|$)`,
-  ),
-  // offers and announcements of more work (English)
-  re(String.raw`<(?:want me to|would you like me to|do you want me to|shall i|should i (?:also|go ahead|continue|proceed)|i (?:can|could) also|could also be|if you(?:'d| would) like,? i(?:'ll| can| could)|let me know if you(?:'d like| want)|if you want (?:any|me|more|one|some|the)|say (?:which|the word)|i(?:'ll| will) (?:dispatch|add|do|implement) (?:them|those|it)|happy to (?:also )?(?:add|do|implement|write|look)|as a next step|in a follow[- ]?up|left for later|still needs? |(?:is|are) not (?:yet )?(?:done|implemented|handled|covered)|not (?:done|implemented|handled|covered) yet)`),
+// offers of more work: a sentence with one stays even when it also addresses the person ("if you want any, say which")
+const OFFER_CUES: RegExp[] = [
+  re(String.raw`<(?:want me to|would you like me to|do you want me to|shall i|should i (?:also|go ahead|continue|proceed)|i (?:can|could) also|could also be|if you(?:'d| would) like,? i(?:'ll| can| could)|let me know if you(?:'d like| want)|if you want (?:any|me|more|one|some|the)|say (?:which|the word)|i(?:'ll| will) (?:dispatch|add|do|implement) (?:them|those|it)|happy to (?:also )?(?:add|do|implement|write|look))`),
   re(String.raw`<next,? (?:i|we|you) (?:can|could|should|would)>`),
   re(String.raw`<(?:the |a |one )?(?:natural |logical |obvious |good )?next steps? (?:would|could|might|should|is|are|will)>`),
   re(String.raw`<i (?:can|could) (?:add|implement|extend|write|build|wire|set up|make|handle|include|support|refactor|split|cover)>`),
-  re(String.raw`<(?:in|for) (?:the|a) (?:next|later|future|second) (?:version|iteration|pass|round|step)>`),
-  re(String.raw`<todo>`),
-  // Turkish
-  re(String.raw`<(?:bundan sonraki adım|sonraki sürüm|bir sonraki adımda|ilerleyen adım|sonraki aşama|daha sonra yap|ileride yap|henüz (?:yapılmadı|eklenmedi|bitmedi|tamamlanmadı))`),
-  re(String.raw`<yapılacak(?:lar|tır)?>`),
-  re(String.raw`<yapılabil(?:ir|ecek)`),
   re(String.raw`<(?:ister(?:sen|seniz|misin|mısın|miniz|misiniz)|söylersen|söylerseniz|dersen|derseniz|izin verirsen|izin verirseniz|uygun görürsen|uygun görürseniz)>`),
   // an offer behind a request for permission: the permission is not the point, the work is
   re(String.raw`<(?:with your (?:ok|permission|go-ahead)|if you(?:'re| are) ok with (?:it|that),? i)`),
   // "ekleyeyim mi?", "yapayım mı", "devam edeyim mi", "geçeyim mi": an offer in the form of a question
   re(String.raw`\p{L}+(?:ayım|eyim) m[ıi]>`),
 ]
+
+// a heading, or a line led by one (markdown heading, bold, a list number, or a plain "Label:")
+const HEADING_CUE = re(
+  String.raw`(?:^|[.!:;]\s+)[\s#*_-]*(?:\d+[.)]\s*)?(?:next steps?|remaining(?: work| tasks| items| steps)?|still to do|to ?dos?|follow[- ]?ups?|future work|left to do|what'?s left|open items|pending(?: work| tasks| items)?|possible improvements|suggested (?:improvements|next steps)|kalanlar|kalan (?:işler|adımlar|görevler|maddeler)|sonraki adımlar?|bir sonraki adım|yapılacaklar|eksikler|açık kalanlar|bekleyen işler|sonra yapılabilecekler|ileride yapılabilecekler|öneriler)>[^\n]{0,40}?(?::|\*\*|$)`,
+)
+
+// work announced as not done yet
+const NOT_DONE_CUES: RegExp[] = [
+  re(String.raw`<(?:as a next step|in a follow[- ]?up|left for later|still needs? |(?:is|are) not (?:yet )?(?:done|implemented|handled|covered)|not (?:done|implemented|handled|covered) yet)`),
+  re(String.raw`<(?:in|for) (?:the|a) (?:next|later|future|second) (?:version|iteration|pass|round|step)>`),
+  re(String.raw`<todo>`),
+  re(String.raw`<(?:bundan sonraki adım|sonraki sürüm|bir sonraki adımda|ilerleyen adım|sonraki aşama|daha sonra yap|ileride yap|henüz (?:yapılmadı|eklenmedi|bitmedi|tamamlanmadı))`),
+  re(String.raw`<yapılacak(?:lar|tır)?>`),
+  re(String.raw`<yapılabil(?:ir|ecek)`),
+]
+
+// the work cues: a list of what is left, next steps, or an offer to do more
+const WORK_CUES: RegExp[] = [HEADING_CUE, ...OFFER_CUES, ...NOT_DONE_CUES]
 
 // what only the person can give: approvals for outward-facing or destructive steps, credentials, their decisions
 const ASK_TOPICS: RegExp[] = [
@@ -105,6 +113,71 @@ function sentencesOf(text: string) {
   return text.split(/\n+|(?<=[.!?])\s+/u).filter(Boolean)
 }
 
+// What is the person's, not the assistant's: these sentences are taken out before the cues are looked for (and before
+// the judge reads the message), so a step left to the person, a wait for a future event or a list of what was not
+// verified is no list of remaining work. A sentence with an offer or a heading of the assistant's always stays.
+//
+// addressed to the person: "you can", "you'll need to", "let me know if…", "-melisin", "-men gerekiyor", "haber ver"
+const ADDRESSED: RegExp[] = [
+  re(String.raw`<you(?:'ll| will| would| may| might| can| could| should| must| need| have to|'d need| want to)>`),
+  re(String.raw`<(?:let me know|tell me|ping me) (?:if|when|once|whether)>`),
+  re(String.raw`\p{L}+(?:melisin|malısın|melisiniz|malısınız|meniz|manız|men|man) gerek`),
+  re(String.raw`\p{L}+(?:abilirsin|ebilirsin|abilirsiniz|ebilirsiniz)>`),
+  re(String.raw`<(?:haber ver|bana (?:yaz|söyle|bildir)|sen seç|siz seç|güncelle(?:yin|yiniz)?>|güncellemen|yeniden başlat(?:man|ın|ırsan))`),
+]
+// the person's own "-rsen" ("güncellersen ikisi birden gelir") is theirs, unless the assistant promises work on it
+// ("uygun bulursan eklerim"): then it is an offer
+const OWN_CONDITIONAL = re(String.raw`\p{L}+(?:rsen|rsan|rseniz|rsanız)>`)
+const FIRST_PERSON = re(String.raw`\p{L}+(?:rım|rim|rum|rüm|ceğim|cağım|eyim|ayım)>`)
+// waiting on a future event or on time: nothing the assistant can do now, whatever else the sentence says
+const LATER: RegExp[] = [
+  // Turkish third-person conditional: "geçmezse", "olursa", "varsa"
+  re(String.raw`\p{L}+(?:rse|rsa|mezse|mazsa)>|<(?:varsa|yoksa|değilse)>`),
+  // "if the switch fails", "once it happens again"
+  re(String.raw`<(?:if|once|when|whenever) (?!you>)[^,.;?!\n]{1,60}?<(?:happens?|fails?|breaks?|occurs?|goes wrong|stops? working|(?:does|do)(?:n'?t| not)|comes? up|shows? up|appears?|recurs?|hits?|reaches|again)>`),
+  // "after a few days of data", "can only be done later", "birkaç gün sonra"
+  re(String.raw`<(?:after|in|within|for) (?:a few|a couple of|several|some|a|one|two|three|\d+) (?:more )?(?:days?|weeks?|months?)>`),
+  re(String.raw`<(?:can|could) only be (?:done|made|run|compared|measured|checked|judged|evaluated|assessed)`),
+  re(String.raw`<(?:birkaç|bir iki|\d+) (?:gün|hafta|ay)\p{L}*|<veri (?:birik|toplan)`),
+]
+// a heading of what was not verified: the heading and its lines up to the next blank line are a report, not a list
+const NOT_VERIFIED = re(
+  String.raw`^[\s#*_-]*(?:not (?:yet )?(?:verified|tested|checked)|unverified|untested|what (?:i )?(?:did not|didn'?t|could not|couldn'?t) (?:verify|test|check)|doğrulanma(?:yan|dı|mış)\p{L}*|doğrulayamadı\p{L}*|test edilme(?:yen|di|miş)\p{L}*|denenme(?:yen|di|miş)\p{L}*|kontrol edilme(?:yen|di|miş)\p{L}*)>[^\n]{0,40}?(?::|\*\*|$)`,
+)
+
+function isUserOnly(sentence: string) {
+  const text = fold(prose(sentence))
+  if (HEADING_CUE.test(text) || OFFER_CUES.some(offer => offer.test(text))) return false
+  if (LATER.some(marker => marker.test(text))) return true
+  // work announced as not done stays against a mere "you can": "not implemented yet; you can use the old one"
+  if (NOT_DONE_CUES.some(cue => cue.test(text))) return false
+  if (ADDRESSED.some(marker => marker.test(text))) return true
+  return OWN_CONDITIONAL.test(text) && !FIRST_PERSON.test(text)
+}
+
+// the message with the person's part taken out: what the cues and the judge read. Untouched lines stay as they are
+export function assistantsPart(message: string) {
+  const kept: string[] = []
+  let isSkipping = false
+  for (const line of message.split('\n')) {
+    if (!line.trim()) {
+      isSkipping = false
+      kept.push(line)
+      continue
+    }
+    if (isSkipping) continue
+    if (NOT_VERIFIED.test(fold(line))) {
+      isSkipping = true
+      continue
+    }
+    const sentences = line.split(/(?<=[.!?])\s+/u)
+    const left = sentences.filter(sentence => !isUserOnly(sentence))
+    if (left.length === sentences.length) kept.push(line)
+    else if (left.length) kept.push(left.join(' '))
+  }
+  return kept.join('\n')
+}
+
 // soft cues: words that often carry an offer or a next step in a phrasing the work cues don't know ("that's the first
 // thing to add next", "it could support…"). They only send the message to the judge; without a judge they stop.
 const SOFT_CUES = re(
@@ -115,9 +188,10 @@ const SOFT_CUES = re(
 export type FinishCues = { isWork: boolean; isAsk: boolean; isSoft: boolean }
 
 export function finishCues(message: string): FinishCues {
-  const text = fold(prose(message)).replace(NOTHING_LEFT, ' ')
+  const text = fold(prose(assistantsPart(message))).replace(NOTHING_LEFT, ' ')
   const isWork = WORK_CUES.some(cue => cue.test(text))
-  const isAsk = sentencesOf(text).some(sentence => ASK_TOPICS.some(topic => topic.test(sentence)) && REQUEST.test(sentence))
+  // an ask is read in the whole message: a request to the person is theirs, and stays one
+  const isAsk = sentencesOf(fold(prose(message))).some(sentence => ASK_TOPICS.some(topic => topic.test(sentence)) && REQUEST.test(sentence))
   return { isWork, isAsk, isSoft: !isWork && SOFT_CUES.test(text) }
 }
 
@@ -189,7 +263,7 @@ export function finishCandidate(mode: FinishMode | undefined, e: StopInput) {
   if (!message.trim()) return undefined
   const cues = finishCues(message)
   if (!cues.isWork && !cues.isSoft) return undefined
-  return { mode, judged: message.slice(-JUDGE_CHARS), cues }
+  return { mode, judged: assistantsPart(message).slice(-JUDGE_CHARS), cues }
 }
 
 // the verdict on a candidate: the judge's label decides; with none (judge off, failed, no label named) the
