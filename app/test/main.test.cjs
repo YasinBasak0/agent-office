@@ -2271,3 +2271,194 @@ test('proje eklenme zamanı (v3.13): addProject yazar, normalizeState korur, esk
   const old = P.normalizeState({ projects: [{ id: 'o', dir: '/o', accountId: 'default', addedAt: 'x' }] });
   assert.equal('addedAt' in old.projects[0], false);
 });
+
+// ---- a project's Claude Code data follows it to another account (contract v3.16, src/project-data.js)
+const PD = require('../src/project-data.js');
+const pdFs = require('fs');
+const pdOs = require('os');
+const pdPath = require('path');
+
+/** A temp home with Default (~/.claude) and accounts A and B, and project folders; every path real (macOS /private). */
+function pdSetup() {
+  const root = pdFs.realpathSync(pdFs.mkdtempSync(pdPath.join(pdOs.tmpdir(), 'ao-move-')));
+  const home = pdPath.join(root, 'home');
+  const A = pdPath.join(root, 'accounts', 'a');
+  const B = pdPath.join(root, 'accounts', 'b');
+  const shop = pdPath.join(root, 'work', 'shop');
+  const other = pdPath.join(root, 'work', 'shop-api');
+  for (const d of [pdPath.join(home, '.claude'), A, B, shop, other]) pdFs.mkdirSync(d, { recursive: true });
+  const put = (file, text) => { pdFs.mkdirSync(pdPath.dirname(file), { recursive: true }); pdFs.writeFileSync(file, text); return file; };
+  const read = (file) => { try { return pdFs.readFileSync(file, 'utf8'); } catch { return null; } };
+  const slug = (d) => d.replace(/[^a-zA-Z0-9]/g, '-');
+  return { root, home, A, B, shop, other, put, read, slug, done: () => pdFs.rmSync(root, { recursive: true, force: true }) };
+}
+const pdLines = (...objs) => objs.map((o) => JSON.stringify(o)).join('\n') + '\n';
+
+test('hesap değişince (v3.16): projenin konuşmaları, oturum durumu, istem geçmişi ve .claude.json kaydı yeni hesaba gelir', () => {
+  const t = pdSetup();
+  const { A, B, shop, other, put, read, slug } = t;
+  const sid = '11111111-aaaa-4bbb-8ccc-000000000001';
+  const pa = pdPath.join(A, 'projects', slug(shop));
+  put(pdPath.join(pa, `${sid}.jsonl`), pdLines({ type: 'user', uuid: 'u1', sessionId: sid }, { type: 'assistant', uuid: 'u2', parentUuid: 'u1' }));
+  put(pdPath.join(pa, sid, 'subagents', 'agent-x.jsonl'), pdLines({ type: 'assistant', uuid: 's1' }));
+  put(pdPath.join(pa, sid, 'tool-results', 'r1.txt'), 'out');
+  put(pdPath.join(A, 'projects', `${slug(shop)}-wt-2`, 'wt-sess.jsonl'), pdLines({ uuid: 'w1' }));
+  put(pdPath.join(A, 'projects', slug(other), 'other-sess.jsonl'), pdLines({ uuid: 'o1' }));
+  put(pdPath.join(A, 'file-history', sid, 'abc@v1'), 'v1');
+  put(pdPath.join(A, 'file-history', 'other-sess', 'x@v1'), 'no');
+  put(pdPath.join(A, 'tasks', sid, '1.json'), '{}');
+  put(pdPath.join(A, 'todos', `${sid}-agent-${sid}.json`), '[]');
+  put(pdPath.join(A, 'session-env', sid, 'sessionstart-hook-0.sh'), 'export TOKEN=x');
+  put(pdPath.join(A, 'history.jsonl'), pdLines(
+    { display: 'fix the cart', pastedContents: { 1: { id: 1, type: 'text', contentHash: 'abc123' } }, project: shop, sessionId: sid },
+    { display: 'api thing', pastedContents: {}, project: other },
+  ));
+  put(pdPath.join(A, 'paste-cache', 'abc123.txt'), 'pasted');
+  put(pdPath.join(A, 'paste-cache', 'zzz.txt'), 'not referenced');
+  put(pdPath.join(A, '.credentials.json'), '{"claudeAiOauth":{}}');
+  put(pdPath.join(A, 'settings.json'), '{"model":"opus"}');
+  put(pdPath.join(A, 'skills', 'mine', 'SKILL.md'), 'x');
+  put(pdPath.join(A, '.claude.json'), JSON.stringify({
+    userID: 'uid-a', oauthAccount: { emailAddress: 'a@x' }, primaryApiKey: 'sk-a', numStartups: 9,
+    projects: {
+      [shop]: { allowedTools: ['Bash(npm test)'], hasTrustDialogAccepted: true, mcpServers: { db: { command: 'db' } }, enabledMcpjsonServers: ['x'] },
+      [other]: { allowedTools: ['Bash(rm)'] },
+    },
+  }));
+  put(pdPath.join(B, '.claude.json'), JSON.stringify({ userID: 'uid-b', oauthAccount: { emailAddress: 'b@x' }, numStartups: 2, projects: { [shop]: { allowedTools: ['Read'], enabledMcpjsonServers: ['y'], hasTrustDialogAccepted: false } } }));
+
+  const r = PD.moveProjectData({ from: A, to: B, home: t.home, dirs: [shop, pdPath.join(pdPath.dirname(shop), 'shop-wt-2')], otherDirs: [other] });
+  const pb = pdPath.join(B, 'projects', slug(shop));
+  assert.equal(read(pdPath.join(pb, `${sid}.jsonl`)), read(pdPath.join(pa, `${sid}.jsonl`)));
+  assert.equal(read(pdPath.join(pb, sid, 'subagents', 'agent-x.jsonl')) !== null, true);
+  assert.equal(read(pdPath.join(pb, sid, 'tool-results', 'r1.txt')), 'out');
+  assert.equal(read(pdPath.join(B, 'projects', `${slug(shop)}-wt-2`, 'wt-sess.jsonl')) !== null, true);
+  assert.equal(pdFs.existsSync(pdPath.join(B, 'projects', slug(other))), false, 'another project’s folder stays');
+  assert.equal(read(pdPath.join(B, 'file-history', sid, 'abc@v1')), 'v1');
+  assert.equal(pdFs.existsSync(pdPath.join(B, 'file-history', 'other-sess')), false);
+  assert.equal(read(pdPath.join(B, 'tasks', sid, '1.json')), '{}');
+  assert.equal(read(pdPath.join(B, 'todos', `${sid}-agent-${sid}.json`)), '[]');
+  assert.equal(pdFs.existsSync(pdPath.join(B, 'session-env')), false, 'hook environments are not copied');
+  const hist = read(pdPath.join(B, 'history.jsonl')).trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(hist.map((h) => h.display), ['fix the cart']);
+  assert.equal(read(pdPath.join(B, 'paste-cache', 'abc123.txt')), 'pasted');
+  assert.equal(pdFs.existsSync(pdPath.join(B, 'paste-cache', 'zzz.txt')), false);
+  // never: logins and the account's own settings
+  for (const f of ['.credentials.json', 'settings.json', 'skills']) assert.equal(pdFs.existsSync(pdPath.join(B, f)), false, f);
+  const cfg = JSON.parse(read(pdPath.join(B, '.claude.json')));
+  assert.equal(cfg.userID, 'uid-b');
+  assert.deepEqual(cfg.oauthAccount, { emailAddress: 'b@x' });
+  assert.equal('primaryApiKey' in cfg, false);
+  assert.equal(cfg.numStartups, 2);
+  assert.deepEqual(cfg.projects[shop], {
+    allowedTools: ['Read', 'Bash(npm test)'], enabledMcpjsonServers: ['y', 'x'], hasTrustDialogAccepted: true, mcpServers: { db: { command: 'db' } },
+  });
+  assert.equal(other in cfg.projects, false);
+  assert.equal(r.sessions, 2);
+  assert.equal(r.config, true);
+  assert.equal(r.history, 1);
+  // the old account keeps its copy
+  assert.equal(pdFs.existsSync(pdPath.join(pa, `${sid}.jsonl`)), true);
+  // a second move changes nothing
+  const again = PD.moveProjectData({ from: A, to: B, home: t.home, dirs: [shop], otherDirs: [other] });
+  assert.deepEqual([again.copied, again.merged, again.history, again.config], [0, 0, 0, false]);
+  assert.equal(read(pdPath.join(B, 'history.jsonl')).trim().split('\n').length, 1);
+  t.done();
+});
+
+test('hesap değişince (v3.16): ortak konuşma birleşir, yenisi kalır, eskisi yenisini ezmez', () => {
+  const t = pdSetup();
+  const { put, read } = t;
+  const a = put(pdPath.join(t.root, 'x', 'a.jsonl'), pdLines({ uuid: '1' }, { uuid: '2' }));
+  const b = put(pdPath.join(t.root, 'y', 'a.jsonl'), pdLines({ uuid: '1' }, { uuid: '2' }));
+  assert.equal(PD.mergeJsonl(a, b), 'same');
+  pdFs.appendFileSync(b, pdLines({ uuid: '3' }));
+  assert.equal(PD.mergeJsonl(a, b), 'kept', 'the new account already holds every line');
+  assert.equal(read(b), pdLines({ uuid: '1' }, { uuid: '2' }, { uuid: '3' }));
+  pdFs.appendFileSync(a, pdLines({ uuid: '3' }, { uuid: '4' }));
+  assert.equal(PD.mergeJsonl(a, b), 'replaced', 'continued in the old account: its longer copy wins');
+  assert.equal(read(b), read(a));
+  pdFs.appendFileSync(b, pdLines({ uuid: '5b' }));
+  pdFs.appendFileSync(a, pdLines({ uuid: '5a' }));
+  assert.equal(PD.mergeJsonl(a, b), 'joined', 'both went on: a union of the records');
+  assert.equal(read(b), pdLines({ uuid: '1' }, { uuid: '2' }, { uuid: '3' }, { uuid: '4' }, { uuid: '5b' }, { uuid: '5a' }));
+  // another file: only a newer one replaces it
+  const fa = put(pdPath.join(t.root, 'x', 'meta.json'), 'old');
+  const fb = put(pdPath.join(t.root, 'y', 'meta.json'), 'new');
+  pdFs.utimesSync(fa, new Date(1000), new Date(1000));
+  assert.equal(PD.mergeFile(fa, fb), 'older');
+  assert.equal(read(fb), 'new');
+  pdFs.utimesSync(fa, new Date(), new Date(Date.now() + 60000));
+  assert.equal(PD.mergeFile(fa, fb), 'newer');
+  assert.equal(read(fb), 'old');
+  t.done();
+});
+
+test('hesap değişince (v3.16): .claude.json kaydı birleşir; okunamayan dosyaya dokunulmaz; yalnız proje klasörleri', () => {
+  assert.deepEqual(PD.mergeEntry({ a: 1, list: ['x'], o: { k: 1 }, hasTrustDialogAccepted: false, lastCost: 2 }, { a: 2, list: ['x', 'y'], o: { k: 9, j: 2 }, hasTrustDialogAccepted: true, lastCost: 5, extra: true }),
+    { a: 1, list: ['x', 'y'], o: { k: 1, j: 2 }, hasTrustDialogAccepted: true, lastCost: 2, extra: true });
+  const { config, changed } = PD.mergeProjectEntries({ keep: 1 }, { oauthAccount: { e: 1 }, primaryApiKey: 'k', projects: { '/p': { t: 1 }, '/q': { t: 2 } } }, ['/p']);
+  assert.equal(changed, true);
+  assert.deepEqual(config, { keep: 1, projects: { '/p': { t: 1 } } });
+  assert.equal(PD.mergeProjectEntries({ projects: { '/p': { t: 1 } } }, { projects: { '/p': { t: 1 } } }, ['/p']).changed, false);
+  const t = pdSetup();
+  const from = t.put(pdPath.join(t.A, '.claude.json'), JSON.stringify({ projects: { [t.shop]: { hasTrustDialogAccepted: true } } }));
+  const to = t.put(pdPath.join(t.B, '.claude.json'), '{ broken');
+  assert.equal(PD.mergeClaudeJson(from, to, [t.shop]), false);
+  assert.equal(t.read(to), '{ broken');
+  // a new account without .claude.json gets one with only the project's entry (0600)
+  pdFs.rmSync(to);
+  assert.equal(PD.mergeClaudeJson(from, to, [t.shop]), true);
+  assert.deepEqual(JSON.parse(t.read(to)), { projects: { [t.shop]: { hasTrustDialogAccepted: true } } });
+  if (process.platform !== 'win32') assert.equal(pdFs.statSync(to).mode & 0o777, 0o600);
+  t.done();
+});
+
+test('hesap değişince (v3.16): Default’a ve Default’tan; hafıza ~/.claude’da birleşir, hesap klasörüne kopyalanmaz', () => {
+  const t = pdSetup();
+  const { home, A, B, shop, put, read, slug } = t;
+  const claude = pdPath.join(home, '.claude');
+  const sid = '22222222-aaaa-4bbb-8ccc-000000000002';
+  // account A → Default: ~/.claude/projects and ~/.claude.json
+  put(pdPath.join(A, 'projects', slug(shop), `${sid}.jsonl`), pdLines({ uuid: '1' }));
+  put(pdPath.join(A, 'projects', slug(shop), 'memory', 'MEMORY.md'), '- [Rule](rule.md) — a rule\n');
+  put(pdPath.join(A, 'projects', slug(shop), 'memory', 'rule.md'), 'rule');
+  put(pdPath.join(A, '.claude.json'), JSON.stringify({ projects: { [shop]: { hasTrustDialogAccepted: true } } }));
+  put(pdPath.join(home, '.claude.json'), JSON.stringify({ userID: 'me', projects: {} }));
+  const r = PD.moveProjectData({ from: A, to: null, home, dirs: [shop] });
+  assert.equal(read(pdPath.join(claude, 'projects', slug(shop), `${sid}.jsonl`)), pdLines({ uuid: '1' }));
+  assert.equal(read(pdPath.join(claude, 'projects', slug(shop), 'memory', 'rule.md')), 'rule', 'merged by memory.js mergeMemory');
+  assert.match(read(pdPath.join(claude, 'projects', slug(shop), 'memory', 'MEMORY.md')), /rule\.md/);
+  assert.equal(r.memory, 1);
+  assert.deepEqual(JSON.parse(read(pdPath.join(home, '.claude.json'))), { userID: 'me', projects: { [shop]: { hasTrustDialogAccepted: true } } });
+  // Default → account B: the transcripts go, the memory stays in ~/.claude (every account uses it there)
+  const r2 = PD.moveProjectData({ from: null, to: B, home, dirs: [shop] });
+  assert.equal(read(pdPath.join(B, 'projects', slug(shop), `${sid}.jsonl`)), pdLines({ uuid: '1' }));
+  assert.equal(pdFs.existsSync(pdPath.join(B, 'projects', slug(shop), 'memory')), false);
+  assert.equal(JSON.parse(read(pdPath.join(B, '.claude.json'))).projects[shop].hasTrustDialogAccepted, true);
+  assert.equal(r2.memory, 0);
+  // the same folder on both sides: nothing
+  assert.deepEqual(PD.moveProjectData({ from: B, to: B, home, dirs: [shop] }), { folders: 0, copied: 0, merged: 0, sessions: 0, history: 0, config: false, memory: 0 });
+  t.done();
+});
+
+test('hesap değişince (v3.16): kopyalanan konuşma yaşını korur (--continue en yenisini seçer)', () => {
+  const t = pdSetup();
+  const { A, B, shop, put, slug } = t;
+  const old = put(pdPath.join(A, 'projects', slug(shop), 'old.jsonl'), pdLines({ uuid: '1' }));
+  put(pdPath.join(B, 'projects', slug(shop), 'mid.jsonl'), pdLines({ uuid: '2' }));
+  pdFs.utimesSync(old, new Date(1e12), new Date(1e12));
+  PD.moveProjectData({ from: A, to: B, home: t.home, dirs: [shop] });
+  const st = pdFs.statSync(pdPath.join(B, 'projects', slug(shop), 'old.jsonl'));
+  assert.equal(Math.round(st.mtimeMs), 1e12);
+  assert.equal(TIO.newestSession(shop, B, t.home), 'mid');
+  t.done();
+});
+
+test('hesap değişince (v3.16): sekme kendi konuşmasında yeniden başlar; yarıda kalan tura devam istemi', () => {
+  assert.deepEqual(PD.restartAfterMove({ sessionId: 'abc-1', continues: false }, 'go on'), { sessionId: 'abc-1' });
+  assert.deepEqual(PD.restartAfterMove({ sessionId: null, continues: true }, 'go on'), { resume: true });
+  assert.deepEqual(PD.restartAfterMove({ sessionId: null, continues: false, busy: true }, 'go on'), {});
+  assert.deepEqual(PD.restartAfterMove({ sessionId: 'abc-1', busy: true }, 'go on'), { sessionId: 'abc-1', prompt: 'go on' });
+  assert.deepEqual(PD.restartAfterMove({ sessionId: 'bad id!', continues: true }), { resume: true });
+});
