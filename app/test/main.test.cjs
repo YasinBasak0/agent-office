@@ -2462,3 +2462,183 @@ test('hesap değişince (v3.16): sekme kendi konuşmasında yeniden başlar; yar
   assert.deepEqual(PD.restartAfterMove({ sessionId: 'abc-1', busy: true }, 'go on'), { sessionId: 'abc-1', prompt: 'go on' });
   assert.deepEqual(PD.restartAfterMove({ sessionId: 'bad id!', continues: true }), { resume: true });
 });
+
+// --- backup account at the usage limit (v3.17, src/fallback.js)
+const FB = require('../src/fallback.js');
+const limitEntry = (o = {}) => JSON.stringify({
+  type: 'assistant', uuid: 'u2', timestamp: o.timestamp || '2026-10-17T10:00:05.000Z', isApiErrorMessage: true, error: 'rate_limit',
+  ...(o.apiError === null ? {} : { apiError: o.apiError || 'usage_limit_reached' }),
+  ...(o.info === null ? {} : { apiErrorParams: { rate_limit_info: o.info || { status: 'rejected', resetsAt: 1792252800, rateLimitType: 'five_hour' } } }),
+  message: { model: '<synthetic>', role: 'assistant', content: [{ type: 'text', text: o.text || "You've hit your session limit · resets 3pm (Europe/Istanbul)" }] },
+});
+const userEntry = (text, ts = '2026-10-17T10:00:00.000Z', extra = {}) => JSON.stringify({ type: 'user', timestamp: ts, message: { role: 'user', content: text }, ...extra });
+
+test('yedek hesap (v3.17): Claude Code’un limit iletileri tanınır, benzerleri değil', () => {
+  for (const s of [
+    "You've hit your session limit · resets 3pm (Europe/Istanbul)",
+    "You've hit your weekly limit · resets Oct 20, 9am (Europe/Istanbul) · progress saved",
+    "You've hit your Opus limit · resets 5pm", "You've hit your usage limit · contact your admin to increase it",
+    "You've hit your limit · resets 3pm", 'You’ve hit your Sonnet limit', "You're out of usage credits · resets 3pm",
+    "You're out of extra usage", 'Claude AI usage limit reached|1792252800',
+  ]) assert.ok(FB.isUsageLimitText(s), s);
+  for (const s of [
+    "You've hit your fast limit", 'Server is temporarily limiting requests (not your usage limit)', 'Opus is experiencing high load, please use /model to switch to Sonnet',
+    "You've used 90% of your session limit · resets 3pm", 'the usage limit is described in README', '',
+  ]) assert.ok(!FB.isUsageLimitText(s), s);
+});
+
+test('yedek hesap (v3.17): iletideki sıfırlanma saati (yerel saat; yarın, tarih, yıl, eski biçim)', () => {
+  const now = new Date(2026, 9, 17, 10, 0).getTime();
+  assert.equal(FB.parseResetText("You've hit your session limit · resets 3pm (Europe/Istanbul)", now), new Date(2026, 9, 17, 15, 0).getTime());
+  assert.equal(FB.parseResetText('resets 3:30pm', now), new Date(2026, 9, 17, 15, 30).getTime());
+  assert.equal(FB.parseResetText('resets 9am', now), new Date(2026, 9, 18, 9, 0).getTime());
+  assert.equal(FB.parseResetText('resets 12am', now), new Date(2026, 9, 18, 0, 0).getTime());
+  assert.equal(FB.parseResetText('resets Oct 20, 9am (UTC)', now), new Date(2026, 9, 20, 9, 0).getTime());
+  assert.equal(FB.parseResetText('resets Jan 3, 2027, 9am', now), new Date(2027, 0, 3, 9, 0).getTime());
+  assert.equal(FB.parseResetText('resets Jan 3, 9am', now), new Date(2027, 0, 3, 9, 0).getTime());
+  assert.equal(FB.parseResetText('Claude AI usage limit reached|1792252800', now), 1792252800000);
+  assert.equal(FB.parseResetText("You've hit your usage limit", now), null);
+});
+
+test('yedek hesap (v3.17): döküm limitte bitiyorsa limit; sonra yazılan, eski ya da başka hata değil', () => {
+  const since = Date.parse('2026-10-17T10:00:00.000Z');
+  const tail = `{"partial line from the middle"\n${userEntry('do the thing')}\n${limitEntry()}\n{"type":"system","subtype":"x"}\n`;
+  assert.deepEqual(FB.limitFromTranscript(tail, { since }), {
+    at: Date.parse('2026-10-17T10:00:05.000Z'), resetsAt: 1792252800000, type: 'five_hour', text: "You've hit your session limit · resets 3pm (Europe/Istanbul)",
+  });
+  // written before this run of the tab (the conversation resumed after a move): not this run's limit
+  assert.equal(FB.limitFromTranscript(tail, { since: since + 60000 }), null);
+  // the user went on: a newer prompt or answer
+  assert.equal(FB.limitFromTranscript(`${limitEntry()}\n${userEntry('carry on', '2026-10-17T10:01:00.000Z')}\n`, { since }), null);
+  // another API error, or the model / the user merely writing the words
+  assert.equal(FB.limitFromTranscript(limitEntry({ apiError: null, info: null, text: 'API Error: 529 overloaded' }), { since }), null);
+  const said = JSON.stringify({ type: 'assistant', timestamp: '2026-10-17T10:00:05.000Z', message: { content: [{ type: 'text', text: "You've hit your session limit" }] } });
+  assert.equal(FB.limitFromTranscript(said, { since }), null);
+  assert.equal(FB.limitFromTranscript(userEntry("You've hit your session limit · resets 3pm", '2026-10-17T10:00:05.000Z'), { since }), null);
+  // meta user lines do not count as the user going on; without rate_limit_info the text gives the reset
+  const noInfo = limitEntry({ info: null, apiError: null, text: "You've hit your weekly limit · resets Oct 20, 9am" });
+  const r = FB.limitFromTranscript(`${noInfo}\n${userEntry('<caveat>', '2026-10-17T10:00:06.000Z', { isMeta: true })}`, { since });
+  assert.equal(r.type, null);
+  assert.equal(r.resetsAt, new Date(2026, 9, 20, 9, 0).getTime());
+  assert.equal(FB.limitFromTranscript('', { since }), null);
+});
+
+test('yedek hesap (v3.17): terminal ipucu renkli ve parça parça gelen iletiyi bulur, bir kez', () => {
+  let r = FB.scanPty({ tail: '' }, '\x1b[31mYou\'ve hit your \x1b[1m');
+  assert.equal(r.hit, null);
+  r = FB.scanPty(r.scan, 'session limit\x1b[0m \x1b[2m· resets 3pm\x1b[0m\r\n');
+  assert.equal(r.hit, "You've hit your session limit");
+  assert.equal(FB.scanPty(r.scan, ' more output\r\n').hit, null);
+  assert.equal(FB.scanPty({ tail: '' }, "\x1b[33mYou've hit your fast limit · resets in 8m").hit, null);
+  assert.equal(FB.scanPty({ tail: '' }, 'Usage limit reached · continuing automatically at 3pm · esc to cancel').hit, 'Usage limit reached · continuing automatically');
+  assert.equal(FB.plainText('a\x1b]0;title\x07b\x1b[2Cc'), 'ab c');
+});
+
+test('yedek hesap (v3.17): hesabın limitte olduğu süre (kota %100, görülen limit, yeni kota okuması)', () => {
+  const now = 1_000_000_000_000;
+  assert.equal(FB.limitedUntil({ now }), 0);
+  assert.equal(FB.limitedUntil({ usage: { updatedAt: now - 1000, fiveHour: { pct: 100, resetsAt: now + 3600e3 } }, now }), now + 3600e3);
+  assert.equal(FB.limitedUntil({ usage: { updatedAt: now - 1000, fiveHour: { pct: 100, resetsAt: now - 1 } }, now }), 0);
+  assert.equal(FB.limitedUntil({ usage: { updatedAt: now - 1000, fiveHour: { pct: 99 }, sevenDay: { pct: 100, resetsAt: now + 5 } }, now }), now + 5);
+  assert.equal(FB.limitedUntil({ usage: { updatedAt: now - 1000, fiveHour: { pct: 100 } }, now }), now - 1000 + FB.DEFAULT_LIMIT_MS);
+  const mark = { at: now - 60000, until: now + 600000 };
+  assert.equal(FB.limitedUntil({ mark, now }), now + 600000);
+  assert.equal(FB.limitedUntil({ mark, usage: { updatedAt: now - 120000, fiveHour: { pct: 40 } }, now }), now + 600000);
+  // a reading newer than the mark with room left: the limit is gone (it reset early, or the mark was wrong)
+  assert.equal(FB.limitedUntil({ mark, usage: { updatedAt: now - 1000, fiveHour: { pct: 40 } }, now }), 0);
+  assert.equal(FB.limitedUntil({ mark: { at: 0, until: now - 1 }, now }), 0);
+  assert.deepEqual(FB.markFor(now + 5000, now), { at: now, until: now + 5000 });
+  assert.deepEqual(FB.markFor(null, now), { at: now, until: now + FB.DEFAULT_LIMIT_MS });
+  assert.deepEqual(FB.normalizeMarks({ a: { at: 1, until: now + 1 }, b: { until: now - 1 }, gone: { until: now + 1 }, c: 'x' }, ['a', 'b', 'c'], now), { a: { at: 1, until: now + 1 } });
+});
+
+test('yedek hesap (v3.17): yedek seçimi: yok, girişsiz, limitte, boştaki herhangi biri, eve dönüş', () => {
+  const now = 1_000_000_000_000;
+  const full = { updatedAt: now, fiveHour: { pct: 100, resetsAt: now + 3600e3 } };
+  const accounts = [
+    { id: 'default', auth: { state: 'in' } },
+    { id: 'b', auth: { state: 'in' }, usage: { updatedAt: now, fiveHour: { pct: 70 } } },
+    { id: 'c', auth: { state: 'in' }, usage: { updatedAt: now, fiveHour: { pct: 10 } } },
+    { id: 'out', auth: { state: 'out' } },
+    { id: 'full', auth: { state: 'in' }, usage: full },
+  ];
+  const pick = (o) => FB.pickBackup({ accounts, now, current: 'default', ...o });
+  assert.deepEqual(pick({ choice: null }), { reason: 'off' });
+  assert.deepEqual(pick({ choice: 'b' }), { id: 'b' });
+  assert.deepEqual(pick({ choice: 'out' }), { reason: 'notLoggedIn' });
+  assert.deepEqual(pick({ choice: 'full' }), { reason: 'allLimited' });
+  assert.deepEqual(pick({ choice: 'b', marks: { b: { at: now, until: now + 1000 } } }), { reason: 'allLimited' });
+  assert.deepEqual(pick({ choice: 'gone' }), { reason: 'none' });
+  // auto: the emptier quota first (unknown counts as empty), never the current account or one at its limit
+  assert.deepEqual(pick({ choice: 'auto' }), { id: 'c' });
+  assert.deepEqual(pick({ choice: 'auto', current: 'c' }), { id: 'default' });
+  // the home first, when it reset
+  assert.deepEqual(pick({ choice: 'auto', current: 'c', home: 'b' }), { id: 'b' });
+  assert.deepEqual(pick({ choice: 'auto', current: 'c', home: 'b', marks: { b: { at: now, until: now + 1 } } }), { id: 'default' });
+  // already on its set backup: only the home can take over, and only after its reset (no ping-pong)
+  assert.deepEqual(pick({ choice: 'b', current: 'b' }), { reason: 'none' });
+  assert.deepEqual(pick({ choice: 'b', current: 'b', home: 'default', marks: { default: { at: now, until: now + 5 } } }), { reason: 'allLimited' });
+  assert.deepEqual(pick({ choice: 'b', current: 'b', home: 'default' }), { id: 'default' });
+  // everyone at the limit: stay put
+  const allFull = accounts.map((a) => ({ ...a, auth: { state: 'in' }, usage: full }));
+  assert.deepEqual(FB.pickBackup({ choice: 'auto', current: 'default', accounts: allFull, now }), { reason: 'allLimited' });
+});
+
+test('yedek hesap (v3.17): döngü yok: çok sık geçiş durur; eve yalnız boşta ve sıfırlanınca dönülür', () => {
+  const now = 1_000_000_000_000;
+  assert.deepEqual(FB.switchAllowed([], now), { ok: true, history: [] });
+  assert.equal(FB.switchAllowed([now - 30000], now).reason, 'soon');
+  const many = [now - 50 * 60e3, now - 40 * 60e3, now - 30 * 60e3, now - 20 * 60e3];
+  assert.equal(FB.switchAllowed(many, now).reason, 'loop');
+  assert.deepEqual(FB.switchAllowed([now - 2 * 3600e3, now - 10 * 60e3], now), { ok: true, history: [now - 10 * 60e3] });
+  const home = { id: 'a', auth: { state: 'in' }, usage: { updatedAt: now - 1000, fiveHour: { pct: 100, resetsAt: now - 1 } } };
+  const base = { home, current: 'b', idle: true, lastSwitch: now - 10 * 60e3, now };
+  assert.equal(FB.shouldReturn(base), true);
+  assert.equal(FB.shouldReturn({ ...base, idle: false }), false);
+  assert.equal(FB.shouldReturn({ ...base, lastSwitch: now - 1000 }), false);
+  assert.equal(FB.shouldReturn({ ...base, mark: { at: now - 5000, until: now + 1000 } }), true, 'a quota reading newer than the mark wins');
+  assert.equal(FB.shouldReturn({ ...base, home: { ...home, usage: undefined }, mark: { at: now - 5000, until: now + 1000 } }), false);
+  assert.equal(FB.shouldReturn({ ...base, home: { ...home, auth: { state: 'out' } } }), false);
+  assert.equal(FB.shouldReturn({ ...base, current: 'a' }), false);
+  assert.equal(FB.shouldReturn({ ...base, home: null }), false);
+});
+
+test('yedek hesap (v3.17): proje durumu: yedek seçimi, otomatik geçiş, eve dönüş, elle değişim, hesap silme', () => {
+  let s = P.normalizeState({
+    accounts: [{ id: 'b', label: 'B', configDir: '/b' }, { id: 'c', label: 'C', configDir: '/c' }],
+    projects: [
+      { id: 'x', dir: '/x', backupAccount: 'b' },
+      { id: 'y', dir: '/y', backupAccount: 'gone', homeAccount: 'gone' },
+      { id: 'z', dir: '/z', accountId: 'b', backupAccount: 'auto', homeAccount: 'b' },
+    ],
+  });
+  assert.equal(P.backupOf(P.findProject(s, 'x')), 'b');
+  assert.deepEqual(P.findProject(s, 'y'), { id: 'y', dir: '/y', name: 'y', accountId: 'default' });
+  assert.equal(P.findProject(s, 'z').homeAccount, undefined, 'a home equal to the account is dropped');
+  assert.equal(P.findProject(s, 'z').backupAccount, 'auto');
+  assert.equal(P.setProjectBackup(s, 'x', 'b'), s);
+  assert.equal(P.setProjectBackup(s, 'x', 'nope').projects[0].backupAccount, undefined);
+  s = P.setProjectBackup(s, 'y', 'auto');
+  assert.equal(P.backupOf(P.findProject(s, 'y')), 'auto');
+  assert.equal(P.backupOf(P.findProject(P.setProjectBackup(s, 'y', null), 'y')), null);
+  // default → b → c: the home stays the first account; back on it, the home is forgotten
+  s = P.fallbackTo(s, 'x', 'b');
+  assert.deepEqual([P.findProject(s, 'x').accountId, P.findProject(s, 'x').homeAccount], ['b', 'default']);
+  s = P.fallbackTo(s, 'x', 'c');
+  assert.deepEqual([P.findProject(s, 'x').accountId, P.findProject(s, 'x').homeAccount], ['c', 'default']);
+  assert.equal(P.fallbackTo(s, 'x', 'c'), s);
+  const back = P.returnHome(s, 'x');
+  assert.deepEqual([P.findProject(back, 'x').accountId, 'homeAccount' in P.findProject(back, 'x')], ['default', false]);
+  assert.equal(P.returnHome(back, 'x'), back);
+  // the user's own change wins: no going back later
+  const manual = P.setProjectAccount(s, 'x', 'b');
+  assert.deepEqual([P.findProject(manual, 'x').accountId, 'homeAccount' in P.findProject(manual, 'x')], ['b', false]);
+  // normalize keeps a running fallback across a restart
+  assert.equal(P.findProject(P.normalizeState(s), 'x').homeAccount, 'default');
+  // removing an account drops it as a backup and as a home
+  const r = A.removeAccount(P.fallbackTo(P.setProjectBackup(s, 'y', 'c'), 'y', 'b'), 'b');
+  assert.deepEqual(P.findProject(r.state, 'y'), { id: 'y', dir: '/y', name: 'y', accountId: 'default', backupAccount: 'c' });
+  const r2 = A.removeAccount(s, 'c');
+  assert.deepEqual(r2.moved, ['x']);
+  assert.deepEqual(P.findProject(r2.state, 'x'), { id: 'x', dir: '/x', name: 'x', accountId: 'default', backupAccount: 'b' });
+});

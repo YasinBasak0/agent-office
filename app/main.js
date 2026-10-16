@@ -21,6 +21,7 @@ const MR = require('./src/mcp-reload.js');
 const R = require('./src/resume.js');
 const TU = require('./src/token-usage.js');
 const PD = require('./src/project-data.js');
+const FB = require('./src/fallback.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -43,6 +44,8 @@ const asleep = new Map();
 const activity = new Map(); // pty id → { at: last start/input/output, draft: prompt text typed but unsent }
 const lastSid = new Map(); // pty id → the session its claude was last seen in (pid file), for Enter-restart (v3.11)
 const mcpPrint = new Map(); // running pty id → { started, current } MCP fingerprints (v3.11, src/mcp-reload.js)
+const ptyStart = new Map(); // running pty id → when its claude started (v3.17: older limit entries are not this run's)
+const ptyLimit = new Map(); // running pty id → { scan, hitAt } usage-limit words seen in its output (v3.17, a hint only)
 let lastSize = { cols: 100, rows: 16 };
 
 // If sessions.js fails to load, the office carries on with empty data.
@@ -243,6 +246,8 @@ function killPty(id) {
   map.delete(id);
   activity.delete(id);
   mcpPrint.delete(id);
+  ptyStart.delete(id);
+  ptyLimit.delete(id);
   try { t.kill(); } catch {}
 }
 // Quitting (window closed, Quit, the updater's quitAndInstall): one last look at which tabs are mid-turn, so they
@@ -279,6 +284,7 @@ function checkTurns() {
   }
   setMarks(next);
   checkMcp();
+  checkLimits();
 }
 
 // --- reload tabs whose MCP servers changed (contract v3.11, src/mcp-reload.js)
@@ -713,17 +719,22 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   terms.set(id, t);
   activity.set(id, { at: startedAt, draft: false });
   mcpPrint.set(id, { started: print, current: print });
+  ptyStart.set(id, startedAt);
+  ptyLimit.set(id, { scan: { tail: '' }, hitAt: 0 });
   if (sessionId) lastSid.set(id, sessionId); else lastSid.delete(id);
   t.onData((d) => {
     if (terms.get(id) !== t) return;
     const a = activity.get(id);
     if (a) a.at = Date.now();
+    watchLimit(id, d, startedAt);
     send('pty:data', id, d);
   });
   t.onExit(({ exitCode }) => {
     if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
     terms.delete(id);
     mcpPrint.delete(id);
+    ptyStart.delete(id);
+    ptyLimit.delete(id);
     // the session it was in, for Enter-restart: the pid file may still be there, else the last poll's
     const last = validSid(readJson(Z.claudePidFile(configDir, app.getPath('home'), t.pid))?.sessionId);
     if (last) lastSid.set(id, last);
@@ -880,7 +891,8 @@ function sleepIdle() {
 // folder and merged there, and each tab starts again in the conversation it was in (--resume <its session>, else
 // --continue for a tab that continues), like an MCP reload. A tab cut off mid-turn is told to carry on. A sleeping
 // tab stays asleep and wakes into its own session. from: the project's account before the change.
-function moveProject(projectId, from) {
+// carryOn (v3.17): tabs that stopped at the usage limit; they are told to carry on like a tab cut off mid-turn.
+function moveProject(projectId, from, { carryOn = [] } = {}) {
   const p = P.findProject(state, projectId);
   if (!p) return;
   const home = app.getPath('home');
@@ -893,7 +905,7 @@ function moveProject(projectId, from) {
     if (terms.has(id)) {
       const live = liveSession(id, from.configDir);
       if (live?.sessionId) sid = live.sessionId;
-      busy = Boolean(sid) && R.isTurnBusy({ claude: live?.claude, office: office()?.readSession(sid) });
+      busy = Boolean(sid) && (carryOn.includes(id) || R.isTurnBusy({ claude: live?.claude, office: office()?.readSession(sid) }));
       killPty(id);
     }
     plan.push({ id, opts: PD.restartAfterMove({ sessionId: validSid(sid) || null, continues: !r?.tab || Boolean(r.tab.worktree), busy }, R.UNFINISHED_PROMPT) });
@@ -908,6 +920,151 @@ function moveProject(projectId, from) {
   } catch (e) { console.error('proje verisi taşınamadı:', e.message); }
   for (const { id, opts } of plan) startPty(id, opts);
 }
+
+// --- backup account at the usage limit (contract v3.17, src/fallback.js)
+// A tab whose session ends on Claude Code's usage-limit error (its transcript; the terminal's words only with the
+// account's quota at 100 %) moves its project to the project's backup account with moveProject: every tab resumes its
+// own conversation there and the tabs stopped by the limit are told to carry on. The account it left is its home; once
+// the home's limit resets and every tab is idle, the project goes back. Each account's limit is remembered until its
+// reset (state.accountLimits), so no project moves onto an account at its limit and none ping-pongs.
+const fallbackOn = () => state.fallback !== false;
+const limitMarks = () => state.accountLimits || {};
+const switches = new Map();   // projectId → times of its automatic moves (FB.switchAllowed)
+const limitDone = new Set();  // "<pty id>|<limit time>": a limit already acted on
+const stuckSaid = new Set();  // "<project>|<account>|<reason>|<until>": a "no backup" notice already shown
+let returnTick = 0;
+/** The tab's output: usage-limit words after the first seconds of its start are a hint (FB.scanPty). */
+function watchLimit(id, d, startedAt) {
+  const w = ptyLimit.get(id);
+  if (!w) return;
+  const r = FB.scanPty(w.scan, d);
+  w.scan = r.scan;
+  if (r.hit && Date.now() - startedAt > FB.PTY_GRACE_MS) w.hitAt = Date.now();
+}
+/** The end of a file (FB.TAIL_BYTES), or ''. */
+function readTail(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, FB.TAIL_BYTES);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    return buf.toString('utf8');
+  } catch { return ''; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
+}
+const tailSeen = new Map(); // transcript → { key: "size|mtime|since", hit }
+/** Does the tab's session end on a usage limit written since the tab started? → FB.limitFromTranscript result | null */
+function transcriptLimit(id, dir, configDir) {
+  const sid = lastSid.get(id);
+  if (!sid) return null;
+  const file = TIO.findTranscript(dir, sid, configDir, app.getPath('home'))?.file;
+  const st = file ? statOrNull(file) : null;
+  if (!st) return null;
+  const since = ptyStart.get(id) || 0;
+  const key = `${st.size}|${st.mtimeMs}|${since}`;
+  const old = tailSeen.get(file);
+  if (old?.key === key) return old.hit;
+  const hit = FB.limitFromTranscript(readTail(file), { since });
+  tailSeen.set(file, { key, hit });
+  return hit;
+}
+const accountName = (a) => (a.id === A.DEFAULT_ID ? T('main.defaultAccount') : a.label);
+/** Accounts as FB.pickBackup reads them: login state and quota. */
+const fallbackAccounts = () => state.accounts.map((a) => ({ id: a.id, auth: auths.get(a.id), usage: usages.get(a.id) }));
+function setLimitMark(accountId, mark) {
+  const old = limitMarks()[accountId];
+  if (old && old.until >= mark.until) return;
+  state = { ...state, accountLimits: { ...FB.normalizeMarks(limitMarks(), state.accounts.map((a) => a.id)), [accountId]: mark } };
+  saveState();
+}
+/** Tells the renderer (a hint over the project's terminals) and the system (a notification). */
+function fallbackNotice(p, kind, text, extra = {}) {
+  send('account:fallback', { projectId: p.id, kind, text, ...extra });
+  notify(p.name, text, p.id);
+}
+/** Every 1.5 s (checkTurns): a limit in any running tab; every ~15 s, projects on a backup that may go home. */
+function checkLimits() {
+  if (!fallbackOn() || !win || win.isDestroyed()) return;
+  const now = Date.now();
+  const returning = returnTick++ % 10 === 0;
+  for (const p of state.projects) {
+    const account = A.accountOf(state, p);
+    const usageFull = () => FB.limitedUntil({ usage: usages.get(account.id), now }) > 0;
+    const hits = [];
+    for (const id of P.ptyIdsOf(p)) {
+      if (!terms.has(id)) continue;
+      const r = P.resolvePty(state, id);
+      if (!r) continue;
+      let hit = transcriptLimit(id, r.dir, account.configDir);
+      const w = ptyLimit.get(id);
+      if (!hit && w?.hitAt && now - w.hitAt < 60000 && usageFull()) hit = { at: w.hitAt, resetsAt: null, type: null, text: '' };
+      if (hit && !limitDone.has(`${id}|${hit.at}`)) hits.push({ id, hit });
+    }
+    if (hits.length) onLimit(p, account, hits, now);
+    else if (returning && p.homeAccount) maybeReturn(p, account, now);
+  }
+}
+function onLimit(p, account, hits, now) {
+  const resets = hits.map((h) => h.hit.resetsAt).filter(Number.isFinite);
+  const mark = FB.markFor(resets.length ? Math.max(...resets) : null, now);
+  setLimitMark(account.id, mark);
+  const done = () => { for (const h of hits) limitDone.add(`${h.id}|${h.hit.at}`); };
+  const choice = P.backupOf(p);
+  if (!choice) return done(); // no backup set: Claude Code's own limit message stands
+  const pick = FB.pickBackup({ choice, current: account.id, home: p.homeAccount || null, accounts: fallbackAccounts(), marks: limitMarks(), now });
+  const allowed = FB.switchAllowed(switches.get(p.id), now);
+  switches.set(p.id, allowed.history);
+  const stuck = !pick.id ? (pick.reason === 'none' ? '' : pick.reason) : !allowed.ok ? allowed.reason : '';
+  if (!pick.id || !allowed.ok) {
+    const key = `${p.id}|${account.id}|${stuck}|${mark.until}`;
+    if (stuck && !stuckSaid.has(key)) {
+      stuckSaid.add(key);
+      fallbackNotice(p, 'stuck', T(stuck === 'loop' || stuck === 'soon' ? 'main.fallbackLoop' : 'main.fallbackStuck', { from: accountName(account) }), { reason: stuck });
+    }
+    return; // looked at again every 1.5 s: a backup that logs in or resets is used then (the notice is not repeated)
+  }
+  const to = accountById(pick.id);
+  if (!to) return;
+  done();
+  switches.set(p.id, [...allowed.history, now]);
+  const next = P.fallbackTo(state, p.id, to.id);
+  if (next === state) return;
+  fallbackNotice(p, 'switched', T('main.fallbackSwitched', { from: accountName(account), to: accountName(to) }), { from: account.id, to: to.id, ptyIds: P.ptyIdsOf(p) });
+  commit(next);
+  moveProject(p.id, account, { carryOn: hits.map((h) => h.id) });
+}
+/** A running tab that can restart without losing anything: no turn, no unsent text, no agent or shell of its session working. */
+function tabIdle(pid, configDir) {
+  const t = terms.get(pid);
+  if (!t) return true;
+  if (activity.get(pid)?.draft) return false;
+  const claude = readJson(Z.claudePidFile(configDir, app.getPath('home'), t.pid));
+  const sid = validSid(claude?.sessionId);
+  const session = sid ? office()?.readSession(sid) : undefined;
+  if (R.isTurnBusy({ claude, office: session })) return false;
+  return !(session?.workers || []).some((w) => w && w.doneAt === undefined) && !(session?.shells || []).some((x) => x && x.endAt === undefined);
+}
+function maybeReturn(p, account, now) {
+  const home = accountById(p.homeAccount);
+  if (!home) return;
+  const hist = switches.get(p.id) || [];
+  const idle = P.ptyIdsOf(p).every((pid) => tabIdle(pid, account.configDir));
+  const ok = FB.shouldReturn({
+    home: { id: home.id, auth: auths.get(home.id), usage: usages.get(home.id) }, current: account.id,
+    mark: limitMarks()[home.id], idle, lastSwitch: hist.length ? Math.max(...hist) : 0, now,
+  });
+  if (!ok) return;
+  const next = P.returnHome(state, p.id);
+  if (next === state) return;
+  switches.set(p.id, [...hist, now]);
+  fallbackNotice(p, 'returned', T('main.fallbackReturned', { to: accountName(home), from: accountName(account) }), { from: account.id, to: home.id, ptyIds: P.ptyIdsOf(p) });
+  commit(next);
+  moveProject(p.id, account);
+}
+// Per-project backup account (v3.17): null (none) | 'auto' | an account id. Nothing restarts.
+ipcMain.handle('projects:setBackup', (_e, id, value) => { commit(P.setProjectBackup(state, id, value)); });
+
 // Worktree session names → project name (see projects.js sessionAliases): the office and notifications count them toward the project.
 const sessionAliases = () => P.sessionAliases(state.projects);
 
@@ -1693,9 +1850,10 @@ function buildMenu() {
 // sleepMinutes = end idle background claudes after this long (0 = off, see src/sleep.js);
 // resumeWork = at startup, tabs interrupted mid-turn carry on by themselves (needs resume; see src/resume.js);
 // shareMcp = each session also gets the other office projects' MCP servers (contract v3.9), for sessions started afterwards;
-// reloadMcp = an idle running tab whose MCP servers changed restarts in its session (contract v3.11)
+// reloadMcp = an idle running tab whose MCP servers changed restarts in its session (contract v3.11);
+// fallback = a project at the usage limit moves to its backup account and back after the reset (contract v3.17)
 const themeSetting = (v) => (TH ? TH.normalizeThemeSetting(v) : 'auto');
-const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, shareMcp: state.shareMcp !== false, reloadMcp: state.reloadMcp !== false, sleepMinutes: sleepMinutes() });
+const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, shareMcp: state.shareMcp !== false, reloadMcp: state.reloadMcp !== false, fallback: state.fallback !== false, sleepMinutes: sleepMinutes() });
 ipcMain.handle('prefs:get', () => prefs());
 ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.resume === 'boolean' && p.resume !== prefs().resume) commit({ ...state, resume: p.resume });
@@ -1703,6 +1861,7 @@ ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.manager === 'boolean' && p.manager !== prefs().manager) commit({ ...state, manager: p.manager });
   if (p && typeof p.shareMcp === 'boolean' && p.shareMcp !== prefs().shareMcp) commit({ ...state, shareMcp: p.shareMcp });
   if (p && typeof p.reloadMcp === 'boolean' && p.reloadMcp !== prefs().reloadMcp) commit({ ...state, reloadMcp: p.reloadMcp });
+  if (p && typeof p.fallback === 'boolean' && p.fallback !== prefs().fallback) commit({ ...state, fallback: p.fallback });
   if (p && typeof p.theme === 'string' && themeSetting(p.theme) !== prefs().theme) commit({ ...state, theme: themeSetting(p.theme) });
   if (p && Z.SLEEP_CHOICES.includes(p.sleepMinutes) && p.sleepMinutes !== prefs().sleepMinutes) {
     commit({ ...state, sleepMinutes: p.sleepMinutes });
@@ -1745,7 +1904,7 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   await loadThemesLib();
   const raw = loadState();
   const base = P.normalizeState(raw);
-  state = { ...base, interrupted: R.normalizeInterrupted(raw.interrupted, base.projects.flatMap((p) => P.ptyIdsOf(p))), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, resumeWork: raw.resumeWork !== false, manager: raw.manager !== false, shareMcp: raw.shareMcp !== false, reloadMcp: raw.reloadMcp !== false, theme: themeSetting(raw.theme), sleepMinutes: Z.normalizeSleep(raw.sleepMinutes) };
+  state = { ...base, interrupted: R.normalizeInterrupted(raw.interrupted, base.projects.flatMap((p) => P.ptyIdsOf(p))), language: LANG_SETTINGS.includes(raw.language) ? raw.language : 'auto', resume: raw.resume !== false, resumeWork: raw.resumeWork !== false, manager: raw.manager !== false, shareMcp: raw.shareMcp !== false, reloadMcp: raw.reloadMcp !== false, fallback: raw.fallback !== false, accountLimits: FB.normalizeMarks(raw.accountLimits, base.accounts.map((a) => a.id)), theme: themeSetting(raw.theme), sleepMinutes: Z.normalizeSleep(raw.sleepMinutes) };
   app.setAboutPanelOptions({ applicationName: app.getName(), applicationVersion: app.getVersion() });
   buildMenu();
   setupUpdates();

@@ -67,7 +67,16 @@ function removeAccount(state, id) {
     state: {
       ...state,
       accounts: state.accounts.filter((a) => a.id !== id),
-      projects: state.projects.map((p) => (p.accountId === id ? { ...p, accountId: DEFAULT_ID } : p)),
+      // a backup or home naming the account goes too (v3.17)
+      projects: state.projects.map((p) => {
+        const { backupAccount, homeAccount, ...rest } = p;
+        const accountId = p.accountId === id ? DEFAULT_ID : p.accountId;
+        return {
+          ...rest, accountId,
+          ...(backupAccount !== undefined && backupAccount !== id ? { backupAccount } : {}),
+          ...(homeAccount !== undefined && homeAccount !== id && homeAccount !== accountId ? { homeAccount } : {}),
+        };
+      }),
     },
     moved,
   };

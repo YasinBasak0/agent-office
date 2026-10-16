@@ -159,7 +159,15 @@
     "lastInfo": "Last value: {ago} (from an open Claude session on this account)",
     "costLine": "≈ {usd} today · {pct}%",
     "costNone": "No tokens today",
-    "costTitle": "This project's token usage today: the estimated cost at API list prices and how much of the full price that is (cache reads are cheap). Click for details."
+    "costTitle": "This project's token usage today: the estimated cost at API list prices and how much of the full price that is (cache reads are cheap). Click for details.",
+    "fallback": "Backup account at the usage limit",
+    "fallbackTitle": "When a project's account reaches its usage limit, the project moves to its backup account (chosen in the project's row) and every tab resumes its own conversation there; tabs stopped by the limit carry on with their work. Once the first account's limit resets and the tabs are idle, the project moves back. A backup that is not logged in or is at its limit too is skipped.",
+    "backup": "Backup",
+    "backupTitle": "The account this project continues on when its own account reaches the usage limit. Any free account picks another logged-in account that still has quota. Needs “Backup account at the usage limit” (on by default).",
+    "backupNone": "None",
+    "backupAuto": "Any free account",
+    "onBackup": "on backup · back to {home}",
+    "onBackupTitle": "Moved here when {home} reached its usage limit. It goes back to {home} once that limit resets and every tab is idle."
   },
   "panel": {
     "types": {
@@ -410,7 +418,11 @@
       "sessionExists": "This session is already on this computer.",
       "longPath": "This folder's path is too long for Claude Code's session folder name. Choose a folder with a shorter path.",
       "gitFailed": "git failed."
-    }
+    },
+    "fallbackSwitched": "{from}'s usage limit is reached; continuing on {to}",
+    "fallbackReturned": "{to}'s usage limit has reset; back on {to} (from {from})",
+    "fallbackStuck": "{from}'s usage limit is reached and no backup account can take over (not logged in or at its limit too)",
+    "fallbackLoop": "{from}'s usage limit is reached, but this project already changed accounts several times recently; staying on {from}"
   },
   "auth": {
     "unreadable": "could not read the login status",
