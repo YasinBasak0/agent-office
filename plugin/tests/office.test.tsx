@@ -1350,14 +1350,178 @@ for (const [name, env] of [
   })
 }
 
-test('the manager text makes delegation the default and keeps trivial work as the only exception', async ($, on) => {
+test('the manager text delegates large-input and parallel work, keeps trivial edits, and asks for short reports', async ($, on) => {
   setUpCompose(on, { HOME: '/home/tester', AGENT_OFFICE_MANAGER: '1' })
   const text = (await $.prompt.compose(mainLoop)).sections[1]?.text ?? ''
-  expect(text).toContain('Delegate by default')
+  expect(text).toContain('Delegate when the input is large and the answer small')
+  expect(text).toContain('can run in parallel')
+  expect(text).toContain('do trivial edits')
+  expect(text).not.toContain('never trivial here')
+  expect(text).toContain('Put long context in a file and pass its path')
+  expect(text).toContain('report at most 15 lines plus the path')
+  expect(text).toContain('One scoped task per agent')
   expect(text).toContain('stays available to the person')
   expect(text).toContain('run_in_background')
-  expect(text).toContain('Do it yourself only when it is trivial')
+  // re-read on every request: it must not grow (3038 characters before v3.20)
+  expect(text.length).toBeLessThanOrEqual(3038)
   expect(text).toContain('Make technical choices yourself')
   expect(text).toContain('Never end a turn with an offer')
   expect(text).not.toContain('A small single-step task you do yourself')
 })
+
+// the subagents' step budget (app contract v3.20): a wrap-up reminder at N calls, a shorter one every N/2 after, and
+// with the hard cap (Strict) calls past 2N refused; never the boss, a teammate or a nested session
+const NORMAL = { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_MANAGER: '1', AGENT_OFFICE_STEP_BUDGET: '4' }
+const STRICT = { ...NORMAL, AGENT_OFFICE_STEP_CAP: '1' }
+const stepOf = (answer: unknown) => ((answer as { context?: string[] }).context ?? []).filter(text => text.startsWith('Agent Office:'))
+function setUpSteps(on: Harness, env: Record<string, string>, toolCalls: string[] = []) {
+  const set = setUpTicking(on, env)
+  let spawned = 0
+  on('agent.spawn', () => ({ model: 'test-model', agentId: `agent-${++spawned}` }))
+  on('tool.call', (_$, e) => {
+    toolCalls.push(e.tool)
+    return (e.tool === 'Write' ? { deny: 'no' } : { result: 'ok' }) as never
+  })
+  answerTurns(on)
+  return set
+}
+// lets a call the plugin started without awaiting it (TaskStop) reach the engine
+const flush = async () => {
+  for (let i = 0; i < 50; i++) await Promise.resolve()
+}
+const agentCall = ($: Engine, agentId = 'agent-1', tool = 'Read') => $.tool.call({ tool, file_path: '/a', agentId } as never)
+// the calls (1-based) whose answer carried a reminder, of `count` calls by agent-1
+async function remindedCalls($: Engine, count: number) {
+  const at: number[] = []
+  for (let i = 1; i <= count; i++) if (stepOf(await agentCall($)).length) at.push(i)
+  return at
+}
+
+test('a subagent is told to wrap up at N tool calls, then more briefly every N/2 calls; no cap without Strict', async ($, on) => {
+  const { writes, clock } = setUpSteps(on, NORMAL)
+  await $.session.start(start)
+  await spawnAgent($, 'Scan the code', 'Explore')
+  const answers: unknown[] = []
+  for (let i = 1; i <= 12; i++) answers.push(await agentCall($))
+  const reminded = answers.flatMap((a, i) => (stepOf(a).length ? [i + 1] : []))
+  expect(reminded).toEqual([4, 6, 8, 10, 12])
+  expect(stepOf(answers[3])[0]).toContain("you've used 4 tool calls")
+  expect(stepOf(answers[3])[0]).toContain('Stop exploring now')
+  expect(stepOf(answers[3])[0]).toContain('≤15 lines')
+  expect(stepOf(answers[3])[0]).toContain('return its path')
+  expect(stepOf(answers[3])[0]).not.toContain('refused')
+  expect(stepOf(answers[5])[0]).toContain('6 tool calls, past your budget of 4. Stop now')
+  // no refusal without the cap: every call ran
+  expect(answers.every(a => (a as { result?: unknown }).result === 'ok')).toBe(true)
+  await clock.advance(PUBLISH_MS)
+  const w = stateOf(writes).workers[0] as State['workers'][number] & { nudges?: number; denied?: number }
+  expect([w.toolCount, w.nudges, w.denied]).toEqual([12, 5, undefined])
+})
+
+test('Strict refuses calls past 2N, telling the agent to answer now; the count is logged on the worker and its delivery', async ($, on) => {
+  const toolCalls: string[] = []
+  const { writes, clock } = setUpSteps(on, STRICT, toolCalls)
+  await $.session.start(start)
+  await spawnAgent($, 'Scan the code', 'Explore')
+  const answers: unknown[] = []
+  for (let i = 1; i <= 9; i++) answers.push(await agentCall($))
+  expect(stepOf(answers[3])[0]).toContain('Tool calls past 8 will be refused')
+  expect(answers.slice(0, 8).every(a => (a as { result?: unknown }).result === 'ok')).toBe(true)
+  const refused = answers[8] as { deny?: string }
+  expect(refused.deny).toContain('Give your final answer now')
+  // the refused call never reached the tool
+  expect(toolCalls.filter(t => t === 'Read')).toHaveLength(8)
+  await clock.advance(PUBLISH_MS)
+  const w = stateOf(writes).workers[0] as State['workers'][number] & { nudges?: number; denied?: number }
+  expect([w.nudges, w.denied]).toEqual([3, 1])
+  await completeTurn($, 'answer', 'agent-1', 'done')
+  await clock.advance(PUBLISH_MS)
+  expect(stateOf(writes).stats.today?.log?.[0]).toMatchObject({ toolCount: 9, nudges: 3, denied: 1 })
+})
+
+test('an agent that keeps calling after refusals is stopped once, so a refused call cannot loop forever; the boss is told', async ($, on) => {
+  const toolCalls: string[] = []
+  setUpSteps(on, STRICT, toolCalls)
+  await $.session.start(start)
+  await spawnAgent($, 'Scan the code', 'Explore')
+  for (let i = 1; i <= 8; i++) await agentCall($)
+  const refusals: string[] = []
+  for (let i = 1; i <= 4; i++) refusals.push((await agentCall($)).deny ?? '')
+  await flush()
+  expect(refusals[0]).toContain('refusal 1 of 5')
+  expect(toolCalls.filter(t => t === 'TaskStop')).toEqual([])
+  for (let i = 1; i <= 3; i++) expect((await agentCall($)).deny).toContain('was not run')
+  await flush()
+  // the fifth refusal stops it (TaskStop with its id), once; no refused call ran its tool
+  expect(toolCalls.filter(t => t === 'TaskStop')).toEqual(['TaskStop'])
+  expect(toolCalls.filter(t => t === 'Read')).toHaveLength(8)
+  // the boss's next Agent call says the agent was stopped, not interrupted by the person; once
+  const note = (answer: unknown) => ((answer as { context?: string[] }).context ?? []).filter(text => text.startsWith('Agent Office stopped'))
+  const told = note(await $.tool.call({ tool: 'Agent', prompt: 'x' } as never))
+  expect(told).toHaveLength(1)
+  expect(told[0]).toContain('agent agent-1')
+  expect(told[0]).toContain('did not interrupt')
+  expect(note(await $.tool.call({ tool: 'Agent', prompt: 'y' } as never))).toEqual([])
+})
+
+test('a reminder whose call is refused rides that agent\'s next call', async ($, on) => {
+  setUpSteps(on, NORMAL)
+  await $.session.start(start)
+  await spawnAgent($, 'Scan the code', 'Explore')
+  for (let i = 1; i <= 3; i++) await agentCall($)
+  expect(await agentCall($, 'agent-1', 'Write')).toEqual({ deny: 'no' })
+  expect(stepOf(await agentCall($))).toHaveLength(1)
+  expect(stepOf(await agentCall($))).toHaveLength(1) // the sixth: N/2 after N
+  expect(stepOf(await agentCall($))).toEqual([])
+})
+
+test('the boss, a teammate and unknown agents get no step budget, even in Strict', async ($, on) => {
+  setUpSteps(on, STRICT)
+  await $.session.start(start)
+  await $.turn.start({ text: 'build it', turnId: 'turn-1' })
+  await spawnAgent($, 'Pair on it', 'teammate')
+  for (let i = 0; i < 20; i++) {
+    const boss = await $.tool.call({ tool: 'Agent', prompt: 'x' } as never)
+    expect(stepOf(boss)).toEqual([])
+    expect((boss as { deny?: string }).deny).toBeUndefined()
+    const mate = await agentCall($)
+    expect(stepOf(mate)).toEqual([])
+    expect((mate as { deny?: string }).deny).toBeUndefined()
+    expect((await agentCall($, 'agent-404')).deny).toBeUndefined()
+  }
+})
+
+for (const [name, env] of [
+  ['Savings off (no budget)', { HOME: '/home/tester', AGENT_OFFICE_APP: '1', AGENT_OFFICE_STEP_CAP: '1' }],
+  ['a nested claude', { ...STRICT, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'parent-1' }],
+  ['a budget below 2', { ...STRICT, AGENT_OFFICE_STEP_BUDGET: '1' }],
+] as const) {
+  test(`with ${name} a subagent is never reminded or refused`, async ($, on) => {
+    setUpSteps(on, env)
+    await $.session.start(start)
+    await spawnAgent($, 'Scan the code', 'Explore')
+    expect(await remindedCalls($, 3)).toEqual([])
+    for (let i = 0; i < 20; i++) expect((await agentCall($)).deny).toBeUndefined()
+  })
+}
+
+for (const [name, env, type, expected] of [
+  ['a budgeted subagent', STRICT, 'Explore', 'keep this task to about 4 tool calls'],
+  ['a teammate', NORMAL, 'teammate', ''],
+  ['an unbudgeted subagent', { HOME: '/home/tester' }, 'Explore', ''],
+] as const) {
+  test(`${name}: the task says the budget at spawn only when the agent has one`, async ($, on) => {
+    const prompts: string[] = []
+    setUpTicking(on, env)
+    on('agent.spawn', (_$, e) => {
+      prompts.push(e.prompt)
+      return { model: 'test-model', agentId: 'agent-1' }
+    })
+    await $.session.start(start)
+    await spawnAgent($, 'Scan the code', type)
+    if (expected) {
+      expect(prompts[0]).toContain(expected)
+      expect(prompts[0]).toContain('Calls past 8 are refused')
+    } else expect(prompts[0]).toBe('Scan the code')
+  })
+}

@@ -182,6 +182,11 @@ window.agentOffice = {
       const p = /** @type {any} */ (projects.find((x) => x.id === id));
       if (p) { if (value) p.backupAccount = value; else delete p.backupAccount; changed(); }
     },
+    setSavings: async (id, value) => {
+      const p = /** @type {any} */ (projects.find((x) => x.id === id));
+      if (p) { if (value === 'off' || value === 'strict') p.savings = value; else delete p.savings; changed(); }
+      return { restarted: [] };
+    },
     setContextCap: async (id, value) => {
       const p = /** @type {any} */ (projects.find((x) => x.id === id));
       if (p) { if (value) p.contextCap = value; else delete p.contextCap; changed(); }

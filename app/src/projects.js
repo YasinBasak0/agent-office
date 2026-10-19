@@ -2,7 +2,7 @@
 // State: { projects: Project[], accounts: Account[], activeId: string | null } (see CONTRACT.md).
 const path = require('path');
 const crypto = require('crypto');
-const { DEFAULT_ID, normalizeAccounts } = require('./accounts.js');
+const { DEFAULT_ID, normalizeAccounts, SAVINGS_LEVELS, SAVINGS_DEFAULT } = require('./accounts.js');
 
 const newId = () => crypto.randomBytes(6).toString('hex');
 const projectName = (dir) => path.basename(dir);
@@ -26,6 +26,7 @@ function normalizeState(raw, { id = newId } = {}) {
       ...withManager(p.manager),
       ...withAgentModel(p.agentModel),
       ...withContextCap(p.contextCap),
+      ...withSavings(p.savings),
       ...withBackup(p.backupAccount, known),
       ...withHome(p.homeAccount, known, known.has(p.accountId) ? p.accountId : DEFAULT_ID),
       ...withTabs(normalizeTabs(p.tabs)),
@@ -262,6 +263,27 @@ function setProjectContextCap(state, id, value) {
 /** The project's auto-compact window in tokens, or null (Auto). */
 const contextCapOf = (project) => contextCapValue(project?.contextCap);
 
+// --- per-project savings (contract v3.20)
+// Project.savings: 'off' | 'strict'; absent = 'normal', the default (accounts.js SAVINGS holds what each level sets).
+// Never written for Normal.
+const savingsValue = (v) => (SAVINGS_LEVELS.includes(v) ? v : SAVINGS_DEFAULT);
+const withSavings = (v) => (savingsValue(v) !== SAVINGS_DEFAULT ? { savings: v } : {});
+
+/** value: 'off' | 'normal' | 'strict' (null or anything else: Normal). Same state when nothing changes. */
+function setProjectSavings(state, id, value) {
+  const p = findProject(state, id);
+  const v = savingsValue(value);
+  if (!p || savingsValue(p.savings) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { savings: _, ...rest } = x;
+    return { ...rest, ...withSavings(v) };
+  }) };
+}
+
+/** The project's savings level: 'off' | 'normal' | 'strict'. */
+const savingsOf = (project) => savingsValue(project?.savings);
+
 // --- backup account at the usage limit (contract v3.17, src/fallback.js)
 // Project.backupAccount: 'auto' (any other logged-in account not at its limit) or an account id; absent = none.
 // Project.homeAccount: the account the project was on before an automatic move to a backup; it goes back there once
@@ -319,5 +341,6 @@ module.exports = {
   addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
   AGENT_MODELS, setProjectAgentModel, agentModelOf,
   CONTEXT_CAPS, setProjectContextCap, contextCapOf,
+  setProjectSavings, savingsOf,
   setProjectBackup, backupOf, fallbackTo, returnHome,
 };

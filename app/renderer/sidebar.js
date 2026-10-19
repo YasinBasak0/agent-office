@@ -293,6 +293,22 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.contextCap')), sel);
   }
 
+  // Token savings (contract v3.20): Off, Normal (the default: no field) or Strict; the subagents' step budget and the
+  // tool output caps (accounts.js SAVINGS). Applies like the context cap: next start, idle tabs right away.
+  function savingsSelect(p) {
+    const now = ['off', 'strict'].includes(p.savings) ? p.savings : 'normal';
+    const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
+    const sel = h('select', {
+      class: 'sb-acct sb-mode',
+      title: t('sidebar.savingsTitle'),
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => on.setSavings?.(p.id, e.target.value),
+    },
+    opt('off', t('sidebar.savingsOff')), opt('normal', t('sidebar.savingsNormal')), opt('strict', t('sidebar.savingsStrict')));
+    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
+      h('span', { class: 'sb-acct-label' }, t('sidebar.savings')), sel);
+  }
+
   // The account the project continues on when its own reaches the usage limit (contract v3.17): none, any other
   // logged-in account with quota left, or one account. Nothing restarts when it changes.
   function backupSelect(p) {
@@ -355,6 +371,7 @@ export function mountSidebar(el, on) {
           managerSelect(p),
           agentModelSelect(p),
           contextCapSelect(p),
+          savingsSelect(p),
           backupSelect(p),
           onBackupTag(p),
           loginBadge(p),

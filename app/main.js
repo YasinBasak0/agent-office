@@ -687,13 +687,16 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   const print = mcpFingerprintOf(account, project, cwd);
   const args = R.claudeArgs([...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
   const startedAt = Date.now();
-  // after the rc files: the account's folder, the project's pinned subagent model (contract v3.14) and its context
-  // cap (v3.15; accounts.js sessionEnv)
+  // after the rc files: the account's folder, the project's pinned subagent model (contract v3.14), its context
+  // cap (v3.15) and its savings' tool output caps (v3.20; accounts.js sessionEnv)
   const cmd = '[ -n "$AGENT_OFFICE_CONFIG_DIR" ] && export CLAUDE_CONFIG_DIR="$AGENT_OFFICE_CONFIG_DIR"; '
     + '[ -n "$AGENT_OFFICE_AGENT_MODEL" ] && export CLAUDE_CODE_SUBAGENT_MODEL="$AGENT_OFFICE_AGENT_MODEL" CLAUDE_CODE_SUBAGENT_MODEL_FORCE=1; '
-    + '[ -n "$AGENT_OFFICE_CONTEXT_CAP" ] && export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AGENT_OFFICE_CONTEXT_CAP"; exec claude "$@"';
+    + '[ -n "$AGENT_OFFICE_CONTEXT_CAP" ] && export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AGENT_OFFICE_CONTEXT_CAP"; '
+    + '[ -n "$AGENT_OFFICE_BASH_OUTPUT" ] && export BASH_MAX_OUTPUT_LENGTH="$AGENT_OFFICE_BASH_OUTPUT"; '
+    + '[ -n "$AGENT_OFFICE_MCP_OUTPUT" ] && export MAX_MCP_OUTPUT_TOKENS="$AGENT_OFFICE_MCP_OUTPUT"; exec claude "$@"';
   let env = A.sessionEnv(A.ptyEnv(process.env, configDir), {
     manager: P.managerOf(state, project), agentModel: P.agentModelOf(project), contextCap: P.contextCapOf(project),
+    savings: P.savingsOf(project),
   });
   delete env.AGENT_OFFICE_STATUSLINE;
   delete env.AGENT_OFFICE_DIRECTORY;
@@ -1164,6 +1167,15 @@ ipcMain.handle('projects:setAgentModel', (_e, id, value) => {
 // Applies like the agent model: next start, idle tabs at once. Returns the restarted pty ids.
 ipcMain.handle('projects:setContextCap', (_e, id, value) => {
   const next = P.setProjectContextCap(state, id, value);
+  if (next === state) return { restarted: [] };
+  commit(next);
+  const p = P.findProject(state, id);
+  return { restarted: p ? restartIdle(p) : [] };
+});
+// Per-project savings (contract v3.20): 'off' | 'normal' | 'strict' (accounts.js SAVINGS). Applies like the context
+// cap: next start, idle tabs at once. Returns the restarted pty ids.
+ipcMain.handle('projects:setSavings', (_e, id, value) => {
+  const next = P.setProjectSavings(state, id, value);
   if (next === state) return { restarted: [] };
   commit(next);
   const p = P.findProject(state, id);
