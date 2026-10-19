@@ -6,7 +6,7 @@ Three parts are built in parallel; this file fixes the seams between them. Chang
 
 | Part | Files |
 | --- | --- |
-| Main | `main.js`, `preload.js`, `src/projects.js` (new), `src/accounts.js` (new) |
+| Main | `main.js`, `preload.js`, `src/projects.js` (new), `src/accounts.js` (new), `src/engine.js` (v3.18) |
 | UI | `renderer/index.html`, `renderer/app.js`, `renderer/terminal.js`, `renderer/style.css`, `renderer/sidebar.js` (new) |
 | Office | `src/sessions.js`, `src/office/core.mjs`, `renderer/office-view.js` |
 
@@ -624,3 +624,18 @@ agentOffice.accounts.onFallback(cb: (ev: { projectId: string, kind: 'switched' |
 - **Switching.** `onLimit` marks the account, then (backup set, a candidate found, allowed) `P.fallbackTo` (the project's account becomes the backup, `homeAccount` the account it left; the first one of a chain stays the home) and `moveProject(id, from, { carryOn })`: the data moves (v3.16), every tab resumes its own conversation, and the tabs stopped by the limit — not mid-turn any more — are given `UNFINISHED_PROMPT` like a tab cut off mid-turn. Before that, `account:fallback` `switched` resets the project's terminals and shows over each of them, and a system notification says the same: *“{from} hesabının limiti doldu, {to} hesabından devam ediliyor”* / *“{from}'s usage limit is reached; continuing on {to}”*. The row shows **on backup · back to {home}**.
 - **Switching back.** About every 15 s, a project with a `homeAccount` goes back (`P.returnHome` + `moveProject`, `account:fallback` `returned`) when the home is logged in and no longer at its limit, it has been at least 2 min since its last move, and every running tab is idle (no turn, no unsent text, no agent or shell of its session running; sleeping and stopped tabs do not hold it). Changing the project's account by hand forgets the home; removing an account drops it as a backup and as a home.
 - **No loops.** An account at its limit is never a target, a project moves at most once per 2 min and at most 4 times an hour; when no candidate is left (`notLoggedIn`, `allLimited`) or a move is not allowed (`soon`, `loop`) the project stays where it is and `account:fallback` `stuck` (*“…no backup account can take over…”* / *“…changed accounts several times recently…”*) shows once per limit; the limit is looked at again every 1.5 s, so a backup that logs in or resets is used then. Without a backup set nothing moves and Claude Code's own message stands.
+
+## Engine per project (v3.18)
+
+A project can run Google Antigravity CLI (`agy`, 1.3.6 or newer) in its terminals instead of Claude Code. App `projects.js`, `src/engine.js` (no Electron), `platform.js` `findAgy`, `main.js` `startAgy`, `renderer/sidebar.js`.
+
+```ts
+// state.json, per project (absent = Claude Code)
+Project.engine?: 'agy'
+agentOffice.projects.setEngine(id: string, value: 'agy' | null): Promise<{ restarted: string[] }>   // null (or 'claude'): Claude Code
+```
+
+- **Sidebar.** First in each project row: **Engine** [**Claude Code** | **Antigravity**] / **Motor** [**Claude Code** | **Antigravity**], the same look (`.sb-acct .sb-mode`). An Antigravity project hides **Account**, **Boss**, **Agent model**, **Context cap**, **Backup**, the *on backup* tag, the *not logged in* badge and the token cost button. `projects:setEngine` writes the field (removed for Claude Code) and starts **every** tab of the project again at once, fresh (`startPty(id)` for each of `ptyIdsOf`, sleeping and stopped tabs too): the two programs share no conversation.
+- **Launch.** `startPty` hands an Antigravity tab to `startAgy`: the same login shell, `exec agy "$@"` (argv0 `agy`; `engine.js` `AGY_COMMAND`); Windows: `agy` on PATH (`findAgy`) started directly, else the terminal says *Antigravity was not found* (`main.noAgy`, `main.noAgyHelp`) and Enter tries again. Arguments (`agyArgs`): `--continue` when resuming (the main tab and worktree tabs, as for claude, without the history check), plus `-i <prompt>` only when resuming with a prompt; a fresh start has none. A resume that exits non-zero within `RESUME_GRACE_MS` starts fresh. The env is `ptyEnv(…, null)` + `sessionEnv` without agent model or context cap: no `CLAUDE_CONFIG_DIR`, no `CLAUDE_CODE_*`; `AGENT_OFFICE_APP` and `AGENT_OFFICE_DIRECTORY` stay (harmless). agy keeps its own Google login (inside its terminal) and data (`~/.gemini/antigravity-cli`); it has no `auth status --json`.
+- **Skipped for Antigravity** (all of them read Claude Code's files): plugin dir, status line and `--settings`, memory setting, shared config and `--mcp-config`, the MCP fingerprint and reload (v3.11), the usage-limit watch and backup-account moves (v3.17 `checkLimits`, `onLimit`, `maybeReturn`), `moveProject` on an account change (v3.16; the account is ignored, nothing restarts), interrupted-work marks (`checkTurns`) and *Resume unfinished work* (v3.8), `restartIdle` (setting changes, v3.10), the token report (v3.13: `tokens:report` gives null) and *Move Session to Another Computer* (v3.4: the menu item is disabled; the File menu and an import into an Antigravity project say `main.moveAgy`). Sleeping needs Claude Code's pid file, so an Antigravity tab never sleeps (it may still start lazily at launch). Enter after `agy` exits starts it again with `--continue` for a tab that continues (there is no session id).
+- **Office.** agy does not run the plugin, so an Antigravity project shows **no workers** in the office yet; its animations are a later phase.

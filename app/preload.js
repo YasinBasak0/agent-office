@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     setAgentModel: (id, value) => ipcRenderer.invoke('projects:setAgentModel', id, value), // 'sonnet' | 'haiku' | 'opus' | null (Auto); { restarted: pty ids } (v3.14)
     setContextCap: (id, value) => ipcRenderer.invoke('projects:setContextCap', id, value), // 200000 | 400000 | null (Auto); { restarted: pty ids } (v3.15)
     setBackup: (id, value) => ipcRenderer.invoke('projects:setBackup', id, value), // null (none) | 'auto' | account id (v3.17)
+    setEngine: (id, value) => ipcRenderer.invoke('projects:setEngine', id, value), // 'agy' | null (Claude Code); { restarted: pty ids }, every tab fresh (v3.18)
     menu: (id) => ipcRenderer.invoke('projects:menu', id),   // right click: native menu (move the session to another computer, v3.4)
     onChange: listen('projects:changed'),
   },

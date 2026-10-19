@@ -384,6 +384,15 @@ async function setContextCap(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/** Per-project engine (v3.18): 'agy' (Antigravity) | null (Claude Code); main starts every tab of the project again, fresh. */
+async function setEngine(projectId, value) {
+  try {
+    const r = await api.projects.setEngine?.(projectId, value);
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 /** Per-project backup account (v3.17): null (none) | 'auto' | an account id; nothing restarts. */
 async function setBackup(projectId, value) {
   try {
@@ -466,6 +475,7 @@ sidebar = mountSidebar($('sidebar'), {
   setProjectManager,
   setAgentModel,
   setContextCap,
+  setEngine,
   setBackup,
   addAccount,
   renameAccount,

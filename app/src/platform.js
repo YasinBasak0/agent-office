@@ -107,6 +107,9 @@ function findClaude(env, exists) {
   return known.find((f) => f && exists(f)) || null;
 }
 
+/** Where Antigravity's `agy` is on Windows (contract v3.18): on PATH, else null (not installed). */
+const findAgy = (env, exists) => findOnPath('agy', env, exists);
+
 /** One argument for a cmd.exe command line: bare if it is safe, else in double quotes. */
 const cmdQuote = (a) => (/^[\w\-.:\\/=@+,]+$/.test(a) ? a : `"${String(a).replace(/"/g, '""')}"`);
 
@@ -222,6 +225,6 @@ function dotPng(size, rgb) {
 
 module.exports = {
   isMac, isWindows, defaultShell, filesFromUriList, linuxClipboardCommands, shortcuts, canSelfUpdate,
-  envGet, withPathDir, findOnPath, findClaude, cmdQuote, windowsCommand, findGitBash,
+  envGet, withPathDir, findOnPath, findClaude, findAgy, cmdQuote, windowsCommand, findGitBash,
   filesFromDropFiles, filesFromFileNameW, windowsClipboardKind, POWERSHELL_FILES, filesFromLines, dotPng,
 };

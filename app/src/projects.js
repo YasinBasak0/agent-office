@@ -26,6 +26,7 @@ function normalizeState(raw, { id = newId } = {}) {
       ...withManager(p.manager),
       ...withAgentModel(p.agentModel),
       ...withContextCap(p.contextCap),
+      ...withEngine(p.engine),
       ...withBackup(p.backupAccount, known),
       ...withHome(p.homeAccount, known, known.has(p.accountId) ? p.accountId : DEFAULT_ID),
       ...withTabs(normalizeTabs(p.tabs)),
@@ -262,6 +263,29 @@ function setProjectContextCap(state, id, value) {
 /** The project's auto-compact window in tokens, or null (Auto). */
 const contextCapOf = (project) => contextCapValue(project?.contextCap);
 
+// --- per-project engine (contract v3.18)
+// Project.engine: 'agy' runs Google Antigravity CLI (`agy`) in the project's tabs instead of Claude Code; absent =
+// Claude Code. Never written for Claude Code. Antigravity keeps its own login and data, so none of the Claude-only
+// settings (account, boss, agent model, context cap, backup account) apply to it.
+const ENGINES = ['claude', 'agy'];
+const engineValue = (v) => (v === 'agy' ? v : null);
+const withEngine = (v) => (engineValue(v) ? { engine: v } : {});
+
+/** value: 'agy' | 'claude' | null (both: Claude Code). Same state when nothing changes. */
+function setProjectEngine(state, id, value) {
+  const p = findProject(state, id);
+  const v = engineValue(value);
+  if (!p || engineValue(p.engine) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { engine: _, ...rest } = x;
+    return v === null ? rest : { ...rest, engine: v };
+  }) };
+}
+
+/** The program the project's tabs run: 'claude' | 'agy'. */
+const engineOf = (project) => engineValue(project?.engine) || 'claude';
+
 // --- backup account at the usage limit (contract v3.17, src/fallback.js)
 // Project.backupAccount: 'auto' (any other logged-in account not at its limit) or an account id; absent = none.
 // Project.homeAccount: the account the project was on before an automatic move to a backup; it goes back there once
@@ -319,5 +343,6 @@ module.exports = {
   addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
   AGENT_MODELS, setProjectAgentModel, agentModelOf,
   CONTEXT_CAPS, setProjectContextCap, contextCapOf,
+  ENGINES, setProjectEngine, engineOf,
   setProjectBackup, backupOf, fallbackTo, returnHome,
 };
