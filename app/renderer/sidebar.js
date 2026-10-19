@@ -310,10 +310,11 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.savings')), sel);
   }
 
-  // The program the project's tabs run (contract v3.22): Claude Code or Google Antigravity CLI (`agy`). Changing it
-  // starts every tab of the project again, fresh; an Antigravity project hides the Claude-only settings.
+  // The program the project's tabs run (contract v3.22): Claude Code, Google Antigravity CLI or Command Code
+  // (contract v3.25). Changing it starts every tab of the project again, fresh; the other engines hide the
+  // Claude-only settings (account, boss, agent model, context cap, savings, backup) and show an "observed" tag.
   function engineSelect(p) {
-    const now = p.engine === 'agy' ? 'agy' : 'claude';
+    const now = p.engine === 'agy' || p.engine === 'commandcode' ? p.engine : 'claude';
     const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
     const sel = h('select', {
       class: 'sb-acct sb-mode',
@@ -321,11 +322,12 @@ export function mountSidebar(el, on) {
       onclick: (e) => e.stopPropagation(),
       // refused (a tab is working) or cancelled: the select shows the engine that stays
       onchange: async (e) => {
-        const r = await on.setEngine?.(p.id, e.target.value === 'agy' ? 'agy' : null);
+        const v = now === 'claude' ? e.target.value : e.target.value === 'claude' ? null : e.target.value;
+        const r = await on.setEngine?.(p.id, v);
         if (r?.refused) e.target.value = now;
       },
     },
-    opt('claude', t('sidebar.engineClaude')), opt('agy', t('sidebar.engineAgy')));
+    opt('claude', t('sidebar.engineClaude')), opt('agy', t('sidebar.engineAgy')), opt('commandcode', t('sidebar.engineCommandcode')));
     return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
       h('span', { class: 'sb-acct-label' }, t('sidebar.engine')), sel);
   }
@@ -370,7 +372,11 @@ export function mountSidebar(el, on) {
       const s = stats.get(p.name);
       const live = status.get(p.id);
       const sleeping = !live && asleep.has(p.id);
-      const claude = p.engine !== 'agy'; // Antigravity (v3.22): no account, boss, model, cap, savings, backup or token cost
+      const claude = !p.engine || p.engine === 'claude'; // the other engines (v3.22, v3.25) hide the Claude-only settings
+      const dotTitle = !claude ? (p.engine === 'commandcode'
+        ? (live ? t('sidebar.cmdRunning') : sleeping ? t('sidebar.cmdAsleep') : t('sidebar.cmdStopped'))
+        : live ? t('sidebar.agyRunning') : sleeping ? t('sidebar.agyAsleep') : t('sidebar.agyStopped'))
+        : live ? t('sidebar.claudeRunning') : sleeping ? t('sidebar.claudeAsleep') : t('sidebar.claudeStopped');
       return h('li', {
         class: 'sb-proj' + (p.id === activeId ? ' active' : ''),
         'data-id': p.id,
@@ -378,8 +384,7 @@ export function mountSidebar(el, on) {
         onclick: () => on.select(p.id),
         oncontextmenu: (e) => { e.preventDefault(); on.projectMenu?.(p); },
       },
-        h('span', { class: 'sb-dot' + (live ? ' live' : sleeping ? ' asleep' : ''), title: !claude ? (live ? t('sidebar.agyRunning') : sleeping ? t('sidebar.agyAsleep') : t('sidebar.agyStopped'))
-          : live ? t('sidebar.claudeRunning') : sleeping ? t('sidebar.claudeAsleep') : t('sidebar.claudeStopped') }),
+        h('span', { class: 'sb-dot' + (live ? ' live' : sleeping ? ' asleep' : ''), title: dotTitle }),
         h('span', { class: 'sb-name' }, p.name),
         attn.get(p.id) === 'permission'
           ? h('span', { class: 'sb-attn permission', title: t('sidebar.attnPermission') }, '✋')
@@ -399,11 +404,13 @@ export function mountSidebar(el, on) {
           claude ? backupSelect(p) : null,
           claude ? onBackupTag(p) : null,
           claude ? loginBadge(p) : null,
-          claude ? null : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint')),
+          claude ? null : p.engine === 'commandcode'
+            ? h('span', { class: 'sb-tag sb-agy', title: t('sidebar.cmdHintTitle') }, t('sidebar.cmdHint'))
+            : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint')),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),
         h('button', {
-          class: 'sb-cost', hidden: !claude || !briefs.has(p.id), title: t('sidebar.costTitle'),
+          class: 'sb-cost', hidden: !(claude || p.engine === 'commandcode') || !briefs.has(p.id), title: t('sidebar.costTitle'),
           onclick: (e) => { e.stopPropagation(); on.openUsage?.(p); },
         }, costText(briefs.get(p.id))),
       );

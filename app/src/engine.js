@@ -2,6 +2,8 @@
 // tested with node --test). Google Antigravity CLI (`agy`, 1.3.6 or newer) keeps its own login and data
 // (~/.gemini/antigravity-cli), so nothing of Claude Code's setup (account folder, plugin, status line, memory, MCP
 // config) nor of the office (directory, journal, savings, tokens) is passed to it.
+// Command Code (`commandcode`, contract v3.25) is handled the same way: its own login and data (~/.commandcode), an
+// env allowlist (cmdEnv) and no file, flag or variable of the office.
 const { promptArg } = require('./resume.js');
 
 // macOS/Linux launch line, run by the login shell like claude's (PATH and rc files apply); the arguments come via "$@".
@@ -65,4 +67,57 @@ function agyEnv(base, platform = process.platform) {
   return out;
 }
 
-module.exports = { AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES };
+// --- Command Code (contract v3.25). The same rules as agy: an env allowlist, nothing of Claude Code or the office.
+// The binary is `commandcode` on every OS (the npm package `command-code` also installs `cmd`, which on Windows is
+// the shell's own System32\cmd.exe). Its sessions live in ~/.commandcode/projects/<slug>/<session id>.jsonl.
+const CMD = {
+  bin: 'commandcode',
+  home: '.commandcode',
+};
+
+/**
+ * Command Code's arguments for a start: `--continue` (the most recent session in the folder, commandcode.ai/docs/
+ * sessions) when resuming, then (only when resuming and a prompt is given) the prompt as the positional argument.
+ * @param {{ resume?: boolean, prompt?: string }} [o]
+ */
+function cmdArgs({ resume = false, prompt = '' } = {}) {
+  const p = resume && prompt ? promptArg(prompt) : '';
+  return [...(resume ? ['--continue'] : []), ...(p ? [p] : [])];
+}
+
+/** Command Code's launch line: drops any AGENT_OFFICE_* an rc file set (as AGY_COMMAND), then `commandcode "$@"`. */
+const CMD_COMMAND = AGY_COMMAND.replace(/exec agy "\$@"$/, `exec ${CMD.bin} "$@"`);
+
+// Command Code's own documented variables (commandcode.ai/docs/settings, /docs/sessions), passed only when the user
+// has them: its API key, zero-data-retention and model-catalog switches, updater, scratchpad and the telemetry
+// opt-out. MCP_TOOL_TIMEOUT / MAX_MCP_OUTPUT_TOKENS are documented too but stay out (the MCP deny rule).
+const CMD_ENV_NAMES = ['COMMAND_CODE_API_KEY', 'CMD_ZDR', 'CMD_DISABLE_REMOTE_MODEL_CATALOG', 'DO_NOT_TRACK'];
+const CMD_ENV_PREFIXES = ['COMMANDCODE_'];
+
+/**
+ * The env Command Code starts with: agyEnv's base allowlist (without agy's own names and families) plus Command
+ * Code's documented variables; the same deny rule (Claude, Anthropic, the office, MCP).
+ * @param {Record<string, string | undefined>} base @param {string} [platform]
+ * @returns {Record<string, string>}
+ */
+function cmdEnv(base, platform = process.platform) {
+  const win = platform === 'win32';
+  const norm = (/** @type {string} */ n) => (win ? n.toUpperCase() : n);
+  const names = new Set([...AGY_ENV_NAMES.filter((n) => n !== 'AGY_ADC_AUTH'), ...CMD_ENV_NAMES, ...(win ? AGY_ENV_WINDOWS : [])].map(norm));
+  const prefixes = ['LC_', ...CMD_ENV_PREFIXES];
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const [k, v] of Object.entries(base || {})) {
+    if (typeof v !== 'string' || AGY_ENV_DENY.test(k)) continue;
+    const key = norm(k);
+    if (names.has(key) || prefixes.some((p) => key.startsWith(p))) out[k] = v;
+  }
+  out.TERM = 'xterm-256color';
+  out.COLORTERM = 'truecolor';
+  return out;
+}
+
+module.exports = {
+  AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES,
+  CMD, cmdArgs, CMD_COMMAND, cmdEnv, CMD_ENV_NAMES, CMD_ENV_PREFIXES,
+};

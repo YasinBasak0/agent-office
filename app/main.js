@@ -45,10 +45,15 @@ const ptyOf = (id) => terms.get(id) || logins.get(id);
 // An Antigravity project (contract v3.22): its tabs run `agy`, so nothing that reads Claude Code's files applies to it.
 const isAgy = (project) => P.engineOf(project) === 'agy';
 // Sleeping tabs (see src/sleep.js): pty id → how to start it again ({ resume } at launch, { sessionId } after a sleep,
-// { agy } after an Antigravity tab's sleep, v3.23).
+// { agy } after an Antigravity tab's sleep, v3.23; { cmd } after a Command Code tab's sleep, v3.25).
+// A Command Code project (contract v3.25): its tabs run `commandcode`. Like agy it gets nothing of Claude Code or the
+// office (cmdEnv's allowlist) and the app observes it one way (src/agy-watch.js).
+const isCmd = (project) => P.engineOf(project) === 'commandcode';
+// The engines the app observes itself instead of the plugin (agy v3.23, Command Code v3.25).
+const isObserved = (project) => isAgy(project) || isCmd(project);
 const asleep = new Map();
 const activity = new Map(); // pty id → { at: last start/input/output, draft: prompt text typed but unsent }
-// Antigravity tabs in the office (contract v3.23, src/agy-watch.js): running pty id → { watch, cursor } (cursor: the
+// Antigravity and Command Code tabs in the office (contract v3.23/v3.25, src/agy-watch.js): running pty id → { watch, cursor } (cursor: the
 // transcript read so far); agyEnded: sessions of agy runs that ended today, kept for the TODAY count.
 const agyWatch = new Map();
 let agyEnded = [];
@@ -286,7 +291,7 @@ function checkTurns() {
   const home = app.getPath('home');
   for (const [id, t] of terms) {
     const r = P.resolvePty(state, id);
-    if (!r || isAgy(r.project)) continue;
+    if (!r || P.engineOf(r.project) !== 'claude') continue; // agy and Command Code keep no Claude Code pid file (v3.22, v3.25)
     const { configDir } = A.accountOf(state, r.project);
     const claude = readJson(Z.claudePidFile(configDir, home, t.pid));
     const sid = validSid(claude?.sessionId);
@@ -356,6 +361,7 @@ function accountEnv(account) {
 
 // --- Windows: no login shell; claude is found on PATH and started directly (see src/platform.js)
 const CLAUDE_INSTALL_URL = 'https://code.claude.com/docs/en/setup';
+const COMMANDCODE_URL = 'https://commandcode.ai/docs';
 const isFile = (f) => { try { return fs.statSync(f).isFile(); } catch { return false; } };
 /** How to start claude with these arguments in this environment; null when Claude Code is not installed. */
 function windowsClaude(args, env) {
@@ -372,9 +378,19 @@ function windowsAgy(args, env) {
   const agy = OS.findAgy(env, isFile);
   return agy ? OS.windowsCommand(agy, args, env) : null;
 }
+/** How to start Command Code's CLI (`commandcode`, contract v3.25) with these arguments; null when it is not installed. */
+function windowsCommandCode(args, env) {
+  const cmd = OS.findCommandCode(env, isFile);
+  return cmd ? OS.windowsCommand(cmd, args, env) : null;
+}
 // Antigravity is missing: the same as for Claude Code (Enter there tries again).
 function sendNoAgy(id) {
   send('pty:data', id, `\r\n\x1b[31m${T('main.noAgy')}\x1b[0m\r\n${T('main.noAgyHelp')}\r\n`);
+  send('pty:exit', id, 127);
+}
+// Command Code is missing: the same as for Claude Code (Enter there tries again).
+function sendNoCommandCode(id) {
+  send('pty:data', id, `\r\n\x1b[31m${T('main.noCmd')}\x1b[0m\r\n${T('main.noCmdHelp', { url: COMMANDCODE_URL })}\r\n`);
   send('pty:exit', id, 127);
 }
 /** node-pty arguments: a verbatim cmd.exe line is passed as one pre-quoted string. */
@@ -647,20 +663,23 @@ function scanUsage() {
 
 // --- token usage per project (contract v3.13, src/token-usage.js): read from the transcripts incrementally
 const tokenScanner = new TU.UsageScanner();
-/** The project's transcript folders in its account's config folder (its folder, tab folders, worktrees). */
+/** The project's transcript folders: Claude Code's (its account's config folder) or Command Code's own
+ * (~/.commandcode/projects, read-only; never ~/.commandcode/auth.json; contract v3.25). Antigravity writes no transcripts. */
 function tokenFolders(p) {
-  const { configDir } = A.accountOf(state, p);
-  const root = path.join(configDir || path.join(app.getPath('home'), '.claude'), 'projects');
+  const engine = P.engineOf(p);
+  const root = engine === 'commandcode'
+    ? path.join(app.getPath('home'), EN.CMD.home, 'projects')
+    : path.join(A.accountOf(state, p).configDir || path.join(app.getPath('home'), '.claude'), 'projects');
   let names = [];
   try { names = fs.readdirSync(root); } catch {}
   const dirs = [p.dir, ...P.tabsOf(p).map((t) => t.dir).filter(Boolean)];
   const others = state.projects.filter((x) => x.id !== p.id).map((x) => x.dir);
-  return TU.projectFolders(names, dirs, others).map((n) => path.join(root, n));
+  return TU.projectFolders(names, dirs, others, engine === 'commandcode' ? TU.ccSlugOf : undefined).map((n) => path.join(root, n));
 }
 /** detail: also the costliest sub-agent runs and the fixed prefix (contract v3.21; the panel, not the row). */
 async function tokenReport(id, { detail = false } = {}) {
   const p = P.findProject(state, id);
-  if (!p || isAgy(p)) return null; // Antigravity writes no Claude Code transcripts (v3.22)
+  if (!p || P.engineOf(p) === 'agy') return null; // Antigravity writes no transcripts (v3.22)
   const since = Number.isFinite(p.addedAt) ? p.addedAt : null;
   const folders = tokenFolders(p);
   const recs = await tokenScanner.scanFolders(folders, { since: since ?? 0 });
@@ -735,6 +754,8 @@ function officeDirectoryFile(project, key, mcpNames) {
 function hasHistory(dir, configDir) {
   try { return fs.readdirSync(P.historyDir(dir, configDir, app.getPath('home'))).some((f) => f.endsWith('.jsonl')); } catch { return false; }
 }
+// Is there a Command Code session in the folder (contract v3.25): ~/.commandcode/projects/<ccSlugOf(dir)>/<id>.jsonl.
+const hasCmdHistory = (dir) => AW.hasCmdSession(app.getPath('home'), dir);
 const RESUME_GRACE_MS = 8000; // if --continue ends with an error within this time, claude restarts fresh
 
 // (Re)starts a tab's claude; the id is projectId for the main tab, `<projectId>:<n>` for an extra tab.
@@ -744,13 +765,15 @@ const RESUME_GRACE_MS = 8000; // if --continue ends with an error within this ti
 // --resume <id>, the tab's own session. imported: a session just moved here from another computer (contract v3.4):
 // if --resume fails it does not fall back to a fresh session; the user is told and the imported files stay.
 // prompt: submitted as claude's positional prompt, only when the start resumes a session (interrupted work).
-// A tab of an Antigravity project starts `agy` instead (startAgy, contract v3.22).
+// A tab of an Antigravity project starts `agy` instead (startAgy, contract v3.22); a Command Code project starts
+// `commandcode` (startCommandCode, contract v3.25).
 function startPty(id, { resume = false, sessionId = null, imported = false, prompt = '' } = {}) {
   killPty(id);
   const r = P.resolvePty(state, id);
   if (!r || !win || !isLoaded) return broadcast();
   asleep.delete(id);
   if (isAgy(r.project)) return startAgy(id, r, { resume, prompt });
+  if (isCmd(r.project)) return startCommandCode(id, r, { resume, prompt });
   const { project, tab, dir: cwd } = r;
   const account = A.accountOf(state, project);
   const { configDir } = account;
@@ -915,7 +938,7 @@ function retireAgy(id) {
  */
 function agyOwnDir(id) {
   const r = P.resolvePty(state, id);
-  if (!r || !isAgy(r.project) || (r.tab && !r.tab.worktree)) return null;
+  if (!r || !isObserved(r.project) || (r.tab && !r.tab.worktree)) return null;
   const same = P.ptyIdsOf(r.project).filter((pid) => P.resolvePty(state, pid)?.dir === r.dir);
   return same.length === 1 ? r.dir : null;
 }
@@ -929,15 +952,71 @@ function agySessions(now = Date.now()) {
     const r = P.resolvePty(state, id);
     if (!r) continue;
     const dir = agyOwnDir(id);
-    const file = dir ? AW.agyTranscriptPath(home, dir) : null;
+    const cmd = isCmd(r.project);
+    const file = !dir ? null : cmd ? AW.cmdTranscriptPath(home, dir) : AW.agyTranscriptPath(home, dir);
     if (file) {
-      w.cursor = AW.readTranscript(file, w.cursor);
+      w.cursor = cmd ? AW.readTranscript(file, w.cursor, AW.CMD_PROMPT_RE) : AW.readTranscript(file, w.cursor);
       w.watch.transcript(w.cursor, now);
     }
     w.watch.tick(now);
     out.push(w.watch.session(r.project.name, w.key, now));
   }
   return out;
+}
+
+// A tab of a Command Code project (contract v3.25): `commandcode` from the same login shell, with none of Claude Code's
+// setup nor of the office: no plugin, mod, status line, memory, MCP or office directory file, no AGENT_OFFICE_* (the
+// launch line drops what rc files set), and an env from an allowlist (engine.js cmdEnv). resume: --continue, only for
+// a tab that continues (main tab, worktree tab) and whose folder has a session (hasCmdHistory); prompt only then.
+// The app watches it one way like agy (src/agy-watch.js, engine 'commandcode').
+function startCommandCode(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+  removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
+  const { cols, rows } = sizes.get(id) || lastSize;
+  const isResume = resume && (!tab || Boolean(tab.worktree)) && hasCmdHistory(cwd);
+  const args = EN.cmdArgs({ resume: isResume, prompt });
+  const startedAt = Date.now();
+  // an allowlist of the user's env (engine.js cmdEnv): no Claude, Anthropic, office or MCP variable
+  const env = EN.cmdEnv(process.env);
+  let t;
+  try {
+    const win32 = IS_WIN ? windowsCommandCode(args, env) : null;
+    if (IS_WIN && !win32) { sendNoCommandCode(id); return broadcast(); }
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', EN.CMD_COMMAND, EN.CMD.bin, ...args], {
+      name: 'xterm-256color',
+      cols, rows,
+      cwd: isDir(cwd) ? cwd : app.getPath('home'),
+      env,
+    });
+  } catch (e) {
+    console.error('pty başlatılamadı:', e.message);
+    send('pty:exit', id, -1);
+    return broadcast();
+  }
+  terms.set(id, t);
+  activity.set(id, { at: startedAt, draft: false });
+  lastSid.delete(id);
+  retireAgy(id);
+  agyWatch.set(id, { watch: AW.createAgyWatch(startedAt, { engine: 'commandcode', label: 'Command Code' }), cursor: null, key: `cmd-${id.replace(/[^\w-]/g, '_')}-${++agySeq}` });
+  t.onData((d) => {
+    if (terms.get(id) !== t) return;
+    const a = activity.get(id);
+    if (a) a.at = Date.now();
+    agyWatch.get(id)?.watch.output(d);
+    send('pty:data', id, d);
+  });
+  t.onExit(({ exitCode }) => {
+    if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
+    retireAgy(id);
+    terms.delete(id);
+    setMarks(R.clearInterrupted(marks(), [id]));
+    removeMcpFile(id);
+    // no session to continue: start fresh without showing the exit to the user
+    if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) return startPty(id);
+    activity.delete(id);
+    send('pty:exit', id, exitCode);
+    broadcast();
+  });
+  broadcast();
 }
 
 // After loading, start the claude of every project that isn't running (on reload, leave running ones alone).
@@ -985,7 +1064,7 @@ function unfinishedTabs() {
   const at = marks();
   const tabs = [];
   for (const p of state.projects) {
-    if (isAgy(p)) continue; // no Claude Code transcript to look at (v3.22)
+    if (P.engineOf(p) !== 'claude') continue; // no Claude Code pid file or transcript for it (v3.22, v3.25)
     for (const id of P.ptyIdsOf(p)) {
       const r = P.resolvePty(state, id);
       if (!r) continue;
@@ -1063,13 +1142,13 @@ function sleepIdle() {
     const base = { now, idleMs: minutes * 60000, lastActivityAt: a.at, hasDraft: a.draft, isActive: r.project.id === state.activeId };
     // cheap checks first: files are read only for a tab that is otherwise ready to sleep
     if (Z.sleepBlocker({ ...base, claude: { sessionId: '-', status: 'idle' }, office: {} })) continue;
-    if (isAgy(r.project)) {
-      // Antigravity (v3.23): idle by its watcher (no turn, dialog or draft), and only a tab whose --continue opens
-      // its own conversation (agyOwnDir); it wakes with --continue
+    if (isObserved(r.project)) {
+      // Antigravity (v3.23) and Command Code (v3.25): idle by its watcher (no turn, dialog or draft), and only a tab
+      // whose --continue opens its own conversation (agyOwnDir); it wakes with --continue
       const w = agyWatch.get(id);
       if (!w || w.watch.blocker() || !agyOwnDir(id)) continue;
       killPty(id);
-      asleep.set(id, { agy: true });
+      asleep.set(id, isCmd(r.project) ? { cmd: true } : { agy: true });
       send('pty:sleep', id);
       slept = true;
       continue;
@@ -1095,7 +1174,7 @@ function sleepIdle() {
 // An Antigravity project (v3.22) ignores accounts: nothing moves and its tabs keep running.
 function moveProject(projectId, from, { carryOn = [] } = {}) {
   const p = P.findProject(state, projectId);
-  if (!p || isAgy(p)) return;
+  if (!p || P.engineOf(p) !== 'claude') return; // accounts change nothing for agy or Command Code (v3.22, v3.25)
   const home = app.getPath('home');
   const plan = [];
   for (const id of P.ptyIdsOf(p)) {
@@ -1190,7 +1269,7 @@ function checkLimits() {
   const now = Date.now();
   const returning = returnTick++ % 10 === 0;
   for (const p of state.projects) {
-    if (isAgy(p)) continue; // no Claude Code account or transcript (v3.22)
+    if (P.engineOf(p) !== 'claude') continue; // no Claude Code account or transcript for it (v3.22, v3.25)
     const account = A.accountOf(state, p);
     const usageFull = () => FB.limitedUntil({ usage: usages.get(account.id), now }) > 0;
     const hits = [];
@@ -1380,16 +1459,17 @@ ipcMain.handle('projects:setSavings', (_e, id, value) => {
   const p = P.findProject(state, id);
   return { restarted: p ? restartIdle(p) : [] };
 });
-// Per-project engine (contract v3.22): 'agy' runs Google Antigravity CLI, null (or 'claude') Claude Code. The two
-// share no conversation, so every tab of the project starts again at once, fresh (sleeping and stopped tabs too).
-// Work is never cut off silently: leaving Claude Code is refused while a tab of it is not idle (tabBlocker, as for a
-// session move), and leaving Antigravity, whose busy state the app cannot see, asks first while any of its tabs runs.
+// Per-project engine (contract v3.22): 'agy' runs Google Antigravity CLI, 'commandcode' (v3.25) runs Command Code,
+// null (or 'claude') Claude Code. Engines share no conversation, so every tab of the project starts again at once,
+// fresh (sleeping and stopped tabs too). Work is never cut off silently: leaving Claude Code is refused while a tab
+// of it is not idle (tabBlocker, as for a session move), and leaving agy or Command Code, whose busy state the app
+// cannot track per tab, asks first while any of its tabs runs.
 // Returns the restarted pty ids, plus refused: the blocker or 'cancelled' when nothing changed for that reason.
 ipcMain.handle('projects:setEngine', async (_e, id, value) => {
   const p = P.findProject(state, id);
   if (!p || P.setProjectEngine(state, id, value) === state) return { restarted: [] };
   const running = P.ptyIdsOf(p).filter((pid) => terms.has(pid));
-  if (!isAgy(p)) {
+  if (P.engineOf(p) === 'claude') {
     const { configDir } = A.accountOf(state, p);
     const blocker = running.map((pid) => tabBlocker(pid, configDir)).find(Boolean);
     if (blocker) {
@@ -1398,7 +1478,9 @@ ipcMain.handle('projects:setEngine', async (_e, id, value) => {
     }
   } else if (running.length) {
     if (!win) return { restarted: [], refused: 'cancelled' };
-    const choice = await ask(T('main.engineAgyConfirm', { name: p.name }), T('main.engineAgyDetail'), [T('main.engineSwitch'), T('main.cancel')], 'warning');
+    const choice = isCmd(p)
+      ? await ask(T('main.engineCcConfirm', { name: p.name }), T('main.engineCcDetail'), [T('main.engineSwitch'), T('main.cancel')], 'warning')
+      : await ask(T('main.engineAgyConfirm', { name: p.name }), T('main.engineAgyDetail'), [T('main.engineSwitch'), T('main.cancel')], 'warning');
     if (choice !== 0) return { restarted: [], refused: 'cancelled' };
   }
   const next = P.setProjectEngine(state, id, value); // again: the state may have changed while the dialog was open
@@ -1425,7 +1507,7 @@ function restartIdle(p) {
 function idleSession(pid) {
   const t = terms.get(pid);
   const r = P.resolvePty(state, pid);
-  if (!t || !r || isAgy(r.project) || activity.get(pid)?.draft) return '';
+  if (!t || !r || P.engineOf(r.project) !== 'claude' || activity.get(pid)?.draft) return ''; // claude-engine tabs only (v3.22, v3.25)
   const { configDir } = A.accountOf(state, r.project);
   const claude = readJson(Z.claudePidFile(configDir, app.getPath('home'), t.pid));
   const sid = validSid(claude?.sessionId);
@@ -1625,7 +1707,10 @@ let transferBusy = false;
 async function exportSession(projectId) {
   const p = P.findProject(state, projectId || state.activeId);
   if (!p || !win || transferBusy) return;
-  if (isAgy(p)) return dialog.showMessageBox(win, { type: 'info', message: T('main.moveAgy') }); // v3.22
+  if (isAgy(p) || isCmd(p)) { // v3.22, v3.25: neither engine's sessions move between computers
+    const msg = isAgy(p) ? T('main.moveAgy') : T('main.moveCc');
+    return dialog.showMessageBox(win, { type: 'info', message: msg });
+  }
   transferBusy = true;
   try {
     const home = app.getPath('home');
@@ -1765,7 +1850,10 @@ async function runImport(file) {
   // 4. the project and account it goes to; its tab must be idle
   const real = (d) => { try { return fs.realpathSync(d); } catch { return d; } };
   const existing = P.findByDir(state, dir) || state.projects.find((p) => real(p.dir) === real(dir)) || null;
-  if (existing && isAgy(existing)) return warnBox(T('main.moveAgy'));
+  if (existing && (isAgy(existing) || isCmd(existing))) {
+    const msg = isAgy(existing) ? T('main.moveAgy') : T('main.moveCc');
+    return warnBox(msg);
+  }
   const account = existing ? A.accountOf(state, existing) : accountById(A.DEFAULT_ID) || A.DEFAULT_ACCOUNT;
   if (existing && tabBlocker(existing.id, account.configDir)) return warnBox(T('main.importTargetBusy'), T(`main.moveBlocker.${tabBlocker(existing.id, account.configDir)}`));
   let newId = null;
@@ -1815,7 +1903,7 @@ ipcMain.handle('projects:menu', (_e, id) => {
   const p = P.findProject(state, id);
   if (!p || !win) return;
   Menu.buildFromTemplate([
-    { label: T('main.moveSession'), enabled: !isAgy(p), click: () => exportSession(p.id) },
+    { label: T('main.moveSession'), enabled: P.engineOf(p) === 'claude', click: () => exportSession(p.id) },
     { type: 'separator' },
     { label: T('main.openSessionFile'), click: () => importSession(null) },
   ]).popup({ window: win });

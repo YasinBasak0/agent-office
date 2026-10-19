@@ -197,7 +197,7 @@ window.agentOffice = {
     },
     setEngine: async (id, value) => {
       const p = /** @type {any} */ (projects.find((x) => x.id === id));
-      if (p) { if (value === 'agy') p.engine = value; else delete p.engine; changed(); }
+      if (p) { if (value === 'agy' || value === 'commandcode') p.engine = value; else delete p.engine; changed(); }
       return { restarted: [] };
     },
     onChange: ev.projects.add,

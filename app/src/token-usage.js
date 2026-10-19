@@ -49,6 +49,8 @@ function priceOf(model) {
 
 /**
  * What a request would have cost at the full input price, in tokens (fpt) and in $; `cost` splits the $ by kind.
+ * A record that carries its own $ (Command Code's costUsd, contract v3.25) keeps it: the breakdown is scaled to
+ * that total, and the full-price estimate uses the fallback price (only the % share of the panel depends on it).
  */
 function weigh(r) {
   const p = priceOf(r.model);
@@ -58,6 +60,10 @@ function weigh(r) {
     read: r.read * p.read * k, output: r.output * WEIGHTS.output * k,
   };
   const usd = cost.input + cost.write5m + cost.write1h + cost.read + cost.output;
+  if (Number.isFinite(r.usd) && r.usd > 0 && usd > 0) {
+    const f = r.usd / usd;
+    return { fpt: r.usd / k, usd: r.usd, cost: { input: cost.input * f, write5m: cost.write5m * f, write1h: cost.write1h * f, read: cost.read * f, output: cost.output * f } };
+  }
   return { fpt: usd / k, usd, cost };
 }
 
@@ -75,7 +81,9 @@ function parseLine(line, { sub = false } = {}) {
 
 /** parseLine on an already parsed line. */
 function parseEntry(d, { sub = false } = {}) {
-  if (!d || d.type !== 'assistant') return null;
+  if (!d) return null;
+  if (d.type === 'message') return parseEntryCC(d, { sub }); // Command Code's tree store (contract v3.25)
+  if (d.type !== 'assistant') return null;
   const m = d.message;
   const u = m && m.usage;
   if (!u || typeof u !== 'object') return null;
@@ -98,6 +106,28 @@ function parseEntry(d, { sub = false } = {}) {
   };
 }
 
+/**
+ * A Command Code session entry (contract v3.25, tree store): {"type":"message","id","timestamp","
+ * message":{"role":"assistant",…},"usage":{"inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens",
+ * "costUsd"},"model"}. One line per API response (no per-block copies). Its costUsd is authoritative — the PRICES
+ * table is Claude's — so the record carries it and weigh scales to it.
+ */
+function parseEntryCC(d, { sub = false } = {}) {
+  if (!d || d.type !== 'message' || !d.message || d.message.role !== 'assistant') return null;
+  const u = d.usage;
+  if (!u || typeof u !== 'object') return null;
+  const t = Date.parse(d.timestamp);
+  if (!Number.isFinite(t)) return null;
+  const model = typeof d.model === 'string' ? d.model : '';
+  if (!model) return null;
+  return {
+    key: `${d.id || ''}|${d.requestId || ''}`,
+    t, model, sub: Boolean(sub),
+    input: num(u.inputTokens), w5: num(u.cacheWriteTokens), w1: 0, read: num(u.cacheReadTokens), output: num(u.outputTokens),
+    usd: num(u.costUsd) || 0,
+  };
+}
+
 /** Keeps the copy with the most output tokens; sub-agent if either copy says so. */
 function keep(map, r) {
   const old = map.get(r.key);
@@ -115,16 +145,20 @@ function mergeRecords(maps) {
 
 // ---- which transcript folders belong to a project
 const slugOf = (dir) => String(dir).replace(/[^a-zA-Z0-9]/g, '-');
+/** Command Code names its session folders lower-case without the leading dash: '/tmp' → 'tmp', '/Users/a/x' →
+ * 'users-a-x' (Claude Code keeps '-Users-a-x'). */
+const ccSlugOf = (dir) => slugOf(String(dir).toLowerCase()).replace(/^-+/, '');
 
 /**
  * Folder names (under <config>/projects) of a project: its folder and its tabs' folders, plus worktrees of its
  * folder made elsewhere (`<dir>-wt-…` next to it, Claude Code's `<dir>/.claude/worktrees/…`). A name that is
- * exactly another project's folder belongs to that project.
+ * exactly another project's folder belongs to that project. `slug`: the folder naming (Command Code strips the
+ * leading dash, contract v3.25); default Claude Code's.
  */
-function projectFolders(names, dirs, otherDirs = []) {
-  const exact = new Set(dirs.map(slugOf));
-  const others = new Set(otherDirs.map(slugOf));
-  const base = dirs.length ? slugOf(dirs[0]) : null;
+function projectFolders(names, dirs, otherDirs = [], slug = slugOf) {
+  const exact = new Set(dirs.map(slug));
+  const others = new Set(otherDirs.map(slug));
+  const base = dirs.length ? slug(dirs[0]) : null;
   return names.filter((n) => exact.has(n) || (base && !others.has(n) && (n.startsWith(base + '-wt-') || n.startsWith(base + '--claude-worktrees-'))));
 }
 
@@ -132,6 +166,7 @@ function projectFolders(names, dirs, otherDirs = []) {
 const NL = 10;
 const USAGE = Buffer.from('"usage"');
 const ASSISTANT = Buffer.from('"assistant"');
+const MESSAGE = Buffer.from('"message"'); // Command Code's tree store (contract v3.25)
 const USER = Buffer.from('"user"');
 const TOOL_USE = Buffer.from('"tool_use"');
 const LABEL_MAX = 160;
@@ -224,7 +259,7 @@ class UsageScanner {
         while (nl !== -1) {
           const line = pending.length ? Buffer.concat([...pending, chunk.subarray(start, nl)]) : chunk.subarray(start, nl);
           pending = [];
-          if (line.indexOf(USAGE) !== -1 && line.indexOf(ASSISTANT) !== -1) {
+          if (line.indexOf(USAGE) !== -1 && (line.indexOf(ASSISTANT) !== -1 || line.indexOf(MESSAGE) !== -1)) {
             let d = null;
             try { d = JSON.parse(line.toString('utf8')); } catch { /* a broken line */ }
             const r = parseEntry(d, { sub });
@@ -473,6 +508,6 @@ function summarize(records, { now = Date.now(), since = null, sessions = null } 
 const brief = (rep) => ({ usd: rep.today.usd, total: rep.today.total, pct: rep.today.total ? rep.today.fpt / rep.today.total : 0 });
 
 module.exports = {
-  WEIGHTS, PRICES, priceOf, weigh, parseLine, parseEntry, keep, mergeRecords, slugOf, projectFolders,
+  WEIGHTS, PRICES, priceOf, weigh, parseLine, parseEntry, keep, mergeRecords, slugOf, ccSlugOf, projectFolders,
   UsageScanner, summarize, startOfDay, brief, firstLine, fileSummary, agentStats, prefixStats, LONG_STEPS,
 };
