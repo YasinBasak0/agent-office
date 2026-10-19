@@ -3451,3 +3451,63 @@ test('agy giriş ortamı: AGY_ADC_AUTH geçer, Claude/ofis geçmez; giriş ve ko
   assert.doesNotMatch(block, /accountEnv|ptyEnv|sessionEnv|process\.env(?!\))/, 'agy login/check must use agyEnv(process.env) only');
   assert.equal((block.match(/EN\.agyEnv\(process\.env\)/g) || []).length, 2);
 });
+
+test('proje başına müdür modeli: normalizeState, setProjectBossModel, bossModelOf (v3.27)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', bossModel: 'sonnet' },
+      { id: 'b', dir: '/b', bossModel: 'opus' },
+      { id: 'c', dir: '/c', bossModel: 'gpt' },
+      { id: 'd', dir: '/d' },
+    ],
+  });
+  assert.deepEqual(P.BOSS_MODELS, ['sonnet', 'opus', 'haiku']);
+  assert.deepEqual(s.projects.map((p) => P.bossModelOf(p)), ['sonnet', 'opus', null, null]);
+  assert.equal('bossModel' in s.projects[2], false);
+  assert.equal(P.setProjectBossModel(s, 'a', 'sonnet'), s);
+  assert.equal(P.setProjectBossModel(s, 'zz', 'opus'), s);
+  assert.equal(P.setProjectBossModel(s, 'd', 'fable'), s); // geçersiz = Otomatik
+  s = P.setProjectBossModel(s, 'd', 'haiku');
+  assert.equal(P.bossModelOf(P.findProject(s, 'd')), 'haiku');
+  s = P.setProjectBossModel(s, 'a', null); // Otomatik'e dönüş: alan silinir
+  assert.equal('bossModel' in P.findProject(s, 'a'), false);
+  // Ajan modelinden bağımsız: Müdür Sonnet + Ajan Haiku
+  s = P.setProjectAgentModel(P.setProjectBossModel(s, 'a', 'sonnet'), 'a', 'haiku');
+  const a = P.findProject(s, 'a');
+  assert.deepEqual([P.bossModelOf(a), P.agentModelOf(a)], ['sonnet', 'haiku']);
+});
+
+test('müdür modeli: her seçim için başlatma argümanları; Otomatik ve diğer motorlar için yok (v3.27)', () => {
+  assert.deepEqual(P.bossModelArgs({ bossModel: 'sonnet' }), ['--model', 'sonnet']);
+  assert.deepEqual(P.bossModelArgs({ bossModel: 'opus' }), ['--model', 'opus']);
+  assert.deepEqual(P.bossModelArgs({ bossModel: 'haiku' }), ['--model', 'haiku']);
+  assert.deepEqual(P.bossModelArgs({}), []); // Otomatik: hiçbir şey değişmez
+  assert.deepEqual(P.bossModelArgs({ bossModel: 'x' }), []);
+  assert.deepEqual(P.bossModelArgs({ engine: 'claude', bossModel: 'opus' }), ['--model', 'opus']);
+  // diğer motorlar: alan kalsa bile argüman yok
+  assert.deepEqual(P.bossModelArgs({ engine: 'agy', bossModel: 'opus' }), []);
+  assert.deepEqual(P.bossModelArgs({ engine: 'commandcode', bossModel: 'haiku' }), []);
+  // ortam değişkeni değil bayrak: sessionEnv ANTHROPIC_MODEL'e dokunmaz
+  const env = A.sessionEnv({ PATH: '/bin' }, { agentModel: 'haiku' });
+  assert.equal('ANTHROPIC_MODEL' in env, false);
+  // başlatma satırı: --model, --resume'dan önce ve ana/worktree sekmelerinin ortak yolunda
+  const R = require('../src/resume.js');
+  assert.deepEqual(R.claudeArgs([...P.bossModelArgs({ bossModel: 'opus' }), '--plugin-dir', '/p'], ['--resume', 'sid']),
+    ['--model', 'opus', '--plugin-dir', '/p', '--resume', 'sid']);
+});
+
+test('müdür modeli: kenar çubuğunda yalnız Claude motorunda, Ajan modelinden önce (v3.27)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const sb = fs.readFileSync(path.join(__dirname, '../renderer/sidebar.js'), 'utf8');
+  const boss = sb.indexOf('claude ? bossModelSelect(p) : null');
+  const agent = sb.indexOf('claude ? agentModelSelect(p) : null');
+  assert.ok(boss > 0 && agent > boss, 'Boss model dropdown must be Claude-only and right before Agent model');
+  const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  assert.match(main, /R\.claudeArgs\(\[\.\.\.P\.bossModelArgs\(project\)/);
+  assert.match(main, /projects:setBossModel[\s\S]{0,300}restartIdle\(p\)/);
+  for (const lang of ['en', 'tr']) {
+    const j = JSON.parse(fs.readFileSync(path.join(__dirname, `../locales/${lang}.json`), 'utf8')).sidebar;
+    for (const k of ['bossModel', 'bossModelTitle', 'bossModelAuto', 'bossModelSonnet', 'bossModelOpus', 'bossModelHaiku']) assert.ok(j[k], `${lang}.${k}`);
+  }
+});
