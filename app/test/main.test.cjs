@@ -2263,6 +2263,121 @@ test('token kullanımı: artımlı okuma, yarım satır, alt ajan dosyası, kıs
   tuFs.rmSync(root, { recursive: true, force: true });
 });
 
+// ---- costliest sub-agent runs and the fixed prefix (contract v3.21)
+/** An assistant line with content blocks (one line per block, as Claude Code writes them). */
+function bLine({ id, req, t, model = 'claude-opus-5-5', input = 0, w5 = 0, read = 0, output = 10, block = { type: 'text', text: 'x' }, side = false }) {
+  const usage = { input_tokens: input, cache_creation_input_tokens: w5, cache_read_input_tokens: read, output_tokens: output, cache_creation: { ephemeral_5m_input_tokens: w5, ephemeral_1h_input_tokens: 0 } };
+  return JSON.stringify({ type: 'assistant', timestamp: new Date(t).toISOString(), requestId: req, isSidechain: side, message: { id, model, role: 'assistant', usage, content: [block] } });
+}
+/** n steps of a run: the first writes the prefix, every later one reads it (plus `grow` per step) and calls a tool. */
+function runLines(tag, n, { t0, prefix = 1000, grow = 100, model, side = false }) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const base = { id: `${tag}-m${i}`, req: `${tag}-r${i}`, t: t0 + i * 1000, model, side };
+    const usage = i === 0 ? { input: 10, w5: prefix - 10 } : { input: 1, w5: grow, read: prefix + (i - 1) * grow };
+    out.push(bLine({ ...base, ...usage, output: 5 }));                                                       // thinking/text block
+    out.push(bLine({ ...base, ...usage, output: 20, block: { type: 'tool_use', id: `${tag}-tu${i}`, name: 'Read', input: {} } })); // the tool call
+  }
+  return out;
+}
+
+test('alt ajanlar (v3.21): adım, araç, açıklama, en pahalı 10, 40 adım üstü payı ve sabit önek', async () => {
+  const root = tuFs.mkdtempSync(tuPath.join(tuOs.tmpdir(), 'ao-agents-'));
+  const dir = tuPath.join(root, '-r-shop');
+  const subs = tuPath.join(dir, 'sess1', 'subagents');
+  tuFs.mkdirSync(subs, { recursive: true });
+  const now = new Date(2026, 9, 13, 15, 30).getTime();
+  const t0 = now - 3600e3; // today
+  const user = (text) => JSON.stringify({ type: 'user', isSidechain: true, timestamp: new Date(t0).toISOString(), message: { role: 'user', content: text } });
+  // the boss: 3 steps, prefix 5000
+  tuFs.writeFileSync(tuPath.join(dir, 'sess1.jsonl'), runLines('boss', 3, { t0, prefix: 5000 }).join('\n') + '\n');
+  // a long agent with meta.json: 45 steps
+  tuFs.writeFileSync(tuPath.join(subs, 'agent-long.jsonl'), [user('ignored prompt'), ...runLines('long', 45, { t0, side: true })].join('\n') + '\n');
+  tuFs.writeFileSync(tuPath.join(subs, 'agent-long.meta.json'), JSON.stringify({ agentType: 'general-purpose', description: 'Audit the parser' }));
+  // a short agent without meta: its label is the first prompt line; haiku
+  tuFs.writeFileSync(tuPath.join(subs, 'agent-short.jsonl'),
+    [user('\n  Find the config loader\nthen report'), ...runLines('short', 4, { t0, model: 'claude-haiku-5-5', side: true })].join('\n') + '\n');
+  // an agent from 3 days ago: only in 7 days
+  tuFs.writeFileSync(tuPath.join(subs, 'agent-old.jsonl'), runLines('old', 2, { t0: now - 3 * 86400e3, side: true }).join('\n') + '\n');
+
+  const sc = new TU.UsageScanner({ chunkSize: 512 });
+  const recs = await sc.scanFolders([dir]);
+  const sessions = sc.sessions([dir]);
+  assert.equal(sessions.length, 4);
+  const long = sessions.find((x) => x.id === 'long');
+  assert.equal(long.sub, true);
+  assert.equal(long.session, 'sess1');
+  assert.equal(long.label, 'Audit the parser');
+  assert.equal(long.agentType, 'general-purpose');
+  assert.equal(long.steps, 45); // one request per step, though written as two lines
+  assert.equal(long.tools, 45);
+  assert.equal(long.prefix, 1000);
+  assert.equal(long.tokens.output, 45 * 20); // the copy with the most output
+  const short = sessions.find((x) => x.id === 'short');
+  assert.equal(short.label, 'Find the config loader');
+  assert.equal(short.model, 'claude-haiku-5-5');
+  assert.equal(sessions.find((x) => x.id === 'sess1').sub, false);
+
+  const r = TU.summarize(recs, { now, sessions });
+  const a = r.agents.today;
+  assert.equal(a.count, 2);
+  assert.deepEqual(a.top.map((x) => x.id), ['long', 'short']); // by $
+  assert.equal(a.steps, 49);
+  assert.equal(a.avgSteps, 24.5);
+  assert.equal(a.long.limit, 40);
+  assert.equal(a.long.count, 1);
+  const wantShare = long.usd / (long.usd + short.usd);
+  assert.ok(Math.abs(a.long.share - wantShare) < 1e-12);
+  const top = a.top[0];
+  assert.deepEqual(Object.keys(top).sort(), ['agentType', 'at', 'id', 'label', 'model', 'session', 'steps', 'tokens', 'tools', 'usd']);
+  assert.equal(top.at, t0);
+  assert.equal(r.agents.week.count, 3);
+  assert.equal(r.agents.all.count, 3);
+
+  // prefix: boss 5000 × 3 steps, but it only read 2 × 5000 + 100 → capped at its reads
+  const px = r.prefix.today;
+  assert.equal(px.main.sessions, 1);
+  assert.equal(px.main.avg, 5000);
+  assert.equal(px.main.reads, 5000 + 5100);
+  assert.equal(px.main.prefixReads, 5000 + 5100);
+  assert.equal(px.sub.sessions, 2);
+  assert.equal(px.sub.avg, 1000);
+  const readsOf = (n) => { let x = 0; for (let i = 1; i < n; i++) x += 1000 + (i - 1) * 100; return x; };
+  assert.equal(px.sub.reads, readsOf(45) + readsOf(4));
+  assert.equal(px.sub.prefixReads, 1000 * 45 + readsOf(4)); // the short run read less than 4 × its prefix: capped
+  assert.ok(Math.abs(px.share - px.prefixReads / px.reads) < 1e-12);
+  assert.equal(px.sessions, 3);
+  assert.equal(r.prefix.week.sessions, 4);
+
+  // a session that started before the window counts only its requests inside it
+  const part = TU.prefixStats([long], t0 + 40 * 1000, now);
+  assert.equal(part.requests, 5);
+
+  // the panel's row (sidebar) report has no per-agent detail
+  assert.equal(TU.summarize(recs, { now }).agents, undefined);
+
+  // incremental: new steps refresh the cached summary; files that did not change keep theirs
+  const shortBefore = short;
+  tuFs.appendFileSync(tuPath.join(subs, 'agent-long.jsonl'), runLines('long2', 2, { t0: t0 + 60e3, side: true }).join('\n') + '\n');
+  const read0 = sc.bytesRead;
+  await sc.scanFolders([dir]);
+  const again = sc.sessions([dir]);
+  assert.equal(again.find((x) => x.id === 'long').steps, 47);
+  assert.equal(again.find((x) => x.id === 'long').tools, 47);
+  assert.equal(again.find((x) => x.id === 'short'), shortBefore);
+  assert.ok(sc.bytesRead - read0 < 4000); // only the appended lines
+  tuFs.rmSync(root, { recursive: true, force: true });
+});
+
+test('alt ajanlar (v3.21): istem satırı kısaltılır, metin blokları da okunur', () => {
+  assert.equal(TU.firstLine('\n\n  hello world  \nmore'), 'hello world');
+  assert.equal(TU.firstLine([{ type: 'image' }, { type: 'text', text: 'from block\nx' }]), 'from block');
+  assert.equal(TU.firstLine(null), '');
+  const long = TU.firstLine('y'.repeat(500));
+  assert.equal(long.length, 160);
+  assert.ok(long.endsWith('…'));
+});
+
 test('proje eklenme zamanı (v3.13): addProject yazar, normalizeState korur, eskilerde yok', () => {
   const r = P.addProject(empty(), '/p/when', { id: () => 'w', now: () => 1234 });
   assert.equal(r.project.addedAt, 1234);

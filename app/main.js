@@ -575,12 +575,15 @@ function tokenFolders(p) {
   const others = state.projects.filter((x) => x.id !== p.id).map((x) => x.dir);
   return TU.projectFolders(names, dirs, others).map((n) => path.join(root, n));
 }
-async function tokenReport(id) {
+/** detail: also the costliest sub-agent runs and the fixed prefix (contract v3.21; the panel, not the row). */
+async function tokenReport(id, { detail = false } = {}) {
   const p = P.findProject(state, id);
   if (!p) return null;
   const since = Number.isFinite(p.addedAt) ? p.addedAt : null;
-  const recs = await tokenScanner.scanFolders(tokenFolders(p), { since: since ?? 0 });
-  return { projectId: p.id, name: p.name, ...TU.summarize(recs, { since }) };
+  const folders = tokenFolders(p);
+  const recs = await tokenScanner.scanFolders(folders, { since: since ?? 0 });
+  const sessions = detail ? tokenScanner.sessions(folders) : null;
+  return { projectId: p.id, name: p.name, ...TU.summarize(recs, { since, sessions }) };
 }
 /** Today's line for every project's row: [{ id, usd, total, pct }]. */
 async function tokenBriefs() {
@@ -596,7 +599,7 @@ async function pushTokenBriefs() {
   tokenBusy = true;
   try { send('tokens:brief', await tokenBriefs()); } finally { tokenBusy = false; }
 }
-ipcMain.handle('tokens:report', (_e, id) => tokenReport(id));
+ipcMain.handle('tokens:report', (_e, id) => tokenReport(id, { detail: true }));
 ipcMain.handle('tokens:brief', () => tokenBriefs());
 
 // Accounts other than default use the project's ~/.claude memory (see src/memory.js): the account's own memories

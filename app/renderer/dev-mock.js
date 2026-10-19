@@ -330,6 +330,39 @@ function mockTotals(scale, subShare) {
     models: [{ model: 'claude-opus-5-5', ...part(0.93) }, { model: 'claude-haiku-5-5', ...part(0.07) }],
   };
 }
+// costliest sub-agent runs and the fixed prefix (contract v3.21)
+/** @type {[string, string, string, number, number][]} label, agentType, model, steps, tool calls */
+const MOCK_AGENTS = [
+  ['Audit the transcript parser for double counting', 'general-purpose', 'claude-opus-5-5', 212, 240],
+  ['Port the office canvas hit test to core.mjs', 'general-purpose', 'claude-opus-5-5', 96, 118],
+  ['Ofis tuvalinde tıklama noktalarını bul', 'Explore', 'claude-opus-5-5', 58, 71],
+  ['Write tests for the inbox and forgetting', 'general-purpose', 'claude-sonnet-5', 44, 52],
+  ['Find where the sidebar renders the cost line', 'Explore', 'claude-haiku-5-5', 31, 40],
+  ['Check the locales for missing keys', 'Explore', 'claude-haiku-5-5', 12, 14],
+];
+function mockAgents(scale, from) {
+  const k = 4 / 1e6;
+  const runs = MOCK_AGENTS.map(([label, agentType, model, steps, tools], j) => {
+    const read = Math.round(steps * steps * 1500 * scale + steps * 30000);
+    const tokens = { input: steps * 3, write5m: steps * 2400, write1h: 0, read, output: steps * 380 };
+    const usd = (tokens.input + tokens.write5m * 1.25 + tokens.read * 0.05 + tokens.output * 5) * k;
+    return { id: `a${j}`, session: 's1', label, agentType, model, steps, tools, tokens, usd, at: from + j * 3.1e6 };
+  }).sort((a, b) => b.usd - a.usd);
+  const usd = runs.reduce((n, r) => n + r.usd, 0);
+  const long = runs.filter((r) => r.steps > 40);
+  const longUsd = long.reduce((n, r) => n + r.usd, 0);
+  const steps = runs.reduce((n, r) => n + r.steps, 0);
+  return { count: runs.length, usd, steps, avgSteps: steps / runs.length, long: { limit: 40, count: long.length, usd: longUsd, share: longUsd / usd }, top: runs };
+}
+function mockPrefix(agents) {
+  const part = (sessions, avg, requests, reads) => ({ sessions, avg, requests, reads, prefixReads: Math.min(avg * requests, reads), share: Math.min(1, (avg * requests) / reads) });
+  const main = part(2, 41800, 310, 4.1e7);
+  const sub = part(agents.count, 31900, agents.steps, agents.top.reduce((n, r) => n + r.tokens.read, 0));
+  const all = part(main.sessions + sub.sessions, (main.avg * main.sessions + sub.avg * sub.sessions) / (main.sessions + sub.sessions), main.requests + sub.requests, main.reads + sub.reads);
+  all.prefixReads = main.prefixReads + sub.prefixReads;
+  all.share = all.prefixReads / all.reads;
+  return { ...all, main, sub };
+}
 function mockTokenReport(i, p) {
   const now = Date.now();
   const top = new Date(now);
@@ -342,9 +375,11 @@ function mockTokenReport(i, p) {
     const total = Math.round(busy * 9e6);
     return { at, total, fpt: total * 0.085, usd: total * 0.085 * 4e-6 * (0.7 + (h % 5) * 0.15) };
   });
+  const agents = { today: mockAgents(s, now - 6 * 3600e3), week: mockAgents(4 * s, now - 6 * 86400e3), all: mockAgents(7 * s, now - 11 * 86400e3) };
   return {
     projectId: p?.id, name: p?.name, now, since: now - 12 * 86400e3, firstAt: now - 11 * 86400e3,
     today: mockTotals(2.4 * s, 0.7), week: mockTotals(11 * s, 0.68), all: mockTotals(19 * s, 0.66), hours,
+    agents, prefix: { today: mockPrefix(agents.today), week: mockPrefix(agents.week), all: mockPrefix(agents.all) },
   };
 }
 const mockBrief = (r) => ({ usd: r.today.usd, total: r.today.total, pct: r.today.fpt / r.today.total });

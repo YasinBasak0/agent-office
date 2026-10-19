@@ -479,6 +479,31 @@
     "legendTokens": "tokens",
     "legendCost": "cost",
     "noteRead": "A cache read is context the model has already seen; it costs a tenth of the full price.",
-    "noteEstimate": "$ is an estimate at API list prices, not a bill."
+    "noteEstimate": "$ is an estimate at API list prices, not a bill.",
+    "agents": {
+      "title": "Most expensive agents",
+      "cost": "all agents ≈ {usd}",
+      "none": "No sub-agents in this period.",
+      "avgSteps": {
+        "one": "{steps} steps per agent on average ({n} agent)",
+        "other": "{steps} steps per agent on average ({n} agents)"
+      },
+      "long": "over {n} steps: {count} · {pct} of agent cost",
+      "longTitle": "A step is one request to the model. Agents with more than {n} steps and their share of all sub-agents' cost in this period: what a step budget of {n} would cut into.",
+      "meta": "{model} · {steps} steps · {tools} tool calls · {date}",
+      "tokens": "read {read} · write {write} · in {input} · out {output}"
+    },
+    "prefix": {
+      "title": "Fixed prefix",
+      "summary": "≈ {tokens} tokens per session · ≈ {pct} of cache reads",
+      "howTitle": "The prefix is the system prompt, the tools (MCP servers, skills) and the first instructions: estimated from each session's first request (input + cache write + cache read). Every later step reads it again; prefix × steps ÷ all cache reads gives its share.",
+      "main": "Main session",
+      "sub": "Sub-agents",
+      "share": {
+        "one": "{pct} of its cache reads · {n} session · {steps} steps",
+        "other": "{pct} of their cache reads · {n} sessions · {steps} steps"
+      },
+      "note": "A large share means trimming MCP tools, skills or the manager text saves on every step."
+    }
   }
 }
