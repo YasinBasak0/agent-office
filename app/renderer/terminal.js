@@ -66,6 +66,25 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
   resize();
   document.fonts?.ready.then(resize);
 
+  // Follow the output: a full-screen TUI (Command Code redraws its frame) leaves xterm's viewport wherever it
+  // was, so the terminal can look stuck at the top. Unless the user scrolled up on purpose (wheel, scrollbar
+  // drag, keys — anything that moves the viewport away from the bottom), every data burst keeps the view at the
+  // bottom; reaching the bottom again resumes the follow. Direction matters: a write that lands while the view
+  // is glued to the bottom may nudge scrollTop, that is ours, not the user's.
+  let follow = true;
+  let lastScrollTop = 0;
+  const viewport = () => el.querySelector('.xterm-viewport');
+  el.addEventListener('wheel', (e) => { if (e.deltaY < 0) follow = false; }, { passive: true });
+  const scrollCheck = () => {
+    const vp = viewport();
+    if (!vp) return;
+    const at = vp.scrollTop;
+    if (at > vp.scrollHeight - vp.clientHeight - 5) follow = true; // the bottom: the user is only reading when scrolled to it
+    else if (at < lastScrollTop - 1) follow = false;              // the user moved the view up (any means of scrolling)
+    lastScrollTop = at;
+  };
+  viewport()?.addEventListener('scroll', scrollCheck, { passive: true });
+
   term.onData((d) => {
     if (!dead) return pty.write(projectId, d);
     if (restartable && d === '\r') { dead = false; term.reset(); pty.restart(projectId); needSize = true; resize(); }
@@ -140,6 +159,7 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
       if (asleep) { asleep = false; term.reset(); }
       if (needSize) { needSize = false; resize(); }
       term.write(d);
+      if (follow) term.scrollToBottom();
     },
     /** pty exited: Enter restarts it (if not restartable, it stops quietly). */
     exit() {

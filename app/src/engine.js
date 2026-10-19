@@ -2,6 +2,9 @@
 // tested with node --test). Google Antigravity CLI (`agy`, 1.3.6 or newer) keeps its own login and data
 // (~/.gemini/antigravity-cli), so nothing of Claude Code's setup (account folder, plugin, status line, memory, MCP
 // config) nor of the office (directory, journal, savings, tokens) is passed to it.
+// Command Code (contract v3.23) is the office's other CLI instead: unlike agy it keeps the office's env (its mod,
+// plugin/mods/agent-office.ts, reads AGENT_OFFICE_*) and starts like Claude Code from the login shell with its
+// resume arguments; its own login and data live in ~/.commandcode.
 const { promptArg } = require('./resume.js');
 
 // macOS/Linux launch line, run by the login shell like claude's (PATH and rc files apply); the arguments come via "$@".
@@ -65,4 +68,27 @@ function agyEnv(base, platform = process.platform) {
   return out;
 }
 
-module.exports = { AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES };
+// --- Command Code (contract v3.23): the office's other engine. The launch line keeps the app's env (no rc-file
+// rebuild of AGENT_OFFICE_* is needed: unlike agy's allowlist, the mod in the process reads them), so the "$@"
+// arguments stand alone: the mod file first (--mod; Command Code has no plugin loader), then the resume arguments,
+// then (only with both) the positional prompt — Claude Code's order via resume.js claudeArgs, which works.
+const CMD = {
+  bin: 'cmd',
+  home: '.commandcode', // its own sessions live there (projects/<slug>/<session id>.jsonl, same naming rule)
+};
+
+/**
+ * Command Code's arguments for a start: the mod (--mod, see plugin/mods/agent-office.ts), then the resume arguments
+ * (`--resume <session id>` after a sleep, `--continue` when the folder has one), then (only when resuming and a
+ * prompt is given) the prompt as the positional argument, ordered like Claude Code's claudeArgs.
+ * @param {string[]} [mod] ['--mod', <file>] @param {string[]} [resumeArgs] @param {string} [prompt]
+ */
+function cmdArgs(mod = [], resumeArgs = [], prompt = '') {
+  const p = resumeArgs.length && prompt ? promptArg(prompt) : '';
+  return [...mod, ...resumeArgs, ...(p ? [p] : [])];
+}
+
+/** Command Code's launch line: this CLI, its arguments via "$@". Windows: findCommandCode picks the binary. */
+const CMD_COMMAND = 'exec cmd "$@"';
+
+module.exports = { AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES, CMD, cmdArgs, CMD_COMMAND };
