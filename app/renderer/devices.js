@@ -1,0 +1,150 @@
+// Device link UI (contract v3.28): the "Devices" section under Accounts, the "Remote projects" group under the
+// project list, and the remote desks merged into the office data. Kept apart from sidebar.js on purpose.
+import { onLang, t } from './i18n.js';
+
+/** @param {string} tag @param {Record<string, any>} [attrs] @param {...any} children @returns {HTMLElement} */
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (v === true) el.setAttribute(k, '');
+    else el.setAttribute(k, String(v));
+  }
+  for (const c of children.flat()) if (c != null && c !== false) el.append(c);
+  return el;
+}
+/** @param {string} r */
+const why = (r) => t(`devices.reason.${r}`);
+/** @param {Event} e */
+const val = (e) => /** @type {HTMLInputElement} */ (e.target).value;
+
+/**
+ * @param {HTMLElement} sidebarEl the #sidebar element (already mounted by sidebar.js)
+ * @param {any} api window.agentOffice
+ */
+export function mountDevices(sidebarEl, api) {
+  /** @type {any} */
+  let view = { name: '', devices: [], remotes: [], outgoing: [], pairing: null, error: null };
+  let joinState = /** @type {{ busy: boolean, error: string }} */ ({ busy: false, error: '' });
+  let editing = /** @type {string | null} */ (null);
+  const drafts = new Map(); // "<device>/<project>" → unsent text
+
+  const section = h('details', { class: 'sb-devices', id: 'sb-devices' });
+  const remoteGroup = h('details', { class: 'sb-remote', id: 'sb-remote', open: true });
+  sidebarEl.querySelector('#sb-bottom .sb-accounts')?.after(section);
+  sidebarEl.querySelector('#sb-top')?.append(remoteGroup);
+
+  function renderDevices() {
+    const wasOpen = /** @type {HTMLDetailsElement} */ (section).open;
+    const list = view.devices.map((/** @type {any} */ d) => h('li', { class: 'sb-dev' + (d.online ? ' online' : '') },
+      h('div', { class: 'sb-dev-top' },
+        h('span', { class: 'sb-adot', title: t(d.online ? 'devices.online' : 'devices.offline') }),
+        editing === d.id
+          ? h('input', { class: 'sb-dev-name', value: d.name, maxlength: 40, onchange: (/** @type {Event} */ e) => { editing = null; apply(api.link.rename(d.id, val(e))); }, onblur: () => { editing = null; render(); } })
+          : h('span', { class: 'sb-name', title: `${t(d.online ? 'devices.online' : 'devices.offline')} · ${new Date(d.addedAt).toLocaleDateString()}` }, d.name),
+        h('button', { class: 'sb-x', title: t('devices.rename'), onclick: () => { editing = d.id; render(); } }, '✎'),
+        h('button', { class: 'sb-x', title: t('devices.remove'), onclick: () => { if (confirm(t('devices.removeConfirm', { name: d.name }))) apply(api.link.remove(d.id)); } }, '×'),
+      ),
+      h('label', { class: 'sb-check sb-dev-allow' },
+        h('input', { type: 'checkbox', checked: d.allowCommands, onchange: (/** @type {Event} */ e) => apply(api.link.setAllow(d.id, /** @type {HTMLInputElement} */ (e.target).checked)) }),
+        t('devices.allow')),
+    ));
+    const p = view.pairing;
+    const pairing = p?.code
+      ? h('div', { class: 'sb-pair' },
+        h('div', { class: 'sb-pair-code', id: 'sb-pair-code' }, p.code),
+        h('div', { class: 'sb-note' }, t('devices.codeHint', { min: Math.max(0, Math.ceil((p.expiresAt - Date.now()) / 60000)) })),
+        h('button', { class: 'sb-x', onclick: () => apply(api.link.cancel()) }, t('devices.cancel')))
+      : h('button', { class: 'sb-add', id: 'sb-dev-add', disabled: Boolean(p) || Boolean(view.error && view.error !== 'off'), onclick: () => apply(api.link.invite()) }, t('devices.add'));
+    const join = h('form', { class: 'sb-join', onsubmit: (/** @type {Event} */ e) => {
+      e.preventDefault();
+      const input = /** @type {HTMLInputElement} */ (/** @type {HTMLFormElement} */ (e.target).elements.namedItem('code'));
+      joinState = { busy: true, error: '' };
+      render();
+      api.link.join(input.value).then((/** @type {any} */ r) => { joinState = { busy: false, error: r.ok ? '' : r.error }; view = r.view; render(); });
+    } },
+    h('input', { name: 'code', id: 'sb-join-code', placeholder: t('devices.enterCode'), autocomplete: 'off', spellcheck: 'false', disabled: joinState.busy }),
+    h('button', { class: 'sb-x', type: 'submit', disabled: joinState.busy }, t(joinState.busy ? 'devices.pairing' : 'devices.pair')));
+    section.replaceChildren(
+      h('summary', { class: 'sb-head' }, t('devices.title'), view.devices.length ? ` (${view.devices.filter((/** @type {any} */ d) => d.online).length}/${view.devices.length})` : ''),
+      view.error && view.error !== 'off' ? h('div', { class: 'sb-note warn' }, t(`devices.error.${view.error}`)) : null,
+      h('label', { class: 'sb-row' }, t('devices.thisDevice'),
+        h('input', { class: 'sb-dev-name', value: view.name, maxlength: 40, onchange: (/** @type {Event} */ e) => apply(api.link.setName(val(e))) })),
+      view.devices.length ? h('ul', { class: 'sb-list' }, list) : h('div', { class: 'sb-note' }, t('devices.none')),
+      pairing,
+      p?.code ? null : join,
+      joinState.error ? h('div', { class: 'sb-note warn' }, t('devices.pairFailed', { error: joinState.error })) : null,
+    );
+    /** @type {HTMLDetailsElement} */ (section).open = wasOpen || Boolean(p) || joinState.busy;
+  }
+
+  function renderRemote() {
+    remoteGroup.hidden = !view.remotes.length;
+    const groups = view.remotes.map((/** @type {any} */ r) => h('li', { class: 'sb-rdev' },
+      h('div', { class: 'sb-rdev-name' }, `⇄ ${r.name}`),
+      h('ul', { class: 'sb-list' }, r.projects.map((/** @type {any} */ p) => {
+        const key = `${r.device}/${p.id}`;
+        const out = view.outgoing.filter((/** @type {any} */ o) => o.pub === r.device && o.project === p.id).slice(0, 2);
+        return h('li', { class: `sb-rproj st-${p.status}` },
+          h('div', { class: 'sb-rproj-top' },
+            h('span', { class: 'sb-name' }, p.name),
+            h('span', { class: 'sb-sub' }, [t(`devices.status.${p.status}`), p.working ? t('devices.working', { n: p.working }) : '', p.delivered ? t('devices.delivered', { n: p.delivered }) : ''].filter(Boolean).join(' · ')),
+            p.status === 'approval' ? h('span', { class: 'sb-attn' }, '✋') : null),
+          p.engine === 'claude'
+            ? h('form', { class: 'sb-rcmd', onsubmit: (/** @type {Event} */ e) => {
+              e.preventDefault();
+              const input = /** @type {HTMLInputElement} */ (/** @type {HTMLFormElement} */ (e.target).elements.namedItem('text'));
+              if (!input.value.trim()) return;
+              drafts.delete(key);
+              apply(api.link.send(r.device, p.id, input.value));
+            } },
+            h('input', { name: 'text', maxlength: 8192, placeholder: t('devices.prompt', { project: p.name }), value: drafts.get(key) || '', oninput: (/** @type {Event} */ e) => drafts.set(key, val(e)) }),
+            h('button', { class: 'sb-x', type: 'submit' }, t('devices.send')))
+            : h('div', { class: 'sb-note' }, t('devices.claudeOnly')),
+          out.map((/** @type {any} */ o) => h('div', { class: `sb-note cmd-${o.status}` }, `${o.firstLine} — ${o.status === 'rejected' ? t('devices.cmd.rejected', { reason: why(o.reason) }) : t(`devices.cmd.${o.status}`)}`)),
+        );
+      })),
+    ));
+    remoteGroup.replaceChildren(h('summary', { class: 'sb-head' }, t('devices.remote')), h('ul', { class: 'sb-list' }, groups));
+  }
+
+  function render() {
+    // keep focus and typed text in a command box across live updates
+    const focused = /** @type {HTMLInputElement | null} */ (document.activeElement);
+    if (focused && remoteGroup.contains(focused) && focused.name === 'text') { renderDevices(); return; }
+    renderDevices();
+    renderRemote();
+  }
+  /** @param {Promise<any>} p */
+  function apply(p) { p.then((v) => { if (v) { view = v; render(); } }).catch((e) => console.error(e)); }
+
+  api.link?.onChange((/** @type {any} */ v) => { view = v; render(); });
+  api.link?.get().then((/** @type {any} */ v) => { view = v; render(); }).catch(() => {});
+  onLang(render);
+  setInterval(() => { if (view.pairing) renderDevices(); }, 30000);
+  render();
+  return { view: () => view };
+}
+
+/**
+ * The office data with the remote desks added: each remote project appears as "<device> · <project>" with its
+ * workers, so the office draws them next to the local ones. The boss's own sign stays local.
+ * @param {any} d OfficeData @param {any} view LinkView
+ */
+export function mergeRemote(d, view) {
+  if (!d || !view?.remotes?.length) return d;
+  const projects = [...(d.projects || [])];
+  const workers = [...(d.workers || [])];
+  for (const r of view.remotes) {
+    for (const p of r.projects) {
+      const name = `${r.name} · ${p.name}`;
+      projects.push({ name, working: p.working, delivered: p.delivered, isBossBusy: p.status === 'working', waiting: p.status === 'approval' ? { tool: p.tool || '', since: r.at } : null, remote: r.device });
+      for (const w of r.workers.filter((/** @type {any} */ x) => x.project === p.id)) {
+        workers.push({ ...w, id: `remote:${r.device.slice(0, 8)}:${w.id}`, project: name, spawnAt: w.spawnAt || r.at });
+      }
+    }
+  }
+  return { ...d, projects, workers };
+}

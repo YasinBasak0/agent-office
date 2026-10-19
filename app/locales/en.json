@@ -469,7 +469,8 @@
     "fallbackSwitched": "{from}'s usage limit is reached; continuing on {to}",
     "fallbackReturned": "{to}'s usage limit has reset; back on {to} (from {from})",
     "fallbackStuck": "{from}'s usage limit is reached and no backup account can take over (not logged in or at its limit too)",
-    "fallbackLoop": "{from}'s usage limit is reached, but this project already changed accounts several times recently; staying on {from}"
+    "fallbackLoop": "{from}'s usage limit is reached, but this project already changed accounts several times recently; staying on {from}",
+    "linkApproval": "{device}: {project} needs approval"
   },
   "auth": {
     "unreadable": "could not read the login status",
@@ -550,6 +551,59 @@
         "other": "{pct} of their cache reads · {n} sessions · {steps} steps"
       },
       "note": "A large share means trimming MCP tools, skills or the manager text saves on every step."
+    }
+  },
+  "devices": {
+    "title": "Devices",
+    "thisDevice": "This device",
+    "add": "+ Add device",
+    "codeHint": "Enter this code on your other computer (expires in {min} min)",
+    "cancel": "Cancel",
+    "enterCode": "Code from the other device",
+    "pair": "Pair",
+    "pairing": "Pairing…",
+    "pairFailed": "Pairing failed: {error}",
+    "online": "online",
+    "offline": "offline",
+    "allow": "Allow commands from this device",
+    "remove": "Remove device",
+    "removeConfirm": "Remove {name}? It can no longer connect.",
+    "rename": "Rename",
+    "none": "No paired devices",
+    "remote": "Remote projects",
+    "status": {
+      "working": "working",
+      "idle": "idle",
+      "approval": "needs approval"
+    },
+    "working": "{n} working",
+    "delivered": "{n} delivered",
+    "send": "Send",
+    "prompt": "Prompt for {project}'s boss…",
+    "claudeOnly": "Commands go to Claude Code projects only",
+    "cmd": {
+      "sent": "sent",
+      "queued": "queued until the tab is idle",
+      "delivered": "delivered",
+      "rejected": "rejected: {reason}"
+    },
+    "reason": {
+      "not-allowed": "commands from this device are off there",
+      "unknown-project": "no such project",
+      "engine": "not a Claude Code project",
+      "not-running": "its terminal is not running",
+      "too-large": "longer than 8 KB",
+      "empty": "empty",
+      "not-text": "not text",
+      "rate-limited": "too many commands, wait a little",
+      "queue-full": "5 commands already waiting",
+      "expired": "waited 30 min, dropped",
+      "removed": "device removed"
+    },
+    "error": {
+      "no-keychain": "No system keychain to keep the device keys safely: the device link is off",
+      "keys": "The device keys could not be read: the device link is off",
+      "off": "Off"
     }
   }
 }

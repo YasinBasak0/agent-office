@@ -2,6 +2,7 @@
 import { mountTerminal, pasteIntoFocused } from './terminal.js';
 import { mountSidebar } from './sidebar.js';
 import { mountLogin } from './login.js';
+import { mountDevices, mergeRemote } from './devices.js';
 import { setLang, onLang, t } from './i18n.js';
 import { modLabel, isModKey, keyOf, isMac } from './platform.js';
 import { themeChoices, effectiveTheme } from '../src/themes.mjs';
@@ -739,7 +740,10 @@ try {
   document.body.classList.add('no-office');
 }
 
-api.office.onData((d) => {
+// v3.28: this user's other Agent Offices (renderer/devices.js): Devices section, remote projects, remote desks
+const devices = mountDevices($('sidebar'), api);
+api.office.onData((local) => {
+  const d = mergeRemote(local, devices.view());
   setStats(d);
   sidebar.setStats(d?.projects);
   try { office?.setData(d); } catch (e) { console.error(e); }

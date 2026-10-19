@@ -27,7 +27,8 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "electron-updater": "^6.8.9",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "hyperswarm": "4.17.2"
   },
   "devDependencies": {
     "electron": "^44.7.0",
@@ -54,7 +55,9 @@
       "!node_modules/node-addon-api/**"
     ],
     "asarUnpack": [
-      "node_modules/node-pty/**"
+      "node_modules/node-pty/**",
+      "node_modules/sodium-native/**",
+      "node_modules/udx-native/**"
     ],
     "npmRebuild": false,
     "fileAssociations": [
@@ -173,5 +176,15 @@
     ]
   },
   "repository": "https://github.com/isisever/agent-office",
-  "homepage": "https://github.com/isisever/agent-office"
+  "homepage": "https://github.com/isisever/agent-office",
+  "overrides": {
+    "hyperdht": "6.34.1",
+    "udx-native": "1.21.3",
+    "sodium-native": "5.1.0",
+    "bare-addon-resolve": "1.10.1",
+    "bare-fs": "4.8.2",
+    "bare-module-resolve": "1.12.5",
+    "bare-url": "2.5.4",
+    "protomux": "3.12.1"
+  }
 }

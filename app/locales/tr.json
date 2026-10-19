@@ -450,7 +450,8 @@
     "fallbackSwitched": "{from} hesabının limiti doldu, {to} hesabından devam ediliyor",
     "fallbackReturned": "{to} hesabının limiti sıfırlandı, {from} hesabından {to} hesabına geri dönüldü",
     "fallbackStuck": "{from} hesabının limiti doldu; devam edecek yedek hesap yok (giriş yapılmamış ya da onun da limiti dolu)",
-    "fallbackLoop": "{from} hesabının limiti doldu, ama bu proje son zamanda birkaç kez hesap değiştirdi; {from} hesabında kalınıyor"
+    "fallbackLoop": "{from} hesabının limiti doldu, ama bu proje son zamanda birkaç kez hesap değiştirdi; {from} hesabında kalınıyor",
+    "linkApproval": "{device}: {project} onay bekliyor"
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",
@@ -522,6 +523,59 @@
       "sub": "Alt ajanlar",
       "share": "önbellek okumalarının {pct} kadarı · {n} oturum · {steps} adım",
       "note": "Pay büyükse MCP araçlarını, yetenekleri ya da yönetici metnini kısaltmak her adımda tasarruf sağlar."
+    }
+  },
+  "devices": {
+    "title": "Cihazlar",
+    "thisDevice": "Bu cihaz",
+    "add": "+ Cihaz ekle",
+    "codeHint": "Bu kodu diğer bilgisayarınıza girin ({min} dk içinde geçersiz olur)",
+    "cancel": "Vazgeç",
+    "enterCode": "Diğer cihazdaki kod",
+    "pair": "Eşle",
+    "pairing": "Eşleniyor…",
+    "pairFailed": "Eşleme olmadı: {error}",
+    "online": "çevrimiçi",
+    "offline": "çevrimdışı",
+    "allow": "Bu cihazdan komutlara izin ver",
+    "remove": "Cihazı kaldır",
+    "removeConfirm": "{name} kaldırılsın mı? Artık bağlanamaz.",
+    "rename": "Yeniden adlandır",
+    "none": "Eşlenmiş cihaz yok",
+    "remote": "Uzak projeler",
+    "status": {
+      "working": "çalışıyor",
+      "idle": "boşta",
+      "approval": "onay bekliyor"
+    },
+    "working": "{n} çalışıyor",
+    "delivered": "{n} teslim",
+    "send": "Gönder",
+    "prompt": "{project} patronuna komut…",
+    "claudeOnly": "Komutlar yalnız Claude Code projelerine gider",
+    "cmd": {
+      "sent": "gönderildi",
+      "queued": "sekme boşalınca iletilecek",
+      "delivered": "iletildi",
+      "rejected": "reddedildi: {reason}"
+    },
+    "reason": {
+      "not-allowed": "o cihazda bu cihazın komutları kapalı",
+      "unknown-project": "böyle bir proje yok",
+      "engine": "Claude Code projesi değil",
+      "not-running": "terminali çalışmıyor",
+      "too-large": "8 KB'tan uzun",
+      "empty": "boş",
+      "not-text": "metin değil",
+      "rate-limited": "çok fazla komut, biraz bekleyin",
+      "queue-full": "zaten 5 komut bekliyor",
+      "expired": "30 dk bekledi, bırakıldı",
+      "removed": "cihaz kaldırıldı"
+    },
+    "error": {
+      "no-keychain": "Cihaz anahtarlarını güvenle saklayacak sistem anahtarlığı yok: cihaz bağlantısı kapalı",
+      "keys": "Cihaz anahtarları okunamadı: cihaz bağlantısı kapalı",
+      "off": "Kapalı"
     }
   }
 }

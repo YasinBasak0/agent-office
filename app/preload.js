@@ -89,6 +89,19 @@ contextBridge.exposeInMainWorld('agentOffice', {
     brief: () => ipcRenderer.invoke('tokens:brief'),    // [{ id, usd, total, pct }] for today
     onBrief: listen('tokens:brief'),                    // the same, about once a minute
   },
+  // v3.28: this user's other Agent Offices (src/link-host.js); every call returns the LinkView
+  link: {
+    get: () => ipcRenderer.invoke('link:get'),
+    invite: () => ipcRenderer.invoke('link:invite'),
+    join: (code) => ipcRenderer.invoke('link:join', code),          // { ok, error?, view }
+    cancel: () => ipcRenderer.invoke('link:cancel'),
+    setName: (name) => ipcRenderer.invoke('link:setName', name),
+    rename: (id, name) => ipcRenderer.invoke('link:rename', id, name),
+    setAllow: (id, on) => ipcRenderer.invoke('link:setAllow', id, on),
+    remove: (id) => ipcRenderer.invoke('link:remove', id),
+    send: (id, project, text) => ipcRenderer.invoke('link:send', id, project, text),
+    onChange: listen('link:changed'),
+  },
   office: {
     onData: listen('office:data'),
     themes: () => ipcRenderer.invoke('office:themes'),   // gallery + user themes.json (contract v3.1)
