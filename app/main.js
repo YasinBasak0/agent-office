@@ -22,6 +22,7 @@ const R = require('./src/resume.js');
 const TU = require('./src/token-usage.js');
 const PD = require('./src/project-data.js');
 const FB = require('./src/fallback.js');
+const EN = require('./src/engine.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -39,6 +40,8 @@ const sizes = new Map();     // pty id → { cols, rows } (last pty:resize)
 const auths = new Map();     // accountId → AccountAuth (in memory only)
 const usages = new Map();    // accountId → AccountUsage (also kept in usage/<accountId>/last.json)
 const ptyOf = (id) => terms.get(id) || logins.get(id);
+// An Antigravity project (contract v3.18): its tabs run `agy`, so nothing that reads Claude Code's files applies to it.
+const isAgy = (project) => P.engineOf(project) === 'agy';
 // Sleeping tabs (see src/sleep.js): pty id → how to start it again ({ resume } at launch, { sessionId } after a sleep).
 const asleep = new Map();
 const activity = new Map(); // pty id → { at: last start/input/output, draft: prompt text typed but unsent }
@@ -274,7 +277,7 @@ function checkTurns() {
   const home = app.getPath('home');
   for (const [id, t] of terms) {
     const r = P.resolvePty(state, id);
-    if (!r) continue;
+    if (!r || isAgy(r.project)) continue;
     const { configDir } = A.accountOf(state, r.project);
     const claude = readJson(Z.claudePidFile(configDir, home, t.pid));
     const sid = validSid(claude?.sessionId);
@@ -353,6 +356,16 @@ function windowsClaude(args, env) {
 // Claude Code is missing: say so in the tab's terminal, then exit (Enter there tries again).
 function sendNoClaude(id) {
   send('pty:data', id, `\r\n\x1b[31m${T('main.noClaude')}\x1b[0m\r\n${T('main.noClaudeHelp', { url: CLAUDE_INSTALL_URL })}\r\n`);
+  send('pty:exit', id, 127);
+}
+/** How to start agy (contract v3.18) with these arguments; null when Antigravity is not installed. */
+function windowsAgy(args, env) {
+  const agy = OS.findAgy(env, isFile);
+  return agy ? OS.windowsCommand(agy, args, env) : null;
+}
+// Antigravity is missing: the same as for Claude Code (Enter there tries again).
+function sendNoAgy(id) {
+  send('pty:data', id, `\r\n\x1b[31m${T('main.noAgy')}\x1b[0m\r\n${T('main.noAgyHelp')}\r\n`);
   send('pty:exit', id, 127);
 }
 /** node-pty arguments: a verbatim cmd.exe line is passed as one pre-quoted string. */
@@ -578,7 +591,7 @@ function tokenFolders(p) {
 /** detail: also the costliest sub-agent runs and the fixed prefix (contract v3.21; the panel, not the row). */
 async function tokenReport(id, { detail = false } = {}) {
   const p = P.findProject(state, id);
-  if (!p) return null;
+  if (!p || isAgy(p)) return null; // Antigravity writes no Claude Code transcripts (v3.18)
   const since = Number.isFinite(p.addedAt) ? p.addedAt : null;
   const folders = tokenFolders(p);
   const recs = await tokenScanner.scanFolders(folders, { since: since ?? 0 });
@@ -662,11 +675,13 @@ const RESUME_GRACE_MS = 8000; // if --continue ends with an error within this ti
 // --resume <id>, the tab's own session. imported: a session just moved here from another computer (contract v3.4):
 // if --resume fails it does not fall back to a fresh session; the user is told and the imported files stay.
 // prompt: submitted as claude's positional prompt, only when the start resumes a session (interrupted work).
+// A tab of an Antigravity project starts `agy` instead (startAgy, contract v3.18).
 function startPty(id, { resume = false, sessionId = null, imported = false, prompt = '' } = {}) {
   killPty(id);
   const r = P.resolvePty(state, id);
   if (!r || !win || !isLoaded) return broadcast();
   asleep.delete(id);
+  if (isAgy(r.project)) return startAgy(id, r, { resume, prompt });
   const { project, tab, dir: cwd } = r;
   const account = A.accountOf(state, project);
   const { configDir } = account;
@@ -758,6 +773,59 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   broadcast();
 }
 
+// A tab of an Antigravity project (contract v3.18): `agy` from the same login shell, with none of Claude Code's setup
+// (plugin, status line, memory, shared config and MCP fingerprint, history check, usage-limit watch) and no account
+// folder or CLAUDE_CODE_* variables (agy keeps its own Google login and data). resume: --continue, only for a tab
+// that continues (main tab, worktree tab); if it ends with an error within RESUME_GRACE_MS the tab starts fresh.
+// prompt: agy's -i, only when resuming. There is no session id: a sleeping or restarted tab continues the same way.
+function startAgy(id, { project, tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+  const { cols, rows } = sizes.get(id) || lastSize;
+  const isResume = resume && (!tab || Boolean(tab.worktree));
+  const args = EN.agyArgs({ resume: isResume, prompt });
+  const directory = officeDirectoryFile(project, usageKey(id), {});
+  const startedAt = Date.now();
+  const env = A.sessionEnv(A.ptyEnv(process.env, null), { manager: P.managerOf(state, project), agentModel: null, contextCap: null });
+  delete env.AGENT_OFFICE_STATUSLINE;
+  delete env.AGENT_OFFICE_DIRECTORY;
+  if (directory) env.AGENT_OFFICE_DIRECTORY = directory;
+  let t;
+  try {
+    const win32 = IS_WIN ? windowsAgy(args, env) : null;
+    if (IS_WIN && !win32) { sendNoAgy(id); return broadcast(); }
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', EN.AGY_COMMAND, 'agy', ...args], {
+      name: 'xterm-256color',
+      cols, rows,
+      cwd: isDir(cwd) ? cwd : app.getPath('home'),
+      env,
+    });
+  } catch (e) {
+    console.error('pty başlatılamadı:', e.message);
+    send('pty:exit', id, -1);
+    return broadcast();
+  }
+  terms.set(id, t);
+  activity.set(id, { at: startedAt, draft: false });
+  lastSid.delete(id);
+  t.onData((d) => {
+    if (terms.get(id) !== t) return;
+    const a = activity.get(id);
+    if (a) a.at = Date.now();
+    send('pty:data', id, d);
+  });
+  t.onExit(({ exitCode }) => {
+    if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
+    terms.delete(id);
+    setMarks(R.clearInterrupted(marks(), [id]));
+    removeMcpFile(id);
+    // no conversation to continue: start fresh without showing the exit to the user
+    if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) return startPty(id);
+    activity.delete(id);
+    send('pty:exit', id, exitCode);
+    broadcast();
+  });
+  broadcast();
+}
+
 // After loading, start the claude of every project that isn't running (on reload, leave running ones alone).
 // At startup (if the setting is on) every project continues from its last session. With sleeping on, a tab is only
 // marked asleep: it starts when the renderer first shows it (pty:wake).
@@ -803,6 +871,7 @@ function unfinishedTabs() {
   const at = marks();
   const tabs = [];
   for (const p of state.projects) {
+    if (isAgy(p)) continue; // no Claude Code transcript to look at (v3.18)
     for (const id of P.ptyIdsOf(p)) {
       const r = P.resolvePty(state, id);
       if (!r) continue;
@@ -898,9 +967,10 @@ function sleepIdle() {
 // --continue for a tab that continues), like an MCP reload. A tab cut off mid-turn is told to carry on. A sleeping
 // tab stays asleep and wakes into its own session. from: the project's account before the change.
 // carryOn (v3.17): tabs that stopped at the usage limit; they are told to carry on like a tab cut off mid-turn.
+// An Antigravity project (v3.18) ignores accounts: nothing moves and its tabs keep running.
 function moveProject(projectId, from, { carryOn = [] } = {}) {
   const p = P.findProject(state, projectId);
-  if (!p) return;
+  if (!p || isAgy(p)) return;
   const home = app.getPath('home');
   const plan = [];
   for (const id of P.ptyIdsOf(p)) {
@@ -995,6 +1065,7 @@ function checkLimits() {
   const now = Date.now();
   const returning = returnTick++ % 10 === 0;
   for (const p of state.projects) {
+    if (isAgy(p)) continue; // no Claude Code account or transcript (v3.18)
     const account = A.accountOf(state, p);
     const usageFull = () => FB.limitedUntil({ usage: usages.get(account.id), now }) > 0;
     const hits = [];
@@ -1184,6 +1255,19 @@ ipcMain.handle('projects:setSavings', (_e, id, value) => {
   const p = P.findProject(state, id);
   return { restarted: p ? restartIdle(p) : [] };
 });
+// Per-project engine (contract v3.18): 'agy' runs Google Antigravity CLI, null (or 'claude') Claude Code. The two
+// share no conversation, so every tab of the project starts again at once, fresh (sleeping and stopped tabs too).
+// Returns the restarted pty ids.
+ipcMain.handle('projects:setEngine', (_e, id, value) => {
+  const next = P.setProjectEngine(state, id, value);
+  if (next === state) return { restarted: [] };
+  commit(next);
+  const p = P.findProject(state, id);
+  if (!p) return { restarted: [] };
+  const ids = P.ptyIdsOf(p);
+  for (const pid of ids) startPty(pid);
+  return { restarted: ids };
+});
 /** Restarts the project's idle tabs, each resuming its own session; returns their pty ids. */
 function restartIdle(p) {
   const restarted = [];
@@ -1199,7 +1283,7 @@ function restartIdle(p) {
 function idleSession(pid) {
   const t = terms.get(pid);
   const r = P.resolvePty(state, pid);
-  if (!t || !r || activity.get(pid)?.draft) return '';
+  if (!t || !r || isAgy(r.project) || activity.get(pid)?.draft) return '';
   const { configDir } = A.accountOf(state, r.project);
   const claude = readJson(Z.claudePidFile(configDir, app.getPath('home'), t.pid));
   const sid = validSid(claude?.sessionId);
@@ -1397,6 +1481,7 @@ let transferBusy = false;
 async function exportSession(projectId) {
   const p = P.findProject(state, projectId || state.activeId);
   if (!p || !win || transferBusy) return;
+  if (isAgy(p)) return dialog.showMessageBox(win, { type: 'info', message: T('main.moveAgy') }); // v3.18
   transferBusy = true;
   try {
     const home = app.getPath('home');
@@ -1536,6 +1621,7 @@ async function runImport(file) {
   // 4. the project and account it goes to; its tab must be idle
   const real = (d) => { try { return fs.realpathSync(d); } catch { return d; } };
   const existing = P.findByDir(state, dir) || state.projects.find((p) => real(p.dir) === real(dir)) || null;
+  if (existing && isAgy(existing)) return warnBox(T('main.moveAgy'));
   const account = existing ? A.accountOf(state, existing) : accountById(A.DEFAULT_ID) || A.DEFAULT_ACCOUNT;
   if (existing && tabBlocker(existing.id, account.configDir)) return warnBox(T('main.importTargetBusy'), T(`main.moveBlocker.${tabBlocker(existing.id, account.configDir)}`));
   let newId = null;
@@ -1585,7 +1671,7 @@ ipcMain.handle('projects:menu', (_e, id) => {
   const p = P.findProject(state, id);
   if (!p || !win) return;
   Menu.buildFromTemplate([
-    { label: T('main.moveSession'), click: () => exportSession(p.id) },
+    { label: T('main.moveSession'), enabled: !isAgy(p), click: () => exportSession(p.id) },
     { type: 'separator' },
     { label: T('main.openSessionFile'), click: () => importSession(null) },
   ]).popup({ window: win });

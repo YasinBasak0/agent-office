@@ -294,6 +294,44 @@ test('sessionEnv: tasarruf seviyesi başına ortam; Kapalı kullanıcınınkine 
   assert.equal(A.SAVINGS_DEFAULT, 'normal');
 });
 
+test('proje başına motor: normalizeState, setProjectEngine, engineOf (v3.18)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', engine: 'agy' },
+      { id: 'b', dir: '/b', engine: 'claude' },
+      { id: 'c', dir: '/c', engine: 'gemini' },
+      { id: 'd', dir: '/d' },
+    ],
+  }, { id });
+  assert.deepEqual(s.projects.map((p) => P.engineOf(p)), ['agy', 'claude', 'claude', 'claude']);
+  assert.equal('engine' in s.projects[1], false); // Claude Code (the default) is never written
+  assert.equal('engine' in s.projects[2], false); // unknown values are dropped
+  assert.equal(P.engineOf(null), 'claude');
+  assert.deepEqual(P.ENGINES, ['claude', 'agy']);
+  assert.equal(P.setProjectEngine(s, 'a', 'agy'), s);
+  assert.equal(P.setProjectEngine(s, 'zz', 'agy'), s);
+  assert.equal(P.setProjectEngine(s, 'd', null), s);
+  assert.equal(P.setProjectEngine(s, 'd', 'claude'), s); // 'claude' = null
+  assert.equal(P.setProjectEngine(s, 'd', 'gemini'), s); // invalid = Claude Code
+  s = P.setProjectEngine(s, 'd', 'agy');
+  assert.equal(P.engineOf(P.findProject(s, 'd')), 'agy');
+  s = P.setProjectEngine(s, 'a', 'claude'); // back to Claude Code: the field goes
+  assert.equal('engine' in P.findProject(s, 'a'), false);
+  const again = P.normalizeState(JSON.parse(JSON.stringify(s)), { id });
+  assert.deepEqual(again.projects.map((p) => p.engine), [undefined, undefined, undefined, 'agy']);
+});
+
+test('agy başlatma: --continue yalnız devam ederken, -i istemi yalnız devam ederken; komut satırı (v3.18)', () => {
+  const EN = require('../src/engine.js');
+  assert.deepEqual(EN.agyArgs(), []);
+  assert.deepEqual(EN.agyArgs({ resume: false, prompt: 'carry on' }), []); // a fresh start gets no prompt
+  assert.deepEqual(EN.agyArgs({ resume: true }), ['--continue']);
+  assert.deepEqual(EN.agyArgs({ resume: true, prompt: '  --carry\non "now"  ' }), ['--continue', '-i', 'carry on now']);
+  assert.deepEqual(EN.agyArgs({ resume: true, prompt: '   ' }), ['--continue']); // nothing left of the prompt
+  assert.equal(EN.AGY_COMMAND, 'exec agy "$@"'); // arguments via "$@", argv0 'agy'; no CLAUDE_CONFIG_DIR export
+  assert.equal(EN.AGY_COMMAND.includes('CLAUDE'), false);
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });
@@ -945,6 +983,14 @@ test('Windows: claude PATH\'te (PATHEXT sırası, Path anahtarı), yoksa kurulum
   assert.equal(OS.findClaude(bare, filesAt('C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd')), 'C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd');
   assert.equal(OS.findClaude(bare, () => false), null);
   assert.equal(OS.findOnPath('git.exe', { PATH: 'C:\\Git\\cmd' }, filesAt('C:\\Git\\cmd\\git.exe')), 'C:\\Git\\cmd\\git.exe');
+});
+
+test('Windows: agy yalnız PATH\'te aranır; yoksa null (v3.18)', () => {
+  const env = { Path: 'C:\\Windows;C:\\Users\\a\\.local\\bin', PATHEXT: '.COM;.EXE;.BAT;.CMD;.PS1' };
+  assert.equal(OS.findAgy(env, filesAt('C:\\Users\\a\\.local\\bin\\agy.exe')), 'C:\\Users\\a\\.local\\bin\\agy.exe');
+  assert.equal(OS.findAgy(env, filesAt('C:\\Users\\a\\.local\\bin\\agy.ps1')), null);
+  assert.equal(OS.findAgy(env, filesAt('C:\\Users\\a\\.local\\bin\\claude.exe')), null);
+  assert.equal(OS.findAgy({ PATH: 'C:\\Windows' }, () => false), null);
 });
 
 test('Windows: .exe doğrudan, .cmd cmd.exe /d /s /c ile tek satır (tırnaklar korunur)', () => {

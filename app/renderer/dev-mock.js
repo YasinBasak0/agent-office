@@ -192,6 +192,11 @@ window.agentOffice = {
       if (p) { if (value) p.contextCap = value; else delete p.contextCap; changed(); }
       return { restarted: [] };
     },
+    setEngine: async (id, value) => {
+      const p = /** @type {any} */ (projects.find((x) => x.id === id));
+      if (p) { if (value === 'agy') p.engine = value; else delete p.engine; changed(); }
+      return { restarted: [] };
+    },
     onChange: ev.projects.add,
   },
   tabs: {

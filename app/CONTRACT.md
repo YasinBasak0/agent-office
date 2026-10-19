@@ -6,7 +6,7 @@ Three parts are built in parallel; this file fixes the seams between them. Chang
 
 | Part | Files |
 | --- | --- |
-| Main | `main.js`, `preload.js`, `src/projects.js` (new), `src/accounts.js` (new) |
+| Main | `main.js`, `preload.js`, `src/projects.js` (new), `src/accounts.js` (new), `src/engine.js` (v3.18) |
 | UI | `renderer/index.html`, `renderer/app.js`, `renderer/terminal.js`, `renderer/style.css`, `renderer/sidebar.js` (new) |
 | Office | `src/sessions.js`, `src/office/core.mjs`, `renderer/office-view.js` |
 
@@ -711,3 +711,18 @@ type PrefixStats = PrefixPart & { main: PrefixPart; sub: PrefixPart }
 - **Prefix.** A transcript's prefix is its first request's input + cache write + cache read. For a period, every transcript (boss sessions and sub-agents) with requests in it counts its requests `n` and cache reads `reads` in the period; `prefixReads = Σ min(prefix × n, reads)` (it cannot have re-read more than it read); `share = prefixReads / reads`; `avg` is the mean prefix per transcript. `main` and `sub` split boss sessions and sub-agents.
 - **Panel.** Two collapsible sections after "By model" (`<details>`, open by default; collapsed or open stays so across the 15 s re-reads while the app runs): **Most expensive agents** with the period's agent $, "N steps per agent on average (M agents) · over 40 steps: K · P of agent cost", then up to 10 rows: label (ellipsis; tooltip label · type · model), $, "model · steps · tool calls · date", "read · write · in · out" tokens. **Fixed prefix**: "≈ T tokens per session · ≈ P of cache reads", a row each for Main session and Sub-agents (average prefix, bar = share of their cache reads, sessions and steps), and a note that a large share means trimming MCP tools, skills or the manager text saves on every step.
 - **Dev mock.** `?usage` includes made-up agents and prefix numbers.
+
+## Engine per project (v3.18)
+
+A project can run Google Antigravity CLI (`agy`, 1.3.6 or newer) in its terminals instead of Claude Code. App `projects.js`, `src/engine.js` (no Electron), `platform.js` `findAgy`, `main.js` `startAgy`, `renderer/sidebar.js`.
+
+```ts
+// state.json, per project (absent = Claude Code)
+Project.engine?: 'agy'
+agentOffice.projects.setEngine(id: string, value: 'agy' | null): Promise<{ restarted: string[] }>   // null (or 'claude'): Claude Code
+```
+
+- **Sidebar.** First in each project row: **Engine** [**Claude Code** | **Antigravity**] / **Motor** [**Claude Code** | **Antigravity**], the same look (`.sb-acct .sb-mode`). An Antigravity project hides **Account**, **Boss**, **Agent model**, **Context cap**, **Backup**, the *on backup* tag, the *not logged in* badge and the token cost button. `projects:setEngine` writes the field (removed for Claude Code) and starts **every** tab of the project again at once, fresh (`startPty(id)` for each of `ptyIdsOf`, sleeping and stopped tabs too): the two programs share no conversation.
+- **Launch.** `startPty` hands an Antigravity tab to `startAgy`: the same login shell, `exec agy "$@"` (argv0 `agy`; `engine.js` `AGY_COMMAND`); Windows: `agy` on PATH (`findAgy`) started directly, else the terminal says *Antigravity was not found* (`main.noAgy`, `main.noAgyHelp`) and Enter tries again. Arguments (`agyArgs`): `--continue` when resuming (the main tab and worktree tabs, as for claude, without the history check), plus `-i <prompt>` only when resuming with a prompt; a fresh start has none. A resume that exits non-zero within `RESUME_GRACE_MS` starts fresh. The env is `ptyEnv(…, null)` + `sessionEnv` without agent model or context cap: no `CLAUDE_CONFIG_DIR`, no `CLAUDE_CODE_*`; `AGENT_OFFICE_APP` and `AGENT_OFFICE_DIRECTORY` stay (harmless). agy keeps its own Google login (inside its terminal) and data (`~/.gemini/antigravity-cli`); it has no `auth status --json`.
+- **Skipped for Antigravity** (all of them read Claude Code's files): plugin dir, status line and `--settings`, memory setting, shared config and `--mcp-config`, the MCP fingerprint and reload (v3.11), the usage-limit watch and backup-account moves (v3.17 `checkLimits`, `onLimit`, `maybeReturn`), `moveProject` on an account change (v3.16; the account is ignored, nothing restarts), interrupted-work marks (`checkTurns`) and *Resume unfinished work* (v3.8), `restartIdle` (setting changes, v3.10), the token report (v3.13: `tokens:report` gives null) and *Move Session to Another Computer* (v3.4: the menu item is disabled; the File menu and an import into an Antigravity project say `main.moveAgy`). Sleeping needs Claude Code's pid file, so an Antigravity tab never sleeps (it may still start lazily at launch). Enter after `agy` exits starts it again with `--continue` for a tab that continues (there is no session id).
+- **Office.** agy does not run the plugin, so an Antigravity project shows **no workers** in the office yet; its animations are a later phase.
