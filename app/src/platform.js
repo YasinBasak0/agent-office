@@ -107,7 +107,7 @@ function findClaude(env, exists) {
   return known.find((f) => f && exists(f)) || null;
 }
 
-/** Where Antigravity's `agy` is on Windows (contract v3.18): on PATH, else null (not installed). */
+/** Where Antigravity's `agy` is on Windows (contract v3.22): on PATH, else null (not installed). */
 const findAgy = (env, exists) => findOnPath('agy', env, exists);
 
 /** One argument for a cmd.exe command line: bare if it is safe, else in double quotes. */

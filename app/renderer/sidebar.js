@@ -309,7 +309,7 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.savings')), sel);
   }
 
-  // The program the project's tabs run (contract v3.18): Claude Code or Google Antigravity CLI (`agy`). Changing it
+  // The program the project's tabs run (contract v3.22): Claude Code or Google Antigravity CLI (`agy`). Changing it
   // starts every tab of the project again, fresh; an Antigravity project hides the Claude-only settings.
   function engineSelect(p) {
     const now = p.engine === 'agy' ? 'agy' : 'claude';
@@ -318,7 +318,11 @@ export function mountSidebar(el, on) {
       class: 'sb-acct sb-mode',
       title: t('sidebar.engineTitle'),
       onclick: (e) => e.stopPropagation(),
-      onchange: (e) => on.setEngine?.(p.id, e.target.value === 'agy' ? 'agy' : null),
+      // refused (a tab is working) or cancelled: the select shows the engine that stays
+      onchange: async (e) => {
+        const r = await on.setEngine?.(p.id, e.target.value === 'agy' ? 'agy' : null);
+        if (r?.refused) e.target.value = now;
+      },
     },
     opt('claude', t('sidebar.engineClaude')), opt('agy', t('sidebar.engineAgy')));
     return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
@@ -365,7 +369,7 @@ export function mountSidebar(el, on) {
       const s = stats.get(p.name);
       const live = status.get(p.id);
       const sleeping = !live && asleep.has(p.id);
-      const claude = p.engine !== 'agy'; // Antigravity (v3.18): no account, boss, model, cap, backup or token cost
+      const claude = p.engine !== 'agy'; // Antigravity (v3.22): no account, boss, model, cap, savings, backup or token cost
       return h('li', {
         class: 'sb-proj' + (p.id === activeId ? ' active' : ''),
         'data-id': p.id,
@@ -394,6 +398,7 @@ export function mountSidebar(el, on) {
           claude ? backupSelect(p) : null,
           claude ? onBackupTag(p) : null,
           claude ? loginBadge(p) : null,
+          claude ? null : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint')),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),
         h('button', {

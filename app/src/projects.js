@@ -285,7 +285,7 @@ function setProjectSavings(state, id, value) {
 /** The project's savings level: 'off' | 'normal' | 'strict'. */
 const savingsOf = (project) => savingsValue(project?.savings);
 
-// --- per-project engine (contract v3.18)
+// --- per-project engine (contract v3.22)
 // Project.engine: 'agy' runs Google Antigravity CLI (`agy`) in the project's tabs instead of Claude Code; absent =
 // Claude Code. Never written for Claude Code. Antigravity keeps its own login and data, so none of the Claude-only
 // settings (account, boss, agent model, context cap, backup account) apply to it.
