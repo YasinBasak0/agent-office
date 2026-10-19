@@ -6,12 +6,15 @@
 const { build } = require('../package.json');
 
 const NO_WIN32 = '!node_modules/node-pty/prebuilds/win32-*/**';
+// udx-native and sodium-native (the device link): package.json ships only their darwin prebuilds; here win32-x64 only
+const LINK_MAC = '!node_modules/{udx-native,sodium-native}/prebuilds/{android,ios,linux,win32}-*/**';
+const LINK_WIN = '!node_modules/{udx-native,sodium-native}/prebuilds/{android,ios,linux,darwin,win32-arm64}*/**';
 const WIN_ONLY = [
   '!node_modules/node-pty/prebuilds/darwin-*/**',
   '!node_modules/node-pty/prebuilds/win32-arm64/**',
   '!node_modules/node-pty/prebuilds/win32-x64/*.pdb',
 ];
 
-if (!build.files.includes(NO_WIN32)) throw new Error(`package.json build.files no longer has ${NO_WIN32}`);
+for (const p of [NO_WIN32, LINK_MAC]) if (!build.files.includes(p)) throw new Error(`package.json build.files no longer has ${p}`);
 // only config keys here: electron-builder rejects anything else
-module.exports = { ...build, files: [...build.files.filter((f) => f !== NO_WIN32), ...WIN_ONLY] };
+module.exports = { ...build, files: [...build.files.filter((f) => f !== NO_WIN32 && f !== LINK_MAC), ...WIN_ONLY, LINK_WIN] };

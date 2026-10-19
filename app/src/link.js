@@ -8,7 +8,7 @@ const C = require('./link-core.js');
 class Link extends EventEmitter {
   /**
    * @param {{ keyPair: { publicKey: Buffer, secretKey: Buffer }, name: string, devices?: C.Device[], secrets?: Record<string, string>,
-   *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any }} o
+   *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number }} o
    */
   constructor(o) {
     super();
@@ -19,6 +19,7 @@ class Link extends EventEmitter {
     this.secrets = { ...(o.secrets || {}) };
     this.bootstrap = o.bootstrap;
     this.now = o.now || Date.now;
+    this.heartbeatMs = o.heartbeatMs || C.HEARTBEAT_MS;
     this.swarmFactory = o.swarmFactory || ((opts) => new (require('hyperswarm'))(opts));
     this.swarm = null;
     this.conns = new Map();      // device pub → conn (trusted sessions)
@@ -171,7 +172,15 @@ class Link extends EventEmitter {
     this.sentJson.delete(device.pub);
     let invalid = 0;
     if (_why !== 'paired') this.reader(conn, (raw) => this.handle(conn, device, raw, () => { if (++invalid > 20) conn.destroy(); }));
+    // heartbeat: ping every heartbeatMs; no data at all for HEARTBEAT_MISSES of them = the peer is gone
+    const beat = setInterval(() => this.write(conn, { t: 'ping' }), this.heartbeatMs);
+    beat.unref?.();
+    const silence = setTimeout(() => conn.destroy(), this.heartbeatMs * C.HEARTBEAT_MISSES);
+    silence.unref?.();
+    conn.on('data', () => silence.refresh());
     conn.on('close', () => {
+      clearInterval(beat);
+      clearTimeout(silence);
       if (this.conns.get(device.pub) !== conn) return;
       this.conns.delete(device.pub);
       this.remotes.delete(device.pub);

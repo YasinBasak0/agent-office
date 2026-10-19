@@ -1127,7 +1127,14 @@ function startLink() {
     type: typePrompt,
   });
 }
-app.on('will-quit', () => { linkHost?.destroy(); });
+// close the link before exiting so paired devices see this one go offline at once, not after the heartbeat (≤ 1 s)
+let linkClosed = false;
+app.on('will-quit', (e) => {
+  if (!linkHost || linkClosed) return;
+  linkClosed = true;
+  e.preventDefault();
+  Promise.race([Promise.resolve(linkHost.destroy()).catch(() => {}), new Promise((r) => setTimeout(r, 1000))]).finally(() => app.quit());
+});
 
 /** @returns {{ resumed: { id: string, name: string }[], skipped: { id: string, name: string }[] }} */
 function resumeUnfinished() {

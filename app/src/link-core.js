@@ -4,6 +4,10 @@
 const crypto = require('crypto');
 
 const PROTOCOL = 1;
+// a trusted session pings every HEARTBEAT_MS; HEARTBEAT_MISSES intervals without any data from the peer close it
+// (a quit or crash may never close the stream: UDX alone took ~17 s to notice)
+const HEARTBEAT_MS = 5000;
+const HEARTBEAT_MISSES = 3;
 const PAIR_TTL_MS = 10 * 60 * 1000;      // a pairing code lives 10 minutes
 const MAX_FRAME = 64 * 1024;              // one message on the wire (bytes); a longer line closes the connection
 const MAX_COMMAND = 8 * 1024;             // a remote command's text (UTF-8 bytes)
@@ -158,6 +162,8 @@ function cleanSnapshot(s) {
 function validateMessage(m) {
   if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
   switch (m.t) {
+    case 'ping':
+      return { t: 'ping' };
     case 'hello':
       return isInt(m.v, 1000) && isStr(m.name, 200) ? { t: 'hello', v: m.v, name: deviceName(m.name) } : null;
     case 'state': {
@@ -249,7 +255,7 @@ function snapshotOf(projects, office, attention = new Map()) {
 const logEntry = (at, device, project, text, outcome) => ({ at: new Date(at).toISOString(), device, project, firstLine: cleanLine(String(text).split(/\r?\n/)[0], 120), outcome });
 
 module.exports = {
-  PROTOCOL, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
+  PROTOCOL, HEARTBEAT_MS, HEARTBEAT_MISSES, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
   makeCode, normalizeCode, pairSecrets, pairProof, proofOk, pairTopic, hex, isHex,
   cleanLine, sanitizeCommand, markedCommand, deviceName, RateLimiter,
   cleanSnapshot, validateMessage, validatePair, LineReader, encode,

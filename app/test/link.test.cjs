@@ -188,3 +188,32 @@ test('integration: a wrong code does not pair', { timeout: 30000 }, async (t) =>
   assert.match(String(await p), /cancelled/);
   await assert.rejects(b.join('not a code'), /bad-code/);
 });
+
+test('heartbeat: pings keep a quiet session online, a silent peer shows offline after 3 missed pings', { timeout: 30000 }, async (t) => {
+  assert.deepEqual(C.validateMessage({ t: 'ping', extra: 1 }), { t: 'ping' });
+  assert.equal(C.HEARTBEAT_MS * C.HEARTBEAT_MISSES, 15000);                 // the default: offline at most ~15 s after a peer vanishes
+  const createTestnet = require('hyperdht/testnet');
+  const DHT = require('hyperdht');
+  const testnet = await createTestnet(3);
+  t.after(() => testnet.destroy());
+  const heartbeatMs = 200;
+  const a = new Link({ keyPair: DHT.keyPair(), name: 'Studio', bootstrap: testnet.bootstrap, heartbeatMs });
+  const b = new Link({ keyPair: DHT.keyPair(), name: 'Laptop', bootstrap: testnet.bootstrap, heartbeatMs });
+  t.after(() => Promise.all([a.destroy(), b.destroy()]));
+  const until = (fn, ms = 20000) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => { if (fn()) return resolve(Date.now() - t0); if (Date.now() - t0 > ms) return reject(new Error('timeout')); setTimeout(tick, 20); };
+    tick();
+  });
+  const { code } = await a.invite();
+  await b.join(code);
+  await until(() => a.view().devices[0]?.online && b.view().devices[0]?.online);
+  // no state or commands flow, only pings: both stay online well past 3 heartbeats
+  await new Promise((r) => setTimeout(r, heartbeatMs * 6));
+  assert.ok(a.view().devices[0].online && b.view().devices[0].online);
+  // b goes silent without closing the stream (a crash or a frozen process): a drops it after 3 missed pings
+  b.write = () => {};
+  const took = await until(() => !a.view().devices[0].online, heartbeatMs * 20);
+  assert.ok(took >= heartbeatMs * 2, `offline too early (${took} ms)`);
+  assert.ok(took <= heartbeatMs * 3 + 1000, `offline too late (${took} ms)`);
+});
