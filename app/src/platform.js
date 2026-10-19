@@ -110,6 +110,19 @@ function findClaude(env, exists) {
 /** Where Antigravity's `agy` is on Windows (contract v3.22): on PATH, else null (not installed). */
 const findAgy = (env, exists) => findOnPath('agy', env, exists);
 
+/**
+ * Where Command Code's CLI is on Windows (contract v3.23): `commandcode` first, then `cmd` — but a hit that is the
+ * Windows shell's own cmd.exe (ComSpec) never counts. null: not installed.
+ */
+function findCommandCode(env, exists) {
+  const shell = W.normalize(envGet(env, 'ComSpec') || '').toLowerCase();
+  const isShell = (f) => shell && W.normalize(f).toLowerCase() === shell;
+  const found = findOnPath('commandcode', env, exists);
+  if (found && !isShell(found)) return found;
+  const viaCmd = findOnPath('cmd', env, exists);
+  return viaCmd && !isShell(viaCmd) ? viaCmd : null;
+}
+
 /** One argument for a cmd.exe command line: bare if it is safe, else in double quotes. */
 const cmdQuote = (a) => (/^[\w\-.:\\/=@+,]+$/.test(a) ? a : `"${String(a).replace(/"/g, '""')}"`);
 
@@ -249,6 +262,6 @@ function dotPng(size, rgb) {
 
 module.exports = {
   isMac, isWindows, defaultShell, filesFromUriList, linuxClipboardCommands, shortcuts, canSelfUpdate,
-  envGet, withPathDir, findOnPath, findClaude, findAgy, cmdQuote, windowsCommand, findGitBash,
+  envGet, withPathDir, findOnPath, findClaude, findAgy, findCommandCode, cmdQuote, windowsCommand, findGitBash,
   filesFromDropFiles, filesFromFileNameW, windowsClipboardKind, pickWindowsFiles, windowsImageType, POWERSHELL_FILES, filesFromLines, dotPng,
 };

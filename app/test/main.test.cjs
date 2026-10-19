@@ -307,7 +307,7 @@ test('proje başına motor: normalizeState, setProjectEngine, engineOf (v3.22)',
   assert.equal('engine' in s.projects[1], false); // Claude Code (the default) is never written
   assert.equal('engine' in s.projects[2], false); // unknown values are dropped
   assert.equal(P.engineOf(null), 'claude');
-  assert.deepEqual(P.ENGINES, ['claude', 'agy']);
+  assert.deepEqual(P.ENGINES, ['claude', 'agy', 'commandcode']);
   assert.equal(P.setProjectEngine(s, 'a', 'agy'), s);
   assert.equal(P.setProjectEngine(s, 'zz', 'agy'), s);
   assert.equal(P.setProjectEngine(s, 'd', null), s);
@@ -319,6 +319,37 @@ test('proje başına motor: normalizeState, setProjectEngine, engineOf (v3.22)',
   assert.equal('engine' in P.findProject(s, 'a'), false);
   const again = P.normalizeState(JSON.parse(JSON.stringify(s)), { id });
   assert.deepEqual(again.projects.map((p) => p.engine), [undefined, undefined, undefined, 'agy']);
+});
+
+test('Command Code motoru (v3.23): engine değerini anar; cmdArgs mod önce, resume sonra, istem en sonda (v3.23)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', engine: 'commandcode' },
+      { id: 'b', dir: '/b', engine: 'cmd' }, // unknown: Claude Code
+    ],
+  }, { id });
+  assert.deepEqual(s.projects.map((p) => P.engineOf(p)), ['commandcode', 'claude']);
+  assert.equal('engine' in s.projects[1], false);
+  s = P.setProjectEngine(s, 'b', 'commandcode');
+  assert.equal(P.engineOf(P.findProject(s, 'b')), 'commandcode');
+  s = P.setProjectEngine(s, 'a', 'claude'); // back: the field goes
+  assert.equal('engine' in P.findProject(s, 'a'), false);
+
+  const EN = require('../src/engine.js');
+  assert.deepEqual(EN.cmdArgs(), []);
+  assert.deepEqual(EN.cmdArgs(['--mod', '/m/office.ts']), ['--mod', '/m/office.ts']); // a fresh start: no resume, no prompt
+  assert.deepEqual(EN.cmdArgs([], ['--continue']), ['--continue']);
+  assert.deepEqual(EN.cmdArgs([], ['--resume', 'abc-1']), ['--resume', 'abc-1']);
+  // the prompt only with a resume (a fresh start takes it from the office's typed text instead), and last;
+  // promptArg makes it one line, never starting with '-', without cmd.exe's special characters (quotes included)
+  assert.deepEqual(EN.cmdArgs([], ['--continue'], '  the "login" bug\n  is client-side '), ['--continue', 'the login bug is client-side']);
+  assert.deepEqual(EN.cmdArgs(['--mod', '/m/office.ts'], ['--resume', 'abc-1'], 'hi'), ['--mod', '/m/office.ts', '--resume', 'abc-1', 'hi']);
+  assert.equal(EN.CMD_COMMAND, 'exec cmd "$@"');
+  assert.equal(EN.CMD.bin, 'cmd');
+  assert.equal(EN.CMD.home, '.commandcode');
+  // Command Code's own history folder keeps Claude Code's naming (P.historyDir's dotDir)
+  assert.equal(P.historyDir('/a/b', null, '/h', EN.CMD.home), path.join('/h', '.commandcode', 'projects', '-a-b'));
+  assert.equal(P.historyDir('/a/b', null, '/h'), path.join('/h', '.claude', 'projects', '-a-b'));
 });
 
 test('agy başlatma: --continue yalnız devam ederken, -i istemi yalnız devam ederken; komut satırı (v3.22)', () => {
@@ -1056,6 +1087,18 @@ test('Windows: claude PATH\'te (PATHEXT sırası, Path anahtarı), yoksa kurulum
   assert.equal(OS.findClaude(bare, filesAt('C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd')), 'C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd');
   assert.equal(OS.findClaude(bare, () => false), null);
   assert.equal(OS.findOnPath('git.exe', { PATH: 'C:\\Git\\cmd' }, filesAt('C:\\Git\\cmd\\git.exe')), 'C:\\Git\\cmd\\git.exe');
+});
+
+test('Command Code motoru (v3.23): Windows Windows kabuğunun cmd.exe\'i asla seçmez, `cmd` ile `commandcode` aranır', () => {
+  const ComSpec = 'C:\\Windows\\system32\\cmd.exe';
+  // commandcode first, then cmd; a `cmd` hit that is the Windows shell (ComSpec) is never returned
+  assert.equal(OS.findCommandCode({ PATH: 'C:\\Users\\a\\bin', ComSpec }, filesAt('C:\\Users\\a\\bin\\commandcode.exe')),
+    'C:\\Users\\a\\bin\\commandcode.exe');
+  assert.equal(OS.findCommandCode({ PATH: 'C:\\Windows;C:\\Users\\a\\bin', ComSpec }, filesAt('C:\\Users\\a\\bin\\cmd.exe')),
+    'C:\\Users\\a\\bin\\cmd.exe');
+  assert.equal(OS.findCommandCode({ PATH: 'C:\\Windows', ComSpec }, filesAt(ComSpec)), null);
+  // no ComSpec in the env: a `cmd` hit stands (nothing says it is the shell)
+  assert.equal(OS.findCommandCode({ PATH: 'C:\\Windows' }, filesAt('C:\\Windows\\cmd.exe')), 'C:\\Windows\\cmd.exe');
 });
 
 test('Windows: agy yalnız PATH\'te aranır; yoksa null (v3.22)', () => {
@@ -2308,6 +2351,34 @@ test('token kullanımı: fiyat tablosu ve tam fiyat karşılığı', () => {
   assert.equal(Math.round(w.fpt), 5750);
   assert.ok(Math.abs(w.usd - 5750 * 5 / 1e6) < 1e-12);
   assert.ok(Math.abs(w.cost.read - 1000 * 5 / 1e6) < 1e-12);
+});
+
+test('token kullanımı: Command Code kaydı (v3.23) — camelCase usage, kendi $ karşılığı, başlıksız klasör adı', () => {
+  const line = JSON.stringify({
+    type: 'message', id: 'cc1', timestamp: '2026-10-19T19:39:39.879Z', model: 'z-ai/glm-5.3-flash',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+    usage: { inputTokens: 20434, outputTokens: 3, cacheReadTokens: 8704, cacheWriteTokens: 0, costUsd: 0.00202212 },
+  });
+  const r = TU.parseLine(line);
+  assert.deepEqual({ ...r }, {
+    key: 'cc1|', t: Date.parse('2026-10-19T19:39:39.879Z'), model: 'z-ai/glm-5.3-flash', sub: false,
+    input: 20434, w5: 0, w1: 0, read: 8704, output: 3, usd: 0.00202212,
+  });
+  // a user line or a message without usage or model reads nothing
+  assert.equal(TU.parseLine(JSON.stringify({ type: 'message', timestamp: '2026-10-19T19:39:39.879Z', message: { role: 'user', content: [] }, usage: {} })), null);
+  assert.equal(TU.parseLine(JSON.stringify({ type: 'message', id: 'x', timestamp: '2026-10-19T19:39:39.879Z', message: { role: 'assistant', content: [] } })), null);
+  assert.equal(TU.parseLine(JSON.stringify({ type: 'message', id: 'x', timestamp: '2026-10-19T19:39:39.879Z', message: { role: 'assistant', content: [] }, usage: {}, model: '' })), null);
+  // the CLI's own $ wins: $ exact, the kind shares scaled to it, $ full-price via the fallback table
+  const w = TU.weigh(r);
+  assert.ok(Math.abs(w.usd - 0.00202212) < 1e-15);
+  assert.ok(Math.abs(w.cost.input + w.cost.write5m + w.cost.write1h + w.cost.read + w.cost.output - w.usd) < 1e-15);
+  assert.ok(Math.abs(w.fpt - 0.00202212 / (5 / 1e6)) < 1e-15);
+  // a $0 record falls back to the price estimate
+  assert.ok(TU.weigh({ ...r, usd: 0 }).usd > 0);
+  // Command Code names its transcript folders without the leading dash
+  assert.deepEqual(TU.projectFolders(['private-tmp', 'private-tmp-wt-1', 'other'], ['/private/tmp'], [], TU.ccSlugOf),
+    ['private-tmp', 'private-tmp-wt-1']);
+  assert.deepEqual(TU.projectFolders(['-private-tmp', 'other'], ['/private/tmp'], []), ['-private-tmp']); // Claude Code's slug
 });
 
 test('token kullanımı: aynı yanıt (message.id, requestId) bir kez sayılır, en çok çıktılı kopya kalır', () => {
