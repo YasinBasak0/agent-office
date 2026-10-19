@@ -955,9 +955,13 @@ test('a permission dialog marks the session waiting until its tool is answered, 
 // /office stats: today's deliveries from every session file, plus what works and runs right now
 test('/office stats sums today across sessions: count, failed, agent time, per project, last ones, working agents and shells', async ($, on) => {
   const root = '/home/tester/.claude/agent-office'
+  // the plugin reads its own Date.now(): a run that straddles midnight would see another day than `today` below
+  const toMidnight = new Date(Date.now()).setHours(24, 0, 0, 0) - Date.now()
+  if (toMidnight < 5_000) await new Promise(resolve => setTimeout(resolve, toMidnight + 50))
   const now = Date.now()
-  // "an hour ago", but never before midnight, so the test holds just after midnight too
-  const earlier = Math.max(1000, Math.min(HOUR, Math.floor((now - new Date(now).setHours(0, 0, 0, 0)) / 2)))
+  // ended.json's delivery is always the oldest of the three (b 1s ago, a 2s ago, c >= 3s ago) so "Last deliveries"
+  // has one order at any time of day; "an hour ago", but not before midnight unless the day is under 6s old
+  const earlier = Math.max(3_000, Math.min(HOUR, Math.floor((now - new Date(now).setHours(0, 0, 0, 0)) / 2)))
   const today = (() => {
     const d = new Date(now)
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -970,7 +974,7 @@ test('/office stats sums today across sessions: count, failed, agent time, per p
       format: 2, project: 'api', updatedAt: now - 10_000,
       workers: [{ id: 'w-1', type: 'Explore', description: 'Map the routes', spawnAt: now - 5000 }],
       shells: [{ id: 'sh-1', command: 'npm run dev', startAt: now - 9000, status: 'running' }, { id: 'sh-2', command: 'ls', startAt: now - 9000, endAt: now - 8000, status: 'completed' }],
-      stats: { delivered: 2, isBossBusy: true, today: { date: today, ids: ['a', 'b'], log: [delivery('a', 'Explore', 'Scan the code', 2), delivery('b', 'general-purpose', 'Fix the bug', 10, false, 30_000)] } },
+      stats: { delivered: 2, isBossBusy: true, today: { date: today, ids: ['a', 'b'], log: [delivery('a', 'Explore', 'Scan the code', 2, true, 2_000), delivery('b', 'general-purpose', 'Fix the bug', 10, false, 1_000)] } },
     },
     // ended today: its delivery counts, its leftover worker does not work any more
     'ended.json': {
