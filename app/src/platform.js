@@ -180,6 +180,30 @@ function windowsClipboardKind(type) {
   return null;
 }
 
+/**
+ * The files to paste from what main read per kind (v3.19): CF_HDROP or text/uri-list name every copied file, Explorer's
+ * FileNameW only the first, so a list from FileNameW alone is not `complete` (main then asks PowerShell for the whole
+ * list and keeps the FileNameW one if that gives nothing). `clipboard.read()` lists item types in no set order.
+ * @param {{ drop?: string[], uri?: string[], name?: string[] }} found
+ * @returns {{ files: string[], complete: boolean }}
+ */
+function pickWindowsFiles(found) {
+  for (const k of /** @type {const} */ (['drop', 'uri'])) if (found[k]?.length) return { files: found[k], complete: true };
+  if (found.name?.length) return { files: found.name, complete: false };
+  return { files: [], complete: true };
+}
+
+// Image formats on the Windows clipboard: Chromium's MIME types, or the raw formats a screenshot (Win+Shift+S,
+// PrtSc), Paint or a browser's "Copy image" put there (CF_DIB 8, CF_DIBV5 17, CF_BITMAP 2, the registered "PNG").
+const WIN_IMAGE_FORMATS = new Set(['png', 'cf_dib', 'cf_dibv5', 'cf_bitmap', '8', '17', '2', 'image/png', 'image/bmp']);
+/** Does this `clipboard.read()` item type hold an image on Windows? */
+function windowsImageType(type) {
+  const t = String(type);
+  if (/^image\//i.test(t)) return true;
+  const m = /^electron application\/osclipboard;format="?([^"]+)"?$/i.exec(t);
+  return Boolean(m && WIN_IMAGE_FORMATS.has(m[1].toLowerCase()));
+}
+
 // PowerShell fallback when Electron shows no file formats: one full path per line.
 const POWERSHELL_FILES = ['-NoProfile', '-NonInteractive', '-Command',
   '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }'];
@@ -223,5 +247,5 @@ function dotPng(size, rgb) {
 module.exports = {
   isMac, isWindows, defaultShell, filesFromUriList, linuxClipboardCommands, shortcuts, canSelfUpdate,
   envGet, withPathDir, findOnPath, findClaude, cmdQuote, windowsCommand, findGitBash,
-  filesFromDropFiles, filesFromFileNameW, windowsClipboardKind, POWERSHELL_FILES, filesFromLines, dotPng,
+  filesFromDropFiles, filesFromFileNameW, windowsClipboardKind, pickWindowsFiles, windowsImageType, POWERSHELL_FILES, filesFromLines, dotPng,
 };

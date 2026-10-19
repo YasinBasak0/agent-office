@@ -2661,3 +2661,84 @@ test('pencere başlığı ve kenar çubuğu bölmesi (v3.18): ~ ile klasör, ba�
   // too short for both: the projects part keeps its minimum
   assert.equal(L.clampSplit(200, 200, 2), 48);
 });
+
+test('Windows yapıştırma (v3.19): Ctrl+V terminalde yapıştırır, macOS ve Linux değişmez', async () => {
+  const K = await import('../src/terminal-keys.mjs');
+  const k = (m = {}) => ({ key: 'v', code: 'KeyV', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...m });
+  // Windows: Ctrl+V and Ctrl+Shift+V; not AltGr (Ctrl+Alt), not Alt+V (claude's image key), not plain V
+  assert.equal(K.isPasteKey(k({ ctrlKey: true }), 'win32'), true);
+  assert.equal(K.isPasteKey(k({ ctrlKey: true, shiftKey: true, key: 'V' }), 'win32'), true);
+  assert.equal(K.isPasteKey(k({ ctrlKey: true, altKey: true }), 'win32'), false);
+  assert.equal(K.isPasteKey(k({ altKey: true }), 'win32'), false);
+  assert.equal(K.isPasteKey(k(), 'win32'), false);
+  assert.equal(K.isPasteKey(k({ ctrlKey: true, code: 'KeyC', key: 'c' }), 'win32'), false);
+  // the key in V's place on another layout (code KeyV) pastes
+  assert.equal(K.isPasteKey(k({ ctrlKey: true, key: 'м' }), 'win32'), true);
+  // Linux: only Ctrl+Shift+V (Ctrl+V stays claude's image paste)
+  assert.equal(K.isPasteKey(k({ ctrlKey: true }), 'linux'), false);
+  assert.equal(K.isPasteKey(k({ ctrlKey: true, shiftKey: true }), 'linux'), true);
+  // macOS: ⌘V and ⌘⇧V; Ctrl+V goes to claude
+  assert.equal(K.isPasteKey(k({ metaKey: true }), 'darwin'), true);
+  assert.equal(K.isPasteKey(k({ metaKey: true, shiftKey: true, key: 'V' }), 'darwin'), true);
+  assert.equal(K.isPasteKey(k({ ctrlKey: true }), 'darwin'), false);
+  assert.equal(K.isPasteKey(k({ metaKey: true, altKey: true }), 'darwin'), false);
+});
+
+test('Windows yapıştırma (v3.19): dosyalar tırnaklı yollar, görsel Alt+V, metin önce (Windows)', async () => {
+  const K = await import('../src/terminal-keys.mjs');
+  const files = ['C:\\Users\\a b\\x.png', 'D:\\y.txt', '\\\\srv\\share\\R&D\\z.md'];
+  assert.deepEqual(K.pasteAction({ files, hasImage: false, text: '' }, 'win32'),
+    { pty: '"C:\\Users\\a b\\x.png" D:\\y.txt "\\\\srv\\share\\R&D\\z.md" ' });
+  assert.deepEqual(K.pasteAction({ files: ['/a b/c', '/d'] }, 'darwin'), { pty: "'/a b/c' /d " });
+  // image only: Claude Code's image key (Alt+V on Windows, Ctrl+V elsewhere)
+  assert.deepEqual(K.pasteAction({ files: [], hasImage: true, text: '' }, 'win32'), { pty: '\x1bv' });
+  assert.deepEqual(K.pasteAction({ files: [], hasImage: true, text: '' }, 'darwin'), { pty: '\x16' });
+  // text and a picture (Excel, Word): Windows pastes the text, macOS and Linux keep the image first
+  assert.deepEqual(K.pasteAction({ files: [], hasImage: true, text: 'a\tb' }, 'win32'), { text: 'a\tb' });
+  assert.deepEqual(K.pasteAction({ files: [], hasImage: true, text: 'a' }, 'linux'), { pty: '\x16' });
+  assert.deepEqual(K.pasteAction({ files: [], hasImage: false, text: 'x\r\ny' }, 'win32'), { text: 'x\r\ny' });
+  assert.equal(K.pasteAction({ files: [], hasImage: false, text: '' }, 'win32'), null);
+  assert.equal(K.pasteAction(null, 'win32'), null);
+  // quotePath on Windows: spaces and cmd characters get "…", a bare path, a drive root and a UNC path stay bare
+  assert.equal(K.quotePath('D:\\', 'win32'), 'D:\\');
+  assert.equal(K.quotePath('\\\\srv\\share\\a.txt', 'win32'), '\\\\srv\\share\\a.txt');
+  assert.equal(K.quotePath('C:\\Program Files (x86)\\a', 'win32'), '"C:\\Program Files (x86)\\a"');
+  assert.equal(K.quotePath('C:\\Belgeler\\çalışma 1\\ö.pdf', 'win32'), '"C:\\Belgeler\\çalışma 1\\ö.pdf"');
+  assert.equal(K.quotePath('C:\\a;b', 'win32'), '"C:\\a;b"');
+});
+
+test('Windows pano (v3.19): CF_HDROP tam liste, FileNameW yalnız ilk dosya, görsel biçimleri', () => {
+  // CF_HDROP as GlobalSize returns it: rounded up, junk after the double NUL; an odd byte at the end
+  const names = ['C:\\Users\\Şule\\Masaüstü\\ekran görüntüsü.png', 'E:\\a.txt', '\\\\srv\\s\\b.md'];
+  const body = Buffer.from(names.join('\0') + '\0\0', 'utf16le');
+  const drop = Buffer.concat([Buffer.alloc(20), body, Buffer.from('JUNK', 'utf16le'), Buffer.from([0x41])]);
+  drop.writeUInt32LE(20, 0);
+  drop.writeUInt32LE(1, 16);
+  assert.deepEqual(OS.filesFromDropFiles(drop), names);
+  // a larger header offset (pFiles) is honoured; a bad offset gives nothing
+  const off = Buffer.concat([Buffer.alloc(24), body]);
+  off.writeUInt32LE(24, 0);
+  off.writeUInt32LE(1, 16);
+  assert.deepEqual(OS.filesFromDropFiles(off), names);
+  const bad = Buffer.from(drop);
+  bad.writeUInt32LE(9999, 0);
+  assert.deepEqual(OS.filesFromDropFiles(bad), []);
+  assert.deepEqual(OS.filesFromDropFiles(null), []);
+  // FileNameW: one NUL-terminated UTF-16LE name, junk after it ignored
+  assert.deepEqual(OS.filesFromFileNameW(Buffer.from(names[0] + '\0xx', 'utf16le')), [names[0]]);
+  assert.deepEqual(OS.filesFromFileNameW(Buffer.from('\0', 'utf16le')), []);
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format=FileNameW'), 'name');
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="15"'), 'drop');
+  assert.equal(OS.windowsClipboardKind('electron application/osclipboard;format="FileName"'), null);
+  // the full list wins whatever order read() lists the types in; FileNameW alone is incomplete
+  assert.deepEqual(OS.pickWindowsFiles({ name: [names[0]], drop: names }), { files: names, complete: true });
+  assert.deepEqual(OS.pickWindowsFiles({ name: [names[0]], uri: names }), { files: names, complete: true });
+  assert.deepEqual(OS.pickWindowsFiles({ name: [names[0]], drop: [] }), { files: [names[0]], complete: false });
+  assert.deepEqual(OS.pickWindowsFiles({}), { files: [], complete: true });
+  // images: MIME types and the raw formats of a screenshot
+  for (const t of ['image/png', 'image/bmp', 'electron application/osclipboard;format="PNG"',
+    'electron application/osclipboard;format="CF_DIB"', 'electron application/osclipboard;format="CF_DIBV5"',
+    'electron application/osclipboard;format="8"']) assert.equal(OS.windowsImageType(t), true, t);
+  for (const t of ['text/plain', 'text/html', 'electron application/osclipboard;format="FileNameW"',
+    'electron application/osclipboard;format="CF_HDROP"']) assert.equal(OS.windowsImageType(t), false, t);
+});
