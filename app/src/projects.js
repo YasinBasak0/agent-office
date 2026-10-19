@@ -24,6 +24,7 @@ function normalizeState(raw, { id = newId } = {}) {
       accountId: known.has(p.accountId) ? p.accountId : DEFAULT_ID,
       ...(Number.isFinite(p.addedAt) ? { addedAt: p.addedAt } : {}), // v3.13; projects from before have none
       ...withManager(p.manager),
+      ...withBossModel(p.bossModel),
       ...withAgentModel(p.agentModel),
       ...withContextCap(p.contextCap),
       ...withSavings(p.savings),
@@ -220,6 +221,34 @@ function setProjectManager(state, id, value) {
 /** Does this project's boss delegate? Its own setting, else the global one (on by default). */
 const managerOf = (state, project) => (typeof project?.manager === 'boolean' ? project.manager : state.manager !== false);
 
+// --- per-project boss model (contract v3.27)
+// Project.bossModel: 'sonnet' | 'opus' | 'haiku' is the model of the project's MAIN claude session (every tab of the
+// project), passed as `--model <alias>` on the launch line; absent = Auto: claude's own default. Never written for Auto.
+const BOSS_MODELS = ['sonnet', 'opus', 'haiku'];
+const bossModelValue = (v) => (BOSS_MODELS.includes(v) ? v : null);
+const withBossModel = (v) => (bossModelValue(v) ? { bossModel: v } : {});
+
+/** value: 'sonnet' | 'opus' | 'haiku' | null (Auto). Same state when nothing changes. */
+function setProjectBossModel(state, id, value) {
+  const p = findProject(state, id);
+  const v = bossModelValue(value);
+  if (!p || (p.bossModel ?? null) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { bossModel: _, ...rest } = x;
+    return v === null ? rest : { ...rest, bossModel: v };
+  }) };
+}
+
+/** The model the project pins its boss session to, or null (Auto). */
+const bossModelOf = (project) => bossModelValue(project?.bossModel);
+
+/** claude's launch arguments for the boss model: ['--model', <alias>], or [] for Auto and non-Claude engines. */
+const bossModelArgs = (project) => {
+  const v = (!project?.engine || project.engine === 'claude') ? bossModelOf(project) : null;
+  return v ? ['--model', v] : [];
+};
+
 // --- per-project subagent model (contract v3.14)
 // Project.agentModel: 'sonnet' | 'haiku' | 'opus' runs every subagent of the project's sessions on that model;
 // absent = Auto: the boss picks per agent (the plugin's manager brief). Never written for Auto.
@@ -365,6 +394,7 @@ module.exports = {
   nextTabNumber, worktreeRoot, worktreeBranch, worktreeDir, addTab, removeTab, sessionAliases, projectPlaces,
   newId, projectName, normalizeState, findProject, findByDir,
   addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
+  BOSS_MODELS, setProjectBossModel, bossModelOf, bossModelArgs,
   AGENT_MODELS, setProjectAgentModel, agentModelOf,
   CONTEXT_CAPS, setProjectContextCap, contextCapOf,
   setProjectSavings, savingsOf,

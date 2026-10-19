@@ -791,3 +791,21 @@ OfficeData.projects[i].engine?: 'agy' | 'commandcode'
 - **Login.** Command Code keeps its own login; no Accounts row. The user logs in inside a Command Code terminal.
 - **Skipped** (Claude Code's files): as for agy in v3.22 (pid files, account moves, usage limits, `restartIdle`, `checkTurns`, session moving: `main.moveCc`). Switching away while a tab runs asks (`main.engineCcConfirm`/`main.engineCcDetail`).
 - **Not checked** against an installed `commandcode`: the slug rule, the busy/approval screen text and the `"role":"user"` record shape.
+
+## Boss model per project (v3.27)
+
+A project can pin the model of its main session (the boss), like `claude --model <x>`. App `projects.js` (`BOSS_MODELS`, `setProjectBossModel`, `bossModelOf`, `bossModelArgs`), `main.js` (`startPty`, `projects:setBossModel`), `renderer/sidebar.js`, `renderer/app.js`, `preload.js`.
+
+```ts
+// state.json, per project (absent = Auto)
+Project.bossModel?: 'sonnet' | 'opus' | 'haiku'
+agentOffice.projects.setBossModel(id: string, value: 'sonnet' | 'opus' | 'haiku' | null): Promise<{ restarted: string[] }>   // null: Auto
+bossModelArgs(project): string[]   // ['--model', <alias>] or []
+```
+
+- **Mechanism** (Claude Code 2.1.303, `claude --help` and the bundle). `--model <model>` ("Model for the current session", an alias such as `opus`/`sonnet`/`haiku` or a full name) and the `ANTHROPIC_MODEL` env var both set the session model; the flag wins over the variable and over settings. The flag is used: it is explicit on the launch line like `--plugin-dir`/`--settings`, needs no rc-file re-export (the shell's rc files cannot undo it, unlike an env var) and leaves the user's own `ANTHROPIC_MODEL` untouched for Auto. `bossModelArgs` puts `['--model', <alias>]` first among the start arguments in `startPty`, before the resume arguments, so a variadic option cannot swallow it and `--resume`/`--continue` keep working.
+- **Auto** adds nothing: Claude Code's own default (or the user's `ANTHROPIC_MODEL`/settings). An unknown value is never written.
+- **Tabs.** Every claude tab of the project starts through `startPty`, so the main tab and the worktree tabs (and extra same-folder tabs) all get the flag.
+- **Reload.** `projects:setBossModel` writes the field (removed for Auto) and restarts the project's idle tabs with `--resume`/`--continue` like `projects:setAgentModel` (`restartIdle`); busy, drafting, sleeping and stopped tabs take it at their next start.
+- **Sidebar.** In each project row, right before **Agent model**: **Boss model** [**Auto** | **Sonnet** | **Opus** | **Haiku**] / **Müdür modeli** [**Otomatik** | **Sonnet** | **Opus** | **Haiku**], the same look (`.sb-acct .sb-mode`). The tooltip says Opus is the strongest but costs about 5x Sonnet per token and Haiku is the cheapest. Hidden for `agy` and `commandcode` projects with the other Claude-only controls (`claude ? bossModelSelect(p) : null`); `bossModelArgs` also returns `[]` for them, so a leftover field does nothing.
+- **Agent model stays independent** (v3.14, `CLAUDE_CODE_SUBAGENT_MODEL`). Boss = Sonnet with Agent = Haiku gives the "Sonnet builds, Haiku searches" split: the boss session runs on Sonnet and every sub-agent is pinned to Haiku.
