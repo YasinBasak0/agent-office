@@ -153,7 +153,10 @@ function placeFinder(places) {
 // another project's folder is shown there: the worker gets that project and `from` (its session's project), and
 // that project's entry gets `remote: { working, isBossBusy, from }`. Counts, busy state and approvals stay with
 // the session's own project, so totals do not double and notifications keep coming from the prompt that answers them.
-function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null, places = null) {
+// extra (contract v3.23): sessions the app observes itself, in the session file's shape plus `id` (no file on disk):
+// an Antigravity tab's state from src/agy-watch.js. They go through the same rules as the plugin's files; an entry with
+// `engine` gives its project that engine (`projects[].engine`).
+function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null, places = null, extra = null) {
   const list = projects == null ? null : (Array.isArray(projects) ? projects : [projects]).filter(p => p != null && p !== '')
   const only = list ? new Set(list.map(slugOf)) : null
   const projectOf = aliasOf(aliases)
@@ -181,9 +184,11 @@ function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null
   const midnight = new Date(now).setHours(0, 0, 0, 0)
   const seen = new Map() // "<session>/<worker>" → project key
   let newest = 0
-  for (const f of files) {
+  const observed = (Array.isArray(extra) ? extra : []).filter(e => e && typeof e === 'object' && /^[\w:.-]+$/.test(String(e.id ?? '')))
+  for (const f of [...files, ...observed]) {
     let s
-    try {
+    if (typeof f !== 'string') s = { ...f }
+    else try {
       // files changed before today that aren't live carry neither workers nor today's deliveries
       if (statSync(join(sessions, f)).mtimeMs < Math.min(midnight, now - LIVE_MS)) continue
       s = JSON.parse(readFileSync(join(sessions, f), 'utf8'))
@@ -194,12 +199,13 @@ function readOffice(projects, now = Date.now(), root = rootDir(), aliases = null
     s.project = projectOf(s.project)
     const key = slugOf(s.project)
     if (only && !only.has(key)) continue
+    if (typeof f !== 'string' && typeof s.engine === 'string') entry(s.project).engine = s.engine
     // a file written by a newer plugin: warn instead of misreading it (contract v2.8)
     if (Number.isFinite(s.format) && s.format > FORMAT) {
       data.newerFormat = Math.max(data.newerFormat ?? 0, s.format)
       continue
     }
-    const sessionId = f.replace(/\.json$/, '')
+    const sessionId = typeof f === 'string' ? f.replace(/\.json$/, '') : String(f.id)
     const workers = Array.isArray(s.workers) ? s.workers : []
     let delivers = false
     for (const w of workers) {
@@ -290,7 +296,8 @@ function readSession(id, root = rootDir()) {
 // ---------- end-of-day summary (contract v2.9) ----------
 // Today's deliveries: each session's stats.today.log (kept even after a worker leaves the office), with project, newest first.
 // If projects is given, only those. untracked: number of deliveries without a log (old plugin).
-function readToday(projects, now = Date.now(), root = rootDir(), aliases = null) {
+// extra: as readOffice's (observed sessions, no file).
+function readToday(projects, now = Date.now(), root = rootDir(), aliases = null, extra = null) {
   const only = projects == null ? null : new Set(projects.map(slugOf))
   const projectOf = aliasOf(aliases)
   const day = dayKey(now)
@@ -301,11 +308,13 @@ function readToday(projects, now = Date.now(), root = rootDir(), aliases = null)
   try {
     files = readdirSync(sessions).filter(f => f.endsWith('.json'))
   } catch {
-    return out
+    files = []
   }
-  for (const f of files) {
+  const observed = (Array.isArray(extra) ? extra : []).filter(e => e && typeof e === 'object' && /^[\w:.-]+$/.test(String(e.id ?? '')))
+  for (const f of [...files, ...observed]) {
     let s
-    try {
+    if (typeof f !== 'string') s = { ...f }
+    else try {
       if (statSync(join(sessions, f)).mtimeMs < midnight) continue
       s = JSON.parse(readFileSync(join(sessions, f), 'utf8'))
     } catch {
@@ -318,7 +327,7 @@ function readToday(projects, now = Date.now(), root = rootDir(), aliases = null)
     const project = String(s.project ?? '')
     const ids = Array.isArray(s.stats.today.ids) ? s.stats.today.ids : []
     const log = Array.isArray(s.stats.today.log) ? s.stats.today.log : []
-    const sessionId = f.replace(/\.json$/, '')
+    const sessionId = typeof f === 'string' ? f.replace(/\.json$/, '') : String(f.id)
     for (const d of log) {
       if (!d || typeof d !== 'object' || !Number.isFinite(d.doneAt)) continue
       out.deliveries.push({

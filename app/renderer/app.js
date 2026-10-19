@@ -510,6 +510,9 @@ sidebar = mountSidebar($('sidebar'), {
   login: (id) => openLogin(id),
   logout: logoutAccount,
   refreshAuth,
+  agyLogin: () => openAgy('login'),
+  agyLogout: () => openAgy('logout'),
+  agyRefresh: () => api.agy?.auth(true).then(setAgyAuth, (e) => console.error(e)),
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
   setResume: (on) => api.prefs?.set({ resume: on }).then((p) => sidebar.setResume(p?.resume)).catch((e) => console.error(e)),
   resumeUnfinished,
@@ -527,6 +530,19 @@ sidebar = mountSidebar($('sidebar'), {
 sidebar.setSplit(store.get('accountsHeight') || null);
 
 login = mountLogin(document.body, { getTheme: () => theme, onClose: () => focusActive() });
+
+// Antigravity's login (contract v3.24): one per user, agy itself in the 'login:agy' pty. Log out = /logout at its prompt.
+function setAgyAuth(a) { if (a) sidebar.setAgyAuth(a); }
+function openAgy(mode) {
+  if (!api.agy) return;
+  login.open({ id: 'agy', label: 'Antigravity' }, {
+    start: () => api.agy.login(),
+    hint: () => t(mode === 'logout' ? 'login.agyLogoutHint' : 'login.agyHint'),
+    title: () => t(mode === 'logout' ? 'login.agyLogoutTitle' : 'login.title', { label: 'Antigravity' }),
+  });
+}
+api.agy?.onAuth(setAgyAuth);
+api.agy?.auth().then(setAgyAuth, (e) => console.error(e));
 
 function setCollapsed(c) {
   document.body.classList.toggle('sidebar-collapsed', c);

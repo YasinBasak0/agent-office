@@ -129,8 +129,8 @@
     "engineTitle": "The program this project's terminals run: Claude Code, or Google Antigravity CLI (agy, which keeps its own Google login). Account, boss, agent model, context cap, backup account and token usage apply to Claude Code only, and the office shows no workers for Antigravity yet. Changing it starts every tab of the project again, fresh.",
     "engineClaude": "Claude Code",
     "engineAgy": "Antigravity",
-    "agyHint": "Antigravity — no office tracking",
-    "agyHintTitle": "This project runs Google Antigravity CLI. The office shows no workers, deliveries or token use for it, and nothing of the office (journal, directory, other projects) is passed to agy.",
+    "agyHint": "Antigravity — observed",
+    "agyHintTitle": "This project runs Google Antigravity CLI. The office follows it one way, from its terminal and its own conversation log (read only): the boss works, asks for approval, counts each finished turn as a delivery and sleeps when idle. No sub-agents or token use are shown, and nothing of the office (journal, directory, other projects) is passed to agy.",
     "noLogin": "⚠ not logged in",
     "noLoginTitle": "“{label}” is not logged in; Claude cannot work in this project.\nClick to log in",
     "claudeRunning": "Claude running",
@@ -182,7 +182,18 @@
     "backupNone": "None",
     "backupAuto": "Any free account",
     "onBackup": "on backup · back to {home}",
-    "onBackupTitle": "Moved here when {home} reached its usage limit. It goes back to {home} once that limit resets and every tab is idle."
+    "onBackupTitle": "Moved here when {home} reached its usage limit. It goes back to {home} once that limit resets and every tab is idle.",
+    "agyTitle": "Google Antigravity CLI (agy): one login for every Antigravity project. agy keeps it in the system keychain.",
+    "agyLoginTitle": "Start agy here to sign in with Google (a browser opens)",
+    "agyLogoutTitle": "Open agy here; type /logout at its prompt to sign out",
+    "agyMissing": "agy not installed",
+    "agyMissingTitle": "An Antigravity project needs Google's Antigravity CLI. Install it in a terminal, then press ↻.",
+    "agyInstallTitle": "Install command from antigravity.google (run it yourself in a terminal)",
+    "agyApiKey": "Gemini API key",
+    "agyAdc": "Google ADC",
+    "agyKeyNote": "agy uses an API key or ADC, not a login: /logout does nothing. To stop, remove GEMINI_API_KEY (or unset AGY_ADC_AUTH).",
+    "agyUnknown": "login kept by agy",
+    "agyUnknownTitle": "agy keeps its login in the system keychain, which the app does not read. Log in signs in if needed; Log out opens agy for /logout."
   },
   "panel": {
     "types": {
@@ -285,7 +296,10 @@
     "hint": "If a browser opens, approve there; if the terminal asks something, answer here.",
     "retry": "Try again",
     "title": "Log in to {label}",
-    "checking": "checking login…"
+    "agyLogoutTitle": "Log out of Antigravity",
+    "checking": "checking login…",
+    "agyHint": "Sign in with Google in the browser that opens (over SSH, paste the code here). When agy's prompt appears you are logged in: type /exit.",
+    "agyLogoutHint": "Type /logout and press Enter to sign out of Antigravity, then /exit."
   },
   "terminal": {
     "exited": "— Claude exited — press Enter to restart —",

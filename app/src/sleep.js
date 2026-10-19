@@ -76,8 +76,9 @@ function sleepBlocker({ now, idleMs, lastActivityAt, hasDraft = false, isActive 
  * How a sleeping tab starts (startPty options). After a sleep: its own session (--resume <id>). Not started yet at
  * launch ({ resume: true }): the "Continue last session" setting as it is now decides --continue. After an account
  * change ({}): fresh.
- * @param {{ sessionId?: string, resume?: boolean } | undefined} how @param {boolean} resumePref
+ * @param {{ sessionId?: string, resume?: boolean, agy?: boolean } | undefined} how @param {boolean} resumePref
  */
-const wakeOptions = (how, resumePref) => (how?.sessionId ? { sessionId: how.sessionId } : { resume: Boolean(how?.resume) && resumePref !== false });
+// An Antigravity tab put to sleep ({ agy: true }, contract v3.23) always continues its folder's conversation.
+const wakeOptions = (how, resumePref) => (how?.sessionId ? { sessionId: how.sessionId } : how?.agy ? { resume: true } : { resume: Boolean(how?.resume) && resumePref !== false });
 
 module.exports = { wakeOptions, SLEEP_CHOICES, DEFAULT_SLEEP, normalizeSleep, claudePidFile, hasScheduleTool, draftAfter, sleepBlocker };

@@ -5,6 +5,8 @@
 // ?langs=en,tr,de → languages in the picker (a browser cannot list the folder; main reads locales/*.json). Default en,tr.
 // ?platform=linux (or win32) → Linux / Windows title bar and Ctrl+Shift shortcuts (platform.js).
 // ?asking → second project awaits approval (sign, ✋), third is done (●).
+// ?agy → the second project runs Antigravity (contract v3.22/v3.23): no workers, its boss works (with ?asking it awaits
+// approval), the office data carries engine 'agy' (agent panel's AGY tag) and turns as deliveries.
 // ?agentsWaiting → no boss is busy but agents still work (sign and boss panel: waiting on agents).
 // ?select=<worker id | @boss | shell:<id>> → clicks that bot/rack slot after a few seconds (agent panel test;
 // e.g. ?select=m-1, ?select=shell:sh-1). ?noShells → old data (no shells field).
@@ -76,6 +78,7 @@ const projects = q.has('empty') ? [] : [
   { id: rid(), dir: '/Users/me/Projects/shop-api', name: 'shop-api', accountId: 'is' },
   { id: rid(), dir: '/Users/me/Projects/notlar', name: 'notlar', accountId: 'default' },
 ];
+if (q.has('agy') && projects[1]) /** @type {any} */ (projects[1]).engine = 'agy';
 if (q.has('longDir') && projects[0]) projects[0].dir = '/Users/me/Documents/Clients/acme-corporation/2026/platform-rewrite/services/agent-office';
 if (q.has('tabs') && projects[0]) {
   /** @type {any} */ (projects[0]).tabs = [
@@ -254,6 +257,18 @@ window.agentOffice = {
       check(id, 400);
     },
   },
+  // v3.24: Antigravity's login (?agy=in|out|unknown|missing; default: logged in)
+  agy: (() => {
+    const kind = q.get('agy') || 'in';
+    const auth = kind === 'missing' ? { installed: false, state: 'missing' }
+      : kind === 'in' ? { installed: true, state: 'in', email: 'you@gmail.com', method: 'google' } : { installed: true, state: kind };
+    const lis = listeners();
+    return {
+      auth: async () => ({ ...auth }),
+      login: async () => { setTimeout(() => { ev.data.emit('login:agy', 'agy (mock): sign in in the browser…\r\n'); ev.exit.emit('login:agy', 0); lis.emit({ ...auth }); }, 600); },
+      onAuth: (cb) => lis.add(cb),
+    };
+  })(),
   pty: {
     write: (id, d) => {
       if (id.startsWith('login:')) return; // fake login does not wait for input
@@ -498,9 +513,11 @@ if (q.has('select')) {
 }
 
 setInterval(() => {
-  const workers = mockWorkers();
+  const isAgyName = (name) => projects.some((p) => p.name === name && /** @type {any} */ (p).engine === 'agy');
+  const workers = mockWorkers().filter((w) => !isAgyName(w.project));
   const per = projects.map((p, i) => ({
     name: p.name,
+    .../** @type {any} */ (p).engine === 'agy' ? { engine: 'agy' } : {},
     working: workers.filter((w) => w.project === p.name && w.doneAt == null).length,
     delivered: i * 2 + 1,
     isBossBusy: !q.has('agentsWaiting') && i === 1,

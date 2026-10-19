@@ -39,11 +39,13 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
     const auth = accounts.find((a) => a.id === c.id)?.auth;
     const code = c.code;
     const done = () => (code === 0 ? t('login.done') : t('login.exitCode', { code }));
-    if (auth?.state === 'in') {
+    // Antigravity (v3.24): its state may not be readable, so a clean exit of agy counts as done
+    const extDone = c.ext && code === 0;
+    if (extDone || auth?.state === 'in') {
       c.closing = true;
       clearTimers(c);
       c.retry.hidden = true;
-      setStatus(() => `${done()} · ${auth.email || t('login.loggedIn')}`, 'ok');
+      setStatus(() => (extDone ? done() : `${done()} · ${auth?.email || t('login.loggedIn')}`), 'ok');
       c.timers.push(setTimeout(() => { if (cur === c) close(); }, CLOSE_AFTER));
       return;
     }
@@ -63,7 +65,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
     setStatus(() => t('login.starting'));
     c.term.reset(); // size is reported again with the first data
     requestAnimationFrame(() => { c.term.fit(); c.term.focus(); });
-    window.agentOffice.accounts.login(c.id).then(
+    (c.ext ? c.ext.start() : window.agentOffice.accounts.login(c.id)).then(
       () => { if (cur === c && !c.exited) setStatus(() => t('login.inProgress')); },
       (e) => {
         if (cur !== c) return;
@@ -74,7 +76,12 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
     );
   }
 
-  function open(account) {
+  /**
+   * @param {{ id: string, label: string }} account
+   * @param {{ start: () => Promise<unknown>, hint: () => string, title?: () => string }} [ext] a login that is not a Claude account's
+   *   (Antigravity, v3.24): how its pty starts and the hint above the terminal.
+   */
+  function open(account, ext) {
     if (!account) return;
     if (cur?.id === account.id) return cur.term.focus();
     close();
@@ -89,7 +96,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
     x.title = t('login.close');
     x.addEventListener('click', () => close());
     head.append(title, x);
-    const hintEl = h('p', 'lo-hint', t('login.hint'));
+    const hintEl = h('p', 'lo-hint', ext ? ext.hint() : t('login.hint'));
     const host = h('div', 'term-host lo-term');
     const foot = h('div', 'lo-foot');
     const status = h('span', 'lo-status');
@@ -103,7 +110,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
 
     const ptyId = `login:${account.id}`;
     const term = mountTerminal(host, { projectId: ptyId, theme: getTheme(), restartable: false });
-    cur = { id: account.id, ptyId, root, title, x, hint: hintEl, status, retry, term, timers: [] };
+    cur = { id: account.id, ptyId, root, title, x, hint: hintEl, status, retry, term, timers: [], ext };
     setLabel(account.label);
     start();
   }
@@ -111,7 +118,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
   function setLabel(label) {
     if (!cur) return;
     cur.label = label;
-    cur.title.textContent = t('login.title', { label });
+    cur.title.textContent = cur.ext?.title ? cur.ext.title() : t('login.title', { label });
   }
 
   function close() {
@@ -137,9 +144,9 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
   onLang(() => {
     if (!cur) return;
     cur.x.title = t('login.close');
-    cur.hint.textContent = t('login.hint');
+    cur.hint.textContent = cur.ext ? cur.ext.hint() : t('login.hint');
     cur.retry.textContent = t('login.retry');
-    cur.title.textContent = t('login.title', { label: cur.label });
+    cur.title.textContent = cur.ext?.title ? cur.ext.title() : t('login.title', { label: cur.label });
     cur.status.textContent = (cur.statusText && cur.statusText()) || '';
   });
 
@@ -165,7 +172,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
       accounts = list || [];
       if (!cur) return;
       const a = accounts.find((x) => x.id === cur.id);
-      if (!a) return close(); // account was removed
+      if (!a) { if (!cur.ext) close(); return; } // account was removed (an external login is not in the list)
       setLabel(a.label);
       if (cur.exited) { cur.updated = true; evaluate(); }
     },

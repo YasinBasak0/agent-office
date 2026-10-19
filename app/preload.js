@@ -43,6 +43,12 @@ contextBridge.exposeInMainWorld('agentOffice', {
     login: (id) => ipcRenderer.invoke('accounts:login', id),
     logout: (id) => ipcRenderer.invoke('accounts:logout', id),
   },
+  // v3.24: Antigravity's single login in the Accounts section (AgyAuth of src/agy-auth.js); the pty is 'login:agy'
+  agy: {
+    auth: (refresh) => ipcRenderer.invoke('agy:auth', refresh),
+    login: () => ipcRenderer.invoke('agy:login'),
+    onAuth: listen('agy:auth'),
+  },
   pty: {
     write: (id, d) => ipcRenderer.send('pty:write', id, d),
     resize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),

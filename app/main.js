@@ -23,6 +23,8 @@ const TU = require('./src/token-usage.js');
 const PD = require('./src/project-data.js');
 const FB = require('./src/fallback.js');
 const EN = require('./src/engine.js');
+const AW = require('./src/agy-watch.js');
+const AG = require('./src/agy-auth.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -42,9 +44,15 @@ const usages = new Map();    // accountId → AccountUsage (also kept in usage/<
 const ptyOf = (id) => terms.get(id) || logins.get(id);
 // An Antigravity project (contract v3.22): its tabs run `agy`, so nothing that reads Claude Code's files applies to it.
 const isAgy = (project) => P.engineOf(project) === 'agy';
-// Sleeping tabs (see src/sleep.js): pty id → how to start it again ({ resume } at launch, { sessionId } after a sleep).
+// Sleeping tabs (see src/sleep.js): pty id → how to start it again ({ resume } at launch, { sessionId } after a sleep,
+// { agy } after an Antigravity tab's sleep, v3.23).
 const asleep = new Map();
 const activity = new Map(); // pty id → { at: last start/input/output, draft: prompt text typed but unsent }
+// Antigravity tabs in the office (contract v3.23, src/agy-watch.js): running pty id → { watch, cursor } (cursor: the
+// transcript read so far); agyEnded: sessions of agy runs that ended today, kept for the TODAY count.
+const agyWatch = new Map();
+let agyEnded = [];
+let agySeq = 0;
 const lastSid = new Map(); // pty id → the session its claude was last seen in (pid file), for Enter-restart (v3.11)
 const mcpPrint = new Map(); // running pty id → { started, current } MCP fingerprints (v3.11, src/mcp-reload.js)
 const ptyStart = new Map(); // running pty id → when its claude started (v3.17: older limit entries are not this run's)
@@ -241,6 +249,7 @@ function removeMcpFile(id) {
 
 // Killed on purpose (restart, removal, sleep, account change): its interrupted mark goes too, except while quitting.
 function killPty(id) {
+  retireAgy(id);
   if (terms.has(id)) removeMcpFile(id);
   if (!quitting) setMarks(R.clearInterrupted(marks(), [id]));
   const map = terms.has(id) ? terms : logins;
@@ -430,6 +439,7 @@ function onFocus() {
   if (Date.now() - lastFocusCheck < 60000) return;
   lastFocusCheck = Date.now();
   checkAllAuth();
+  checkAgyAuth();
 }
 
 // `claude auth login` pty: same channel as the project ptys, id 'login:<accountId>'. One per account;
@@ -468,6 +478,65 @@ function startLogin(accountId) {
     logins.delete(id);
     send('pty:exit', id, exitCode);
     checkAuth(accountId, { showChecking: true });
+  });
+}
+
+// --- Antigravity login (contract v3.24, src/agy-auth.js): one login per user (agy has no config-folder variable).
+// The check and the login pty get only agyEnv's allowlist: nothing of Claude Code or the office reaches agy.
+const AGY_LOGIN = 'login:agy';
+let agyAuth = /** @type {any} */ ({ installed: false, state: 'checking' });
+let agyChecking = null;
+const sendAgyAuth = () => send('agy:auth', agyAuth);
+function agyStatus(env) {
+  if (IS_WIN) {
+    const g = (n) => OS.envGet(env, n);
+    return Promise.resolve({ path: OS.findAgy(env, isFile), apiKey: Boolean(g('GEMINI_API_KEY')), adc: g('AGY_ADC_AUTH') === 'true' });
+  }
+  return new Promise((resolve) => {
+    const child = execFile(shell(), ['-l', '-i', '-c', AG.AGY_STATUS_COMMAND], { env, timeout: 15000, cwd: app.getPath('home') },
+      (_err, stdout) => resolve(AG.parseAgyStatus(String(stdout || ''))));
+    try { child.stdin?.end(); } catch {}
+  });
+}
+function checkAgyAuth() {
+  if (agyChecking) return agyChecking;
+  agyChecking = (async () => {
+    const env = EN.agyEnv(process.env);
+    const status = await agyStatus(env);
+    const files = AG.readAgyFiles(env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.readFileSync(f, 'utf8'));
+    agyAuth = AG.agyAuthState(status, files);
+    sendAgyAuth();
+  })().catch((e) => console.error('agy auth:', e.message)).finally(() => { agyChecking = null; });
+  return agyChecking;
+}
+// "Giriş yap" / "Çıkış yap": agy itself in a login pty (sign-in happens on its first start; /logout is typed at its
+// prompt). Same channel and replace rules as `claude auth login`.
+function startAgyLogin() {
+  if (!win) return;
+  const id = AGY_LOGIN;
+  const old = logins.get(id);
+  if (old) { logins.delete(id); try { old.kill(); } catch {} }
+  const { cols, rows } = sizes.get(id) || lastSize;
+  const env = EN.agyEnv(process.env);
+  let t;
+  try {
+    const win32 = IS_WIN ? windowsAgy([], env) : null;
+    if (IS_WIN && !win32) return sendNoAgy(id);
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', EN.AGY_COMMAND, 'agy'], {
+      name: 'xterm-256color', cols, rows, cwd: app.getPath('home'), env,
+    });
+  } catch (e) {
+    console.error('agy login pty:', e.message);
+    send('pty:exit', id, -1);
+    return;
+  }
+  logins.set(id, t);
+  t.onData((d) => { if (logins.get(id) === t) send('pty:data', id, d); });
+  t.onExit(({ exitCode }) => {
+    if (logins.get(id) !== t) return;
+    logins.delete(id);
+    send('pty:exit', id, exitCode);
+    checkAgyAuth();
   });
 }
 
@@ -805,14 +874,18 @@ function startAgy(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
   terms.set(id, t);
   activity.set(id, { at: startedAt, draft: false });
   lastSid.delete(id);
+  retireAgy(id);
+  agyWatch.set(id, { watch: AW.createAgyWatch(startedAt), cursor: null, key: `agy-${id.replace(/[^\w-]/g, '_')}-${++agySeq}` });
   t.onData((d) => {
     if (terms.get(id) !== t) return;
     const a = activity.get(id);
     if (a) a.at = Date.now();
+    agyWatch.get(id)?.watch.output(d);
     send('pty:data', id, d);
   });
   t.onExit(({ exitCode }) => {
     if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
+    retireAgy(id);
     terms.delete(id);
     setMarks(R.clearInterrupted(marks(), [id]));
     removeMcpFile(id);
@@ -823,6 +896,48 @@ function startAgy(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
     broadcast();
   });
   broadcast();
+}
+
+// --- Antigravity in the office (contract v3.23): the watcher of each running agy tab becomes an observed session.
+/** The run of an agy tab ended (exit, kill, restart): its today's deliveries stay for the TODAY count. */
+function retireAgy(id) {
+  const w = agyWatch.get(id);
+  if (!w) return;
+  agyWatch.delete(id);
+  w.watch.exit();
+  const name = P.resolvePty(state, id)?.project.name;
+  if (name && w.watch.turns) agyEnded.push(w.watch.session(name, w.key));
+}
+/**
+ * The folder whose agy transcript a tab may read: the tab's own, only when no other tab of the project runs in the
+ * same folder (agy keeps one newest conversation per folder, cache/last_conversations.json). Also the rule for
+ * sleeping: such a tab's --continue opens its own conversation.
+ */
+function agyOwnDir(id) {
+  const r = P.resolvePty(state, id);
+  if (!r || !isAgy(r.project) || (r.tab && !r.tab.worktree)) return null;
+  const same = P.ptyIdsOf(r.project).filter((pid) => P.resolvePty(state, pid)?.dir === r.dir);
+  return same.length === 1 ? r.dir : null;
+}
+/** Ends quiet turns, reads the transcripts, and gives readOffice the observed sessions. */
+function agySessions(now = Date.now()) {
+  const day = AW.dayKey(now);
+  agyEnded = agyEnded.filter((x) => x.stats?.today?.date === day);
+  const out = [...agyEnded];
+  const home = app.getPath('home');
+  for (const [id, w] of agyWatch) {
+    const r = P.resolvePty(state, id);
+    if (!r) continue;
+    const dir = agyOwnDir(id);
+    const file = dir ? AW.agyTranscriptPath(home, dir) : null;
+    if (file) {
+      w.cursor = AW.readTranscript(file, w.cursor);
+      w.watch.transcript(w.cursor, now);
+    }
+    w.watch.tick(now);
+    out.push(w.watch.session(r.project.name, w.key, now));
+  }
+  return out;
 }
 
 // After loading, start the claude of every project that isn't running (on reload, leave running ones alone).
@@ -948,6 +1063,17 @@ function sleepIdle() {
     const base = { now, idleMs: minutes * 60000, lastActivityAt: a.at, hasDraft: a.draft, isActive: r.project.id === state.activeId };
     // cheap checks first: files are read only for a tab that is otherwise ready to sleep
     if (Z.sleepBlocker({ ...base, claude: { sessionId: '-', status: 'idle' }, office: {} })) continue;
+    if (isAgy(r.project)) {
+      // Antigravity (v3.23): idle by its watcher (no turn, dialog or draft), and only a tab whose --continue opens
+      // its own conversation (agyOwnDir); it wakes with --continue
+      const w = agyWatch.get(id);
+      if (!w || w.watch.blocker() || !agyOwnDir(id)) continue;
+      killPty(id);
+      asleep.set(id, { agy: true });
+      send('pty:sleep', id);
+      slept = true;
+      continue;
+    }
     const claude = readJson(Z.claudePidFile(configDir, home, t.pid));
     const sid = typeof claude?.sessionId === 'string' && /^[\w-]+$/.test(claude.sessionId) ? claude.sessionId : '';
     const session = sid ? office()?.readSession(sid) : undefined;
@@ -1166,7 +1292,7 @@ function startPolling() {
     // while the window is unfocused, read every two seconds instead of twice a second (battery); notifications still come
     if (!win.isFocused() && tick++ % 4 !== 0) return;
     try {
-      const d = s.readOffice(state.projects.map((p) => p.name), undefined, undefined, sessionAliases(), P.projectPlaces(state.projects));
+      const d = s.readOffice(state.projects.map((p) => p.name), undefined, undefined, sessionAliases(), P.projectPlaces(state.projects), agySessions());
       send('office:data', d);
       lastOffice = d.projects;
       updateAttention();
@@ -1339,6 +1465,8 @@ ipcMain.handle('accounts:refreshAuth', async (_e, id) => {
   return accountList();
 });
 ipcMain.handle('accounts:login', (_e, id) => { startLogin(id); });
+ipcMain.handle('agy:auth', async (_e, refresh) => { if (refresh) await checkAgyAuth(); return agyAuth; });
+ipcMain.handle('agy:login', () => { startAgyLogin(); });
 ipcMain.handle('accounts:logout', async (_e, id) => {
   const account = accountById(id);
   // the default account is the user's normal Claude Code login: the app does not log out of it
@@ -1699,6 +1827,7 @@ ipcMain.on('pty:write', (_e, id, d) => {
   if (!terms.has(id)) wake(id);
   const a = activity.get(id);
   if (a) { a.at = Date.now(); a.draft = Z.draftAfter(a.draft, d); }
+  agyWatch.get(id)?.watch.input(d);
   ptyOf(id)?.write(d);
 });
 // the renderer shows a tab: a sleeping one starts (lazy start, wake from sleep)
@@ -1807,7 +1936,7 @@ ipcMain.on('edit:nativePaste', (e) => e.sender.paste());
 ipcMain.handle('clipboard:hasImage', () => clipboardHasImage());
 ipcMain.handle('office:today', () => {
   const s = office();
-  return s ? s.readToday(state.projects.map((p) => p.name), undefined, undefined, sessionAliases()) : { date: '', deliveries: [], untracked: 0 };
+  return s ? s.readToday(state.projects.map((p) => p.name), undefined, undefined, sessionAliases(), [...agyEnded, ...[...agyWatch].map(([id, w]) => w.watch.session(P.resolvePty(state, id)?.project.name || '', w.key))]) : { date: '', deliveries: [], untracked: 0 };
 });
 // --- themes (contract v3.1): the gallery (repo themes/*.json, Resources/themes when packaged) under the user's
 // ~/.claude/agent-office/themes.json. Gallery themes lose their `match` (src/themes.mjs): they apply only when picked.
@@ -2047,6 +2176,7 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   loadUsageCache();
   lastFocusCheck = Date.now();
   checkAllAuth();
+  checkAgyAuth();
   // in the packaged app the icon comes from the .icns; under npm start set it on the Dock by hand (Linux has no app.dock)
   if (!app.isPackaged) try { app.dock?.setIcon(path.join(__dirname, 'build', 'icon.png')); } catch {}
   return createWindow();
