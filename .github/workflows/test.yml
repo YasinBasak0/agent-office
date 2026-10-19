@@ -38,6 +38,13 @@ jobs:
         run: node app/test/office.test.mjs
       - name: Office pictures (visual regression)
         run: node app/test/visual.test.mjs
+      # the device link test needs hyperswarm (N-API prebuilds inside the packages, nothing compiles);
+      # --ignore-scripts: no Electron download. npm install, not npm ci: see linux-build
+      - name: Install the app's packages for the device link test
+        working-directory: app
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Device link (two devices pair on a local DHT testnet)
+        run: node --test app/test/link.test.cjs
 
   plugin:
     runs-on: ubuntu-latest

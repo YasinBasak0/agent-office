@@ -52,7 +52,8 @@
       "!node_modules/node-pty/{src,scripts,deps,third_party,typings}/**",
       "!node_modules/node-pty/prebuilds/win32-*/**",
       "!node_modules/node-pty/build/Release/obj.target/**",
-      "!node_modules/node-addon-api/**"
+      "!node_modules/node-addon-api/**",
+      "!node_modules/{udx-native,sodium-native}/prebuilds/{android,ios}-*/**"
     ],
     "asarUnpack": [
       "node_modules/node-pty/**",

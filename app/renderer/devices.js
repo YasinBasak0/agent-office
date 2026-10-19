@@ -67,7 +67,7 @@ export function mountDevices(sidebarEl, api) {
     } },
     h('input', { name: 'code', id: 'sb-join-code', placeholder: t('devices.enterCode'), autocomplete: 'off', spellcheck: 'false', disabled: joinState.busy }),
     h('button', { class: 'sb-x', type: 'submit', disabled: joinState.busy }, t(joinState.busy ? 'devices.pairing' : 'devices.pair')));
-    section.replaceChildren(
+    section.replaceChildren(...[
       h('summary', { class: 'sb-head' }, t('devices.title'), view.devices.length ? ` (${view.devices.filter((/** @type {any} */ d) => d.online).length}/${view.devices.length})` : ''),
       view.error && view.error !== 'off' ? h('div', { class: 'sb-note warn' }, t(`devices.error.${view.error}`)) : null,
       h('label', { class: 'sb-row' }, t('devices.thisDevice'),
@@ -76,7 +76,7 @@ export function mountDevices(sidebarEl, api) {
       pairing,
       p?.code ? null : join,
       joinState.error ? h('div', { class: 'sb-note warn' }, t('devices.pairFailed', { error: joinState.error })) : null,
-    );
+    ].filter((c) => c != null));                   // replaceChildren would show a null as the text "null"
     /** @type {HTMLDetailsElement} */ (section).open = wasOpen || Boolean(p) || joinState.busy;
   }
 

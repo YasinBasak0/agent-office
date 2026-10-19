@@ -175,6 +175,8 @@ class Link extends EventEmitter {
       if (this.conns.get(device.pub) !== conn) return;
       this.conns.delete(device.pub);
       this.remotes.delete(device.pub);
+      // its answers came on this connection: a command still sent or queued will never hear its outcome
+      for (const o of this.outgoing) if (o.pub === device.pub && (o.status === 'sent' || o.status === 'queued')) o.status = 'unknown';
       this.emit('change');
     });
     this.write(conn, { t: 'hello', v: C.PROTOCOL, name: this.name });

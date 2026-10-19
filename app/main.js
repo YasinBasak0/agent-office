@@ -27,7 +27,11 @@ const AW = require('./src/agy-watch.js');
 const AG = require('./src/agy-auth.js');
 const LH = require('./src/link-host.js');
 // dev only: a throwaway profile (two instances side by side for the device link, v3.28); never in the packaged app
-if (!app.isPackaged && process.env.AGENT_OFFICE_USER_DATA) app.setPath('userData', path.resolve(process.env.AGENT_OFFICE_USER_DATA));
+if (!app.isPackaged && process.env.AGENT_OFFICE_USER_DATA) {
+  app.setPath('userData', path.resolve(process.env.AGENT_OFFICE_USER_DATA));
+  // Electron's home ignores $HOME on macOS: follow it, so a throwaway HOME also keeps the instance off ~/.claude
+  if (process.env.HOME) app.setPath('home', path.resolve(process.env.HOME));
+}
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script

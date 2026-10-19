@@ -562,6 +562,7 @@
     "cmd": {
       "sent": "gönderildi",
       "queued": "sekme boşalınca iletilecek",
+      "unknown": "bağlantı koptu, sonucu bilinmiyor",
       "delivered": "iletildi",
       "rejected": "reddedildi: {reason}"
     },

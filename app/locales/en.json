@@ -590,6 +590,7 @@
     "cmd": {
       "sent": "sent",
       "queued": "queued until the tab is idle",
+      "unknown": "connection lost, outcome unknown",
       "delivered": "delivered",
       "rejected": "rejected: {reason}"
     },
