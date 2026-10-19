@@ -1,5 +1,5 @@
 // Agent Office shell: window, projects, accounts, one claude pty per project (several with tabs), and office data.
-const { app, BrowserWindow, ipcMain, dialog, clipboard, Menu, Notification, nativeImage, shell: eShell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, Menu, Notification, nativeImage, safeStorage, shell: eShell } = require('electron');
 const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -25,6 +25,13 @@ const FB = require('./src/fallback.js');
 const EN = require('./src/engine.js');
 const AW = require('./src/agy-watch.js');
 const AG = require('./src/agy-auth.js');
+const LH = require('./src/link-host.js');
+// dev only: a throwaway profile (two instances side by side for the device link, v3.28); never in the packaged app
+if (!app.isPackaged && process.env.AGENT_OFFICE_USER_DATA) {
+  app.setPath('userData', path.resolve(process.env.AGENT_OFFICE_USER_DATA));
+  // Electron's home ignores $HOME on macOS: follow it, so a throwaway HOME also keeps the instance off ~/.claude
+  if (process.env.HOME) app.setPath('home', path.resolve(process.env.HOME));
+}
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -1100,6 +1107,35 @@ function typePrompt(id, text) {
   const a = activity.get(id);
   if (a) { a.at = Date.now(); a.draft = false; }
 }
+// --- device link (v3.28, src/link-host.js): remote commands go to the project's main tab, only when it is idle
+let linkHost = null;
+function linkTabState(projectId) {
+  const p = P.findProject(state, projectId);
+  const t = terms.get(projectId);
+  if (!p || !t) return 'gone';
+  const claude = readJson(Z.claudePidFile(A.accountOf(state, p).configDir, app.getPath('home'), t.pid));
+  const sid = validSid(claude?.sessionId);
+  if (!claude || R.isTurnBusy({ claude, office: sid ? office()?.readSession(sid) : undefined })) return 'busy';
+  return activity.get(projectId)?.draft || attention.get(projectId) === 'permission' ? 'busy' : 'ready';
+}
+function startLink() {
+  linkHost = LH.setupLink({
+    app, safeStorage, ipcMain, send, T,
+    notify: (title, body) => notify(title, body, null),
+    projects: () => state.projects.map((p) => ({ id: p.id, name: p.name, engine: P.engineOf(p) })),
+    tabState: linkTabState,
+    type: typePrompt,
+  });
+}
+// close the link before exiting so paired devices see this one go offline at once, not after the heartbeat (≤ 1 s)
+let linkClosed = false;
+app.on('will-quit', (e) => {
+  if (!linkHost || linkClosed) return;
+  linkClosed = true;
+  e.preventDefault();
+  Promise.race([Promise.resolve(linkHost.destroy()).catch(() => {}), new Promise((r) => setTimeout(r, 1000))]).finally(() => app.quit());
+});
+
 /** @returns {{ resumed: { id: string, name: string }[], skipped: { id: string, name: string }[] }} */
 function resumeUnfinished() {
   if (!state || !win || !isLoaded) return { resumed: [], skipped: [] };
@@ -1375,6 +1411,7 @@ function startPolling() {
       send('office:data', d);
       lastOffice = d.projects;
       updateAttention();
+      linkHost?.publish(state.projects.map((p) => ({ id: p.id, name: p.name, engine: P.engineOf(p) })), d, attention);
     } catch (e) { console.error('readOffice:', e.message); }
   }, 500);
 }
@@ -2274,6 +2311,7 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   lastFocusCheck = Date.now();
   checkAllAuth();
   checkAgyAuth();
+  startLink();
   // in the packaged app the icon comes from the .icns; under npm start set it on the Dock by hand (Linux has no app.dock)
   if (!app.isPackaged) try { app.dock?.setIcon(path.join(__dirname, 'build', 'icon.png')); } catch {}
   return createWindow();

@@ -930,3 +930,26 @@ label.sb-langrow { cursor: pointer; }
 /* Antigravity's login row (v3.24): agy missing → its install line, selectable to copy */
 .sb-agy-missing { flex-wrap: wrap; }
 .sb-agy-install { display: block; width: 100%; margin-top: 2px; font-size: 10px; opacity: .75; user-select: all; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Device link (v3.28, renderer/devices.js): Devices section and remote projects */
+.sb-devices, .sb-remote { margin-top: 8px; }
+.sb-devices > summary, .sb-remote > summary { cursor: pointer; list-style: none; }
+.sb-devices > summary::-webkit-details-marker, .sb-remote > summary::-webkit-details-marker { display: none; }
+.sb-devices > summary::before, .sb-remote > summary::before { content: '▸ '; }
+.sb-devices[open] > summary::before, .sb-remote[open] > summary::before { content: '▾ '; }
+.sb-dev, .sb-rproj { padding: 3px 6px; }
+.sb-dev-top, .sb-rproj-top { display: flex; align-items: center; gap: 6px; }
+.sb-dev .sb-adot { background: var(--status-text); opacity: .35; }
+.sb-dev.online .sb-adot { background: #3fb950; opacity: 1; }
+.sb-dev:hover .sb-x { opacity: .6; }
+.sb-dev-allow { font-size: 11px; opacity: .85; }
+.sb-dev-name, .sb-join input, .sb-rcmd input { flex: 1; min-width: 0; font: inherit; font-size: 11px; background: transparent; color: var(--status-text); border: 1px solid var(--accent); padding: 2px 4px; }
+.sb-join, .sb-rcmd { display: flex; gap: 4px; margin: 4px 0; }
+.sb-pair { margin: 6px 0; }
+.sb-pair-code { font-family: ui-monospace, monospace; font-size: 15px; letter-spacing: .5px; padding: 6px; border: 1px dashed var(--accent); text-align: center; user-select: all; word-break: break-word; }
+.sb-note.warn { color: #e5484d; }
+.sb-rdev-name { font-weight: bold; padding: 2px 6px; opacity: .9; }
+.sb-rproj .sb-sub { font-size: 10px; opacity: .7; }
+.sb-rproj.st-approval .sb-name { color: #e5a84d; }
+.sb-note.cmd-rejected { color: #e5484d; }
+.sb-note.cmd-delivered { color: #3fb950; }
