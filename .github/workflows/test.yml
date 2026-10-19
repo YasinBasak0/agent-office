@@ -19,13 +19,16 @@ jobs:
       # eslint.config.mjs: ESLint's own recommended rules, no packages in the repo
       - name: Lint
         run: npx -y eslint@9 .
-      # the tests need no packages; the type-check needs typescript and the types of Node and the app's
-      # modules (found from app/ upwards). --ignore-scripts: no Electron download, no native builds
+      # the app's own packages first: the type-check resolves electron, node-pty, electron-updater, xterm,
+      # hyperswarm and hyperdht from app/node_modules, and the device link test needs hyperswarm (N-API
+      # prebuilds inside the packages, nothing compiles). --ignore-scripts: no Electron download.
+      # npm install, not npm ci: see linux-build
+      - name: Install the app's packages
+        working-directory: app
+        run: npm install --ignore-scripts --no-audit --no-fund
+      # only typescript and the types of Node are missing from the app's packages
       - name: Install the type-checker
-        run: |
-          npm install --no-save --no-package-lock --ignore-scripts typescript@5.6.3 @types/node@22 electron@44.7.0 node-pty@1.1.0 electron-updater@6.8.9 @xterm/xterm@6.0.0 @xterm/addon-fit@0.11.0
-          # the renderer imports xterm from app/node_modules by relative path
-          mkdir -p app/node_modules && cp -R node_modules/@xterm app/node_modules/
+        run: npm install --no-save --no-package-lock --ignore-scripts typescript@5.6.3 @types/node@22
       - name: Type-check the main process
         run: npx tsc -p app
       - name: Type-check the renderer
@@ -38,11 +41,6 @@ jobs:
         run: node app/test/office.test.mjs
       - name: Office pictures (visual regression)
         run: node app/test/visual.test.mjs
-      # the device link test needs hyperswarm (N-API prebuilds inside the packages, nothing compiles);
-      # --ignore-scripts: no Electron download. npm install, not npm ci: see linux-build
-      - name: Install the app's packages for the device link test
-        working-directory: app
-        run: npm install --ignore-scripts --no-audit --no-fund
       - name: Device link (two devices pair on a local DHT testnet)
         run: node --test app/test/link.test.cjs
 
