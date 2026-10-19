@@ -10,6 +10,8 @@ const listen = (ch) => (cb) => {
 
 contextBridge.exposeInMainWorld('agentOffice', {
   platform: process.platform,                           // 'darwin' | 'linux' | 'win32': the title bar and shortcuts follow it
+  // home folder (from main, v3.18): the title bar writes it as ~; a sandboxed preload has no os module
+  home: (process.argv.find((a) => a.startsWith('--agent-office-home=')) || '').slice('--agent-office-home='.length) || null,
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     add: () => ipcRenderer.invoke('projects:add'),

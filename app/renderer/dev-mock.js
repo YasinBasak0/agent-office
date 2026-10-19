@@ -10,6 +10,7 @@
 // e.g. ?select=m-1, ?select=shell:sh-1). ?noShells → old data (no shells field).
 // ?tabs → three tabs in the first project (main, same folder, git worktree) with the worktree tab open (contract v3.0);
 // "+" adds a fake tab without a worktree, ⇧⌘T one with a worktree; × closes without asking.
+// ?longDir → the first project's folder is a long path (title bar cuts it from the left, v3.18).
 // ?usage[=<n>] → opens project n's token usage panel (v3.13; default the first) after a moment.
 // ?theme=<name> → theme picker setting (v3.1; e.g. ?theme=sakura, ?theme=forest); default auto. The gallery is read from
 // ../../themes/*.json, so it is there under Electron's loadFile or a static server at the repo root (/app/renderer/index.html).
@@ -75,6 +76,7 @@ const projects = q.has('empty') ? [] : [
   { id: rid(), dir: '/Users/me/Projects/shop-api', name: 'shop-api', accountId: 'is' },
   { id: rid(), dir: '/Users/me/Projects/notlar', name: 'notlar', accountId: 'default' },
 ];
+if (q.has('longDir') && projects[0]) projects[0].dir = '/Users/me/Documents/Clients/acme-corporation/2026/platform-rewrite/services/agent-office';
 if (q.has('tabs') && projects[0]) {
   /** @type {any} */ (projects[0]).tabs = [
     { n: 2 },
@@ -141,6 +143,7 @@ const prefsNow = () => ({ resume: resumeSetting, resumeWork: resumeWorkSetting, 
 
 window.agentOffice = {
   platform: q.get('platform') || 'darwin',
+  home: '/Users/me',
   projects: {
     list: async () => snapshot(),
     add: async () => {

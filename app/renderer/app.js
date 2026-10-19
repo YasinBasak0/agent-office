@@ -5,6 +5,7 @@ import { mountLogin } from './login.js';
 import { setLang, onLang, t } from './i18n.js';
 import { modLabel, isModKey, keyOf, isMac } from './platform.js';
 import { themeChoices, effectiveTheme } from '../src/themes.mjs';
+import { tildePath, windowTitle } from '../src/layout.mjs';
 
 // Fake window.agentOffice to see the layout in a plain browser (outside Electron).
 if (!window.agentOffice) await import('./dev-mock.js');
@@ -65,10 +66,19 @@ function applyTheme(t) {
 }
 
 // ---- Title bar ----
+// v3.18: the project's name, then its folder (~ for home; long paths lose their start, style.css #project-dir);
+// the native window title says the same (Window menu, Mission Control, the Linux/Windows frame).
 function setTitleProject() {
   const p = activeProject();
   $('project').textContent = p ? p.name : t('app.noProject');
   $('project').title = p ? p.dir : '';
+  const dir = $('project-dir');
+  const shown = p ? tildePath(p.dir, api.home) : '';
+  // LRM marks keep a leading '/' or '~' in place inside the right-to-left box that ellipsizes from the left
+  dir.textContent = shown ? `\u200e${shown}\u200e` : '';
+  dir.title = p ? p.dir : '';
+  dir.hidden = !shown;
+  document.title = windowTitle(p, api.home, 'Agent Office');
 }
 
 let lastStats = null; // to rewrite when the language changes
@@ -485,7 +495,10 @@ sidebar = mountSidebar($('sidebar'), {
   setSleep: (minutes) => api.prefs?.set({ sleepMinutes: minutes }).then((p) => sidebar.setSleep(p?.sleepMinutes)).catch((e) => console.error(e)),
   setTheme: setThemeSetting,
   openUsage: (p) => usagePanel?.show(p),
+  // v3.18: the projects/accounts split, stored on this computer like the terminal height
+  setSplit: (px) => store.set('accountsHeight', px == null ? '' : Math.round(px)),
 });
+sidebar.setSplit(store.get('accountsHeight') || null);
 
 login = mountLogin(document.body, { getTheme: () => theme, onClose: () => focusActive() });
 
