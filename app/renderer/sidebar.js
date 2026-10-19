@@ -2,7 +2,7 @@
 // The structure is rebuilt only when the project/account list changes; office stats update in place
 // (so an open <select> or a name being typed is not disrupted by 500 ms data). A language change redraws everything.
 import { hasText, locale, onLang, t } from './i18n.js';
-import { modLabel } from './platform.js';
+import { modLabel, platform } from './platform.js';
 import { isBossHere, projectStatus } from '../src/project-status.mjs';
 import { clampSplit } from '../src/layout.mjs';
 
@@ -54,6 +54,7 @@ function costText(b) {
 export function mountSidebar(el, on) {
   let projects = [];
   let accounts = [];
+  let agyAuth = null; // Antigravity's login (v3.24, main's AgyAuth); null until main answers
   let activeId = null;
   let status = new Map();
   let asleep = new Set(); // projects whose main claude sleeps (src/sleep.js)
@@ -488,6 +489,47 @@ export function mountSidebar(el, on) {
       h('span', {}, t('sidebar.shareDefault')));
   }
 
+  // The official install lines (src/agy-auth.js AGY_INSTALL): shown, never run.
+  const AGY_INSTALL = platform === 'win32' ? 'irm https://antigravity.google/cli/install.ps1 | iex' : 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
+  /** Antigravity is listed when agy is installed or a project runs it (contract v3.24). */
+  const agyShown = () => Boolean(agyAuth?.installed) || projects.some((p) => p.engine === 'agy');
+
+  /** Antigravity's single login (contract v3.24): its state with Giriş yap / Çıkış yap, or how to install agy. */
+  function agyRow() {
+    if (!agyShown()) return null;
+    const state = agyAuth?.state || 'checking';
+    const btn = (cls, text, title, fn) => h('button', { class: 'sb-btn ' + cls, title, onclick: (e) => { e.stopPropagation(); fn(); } }, text);
+    const loginBtn = () => btn('primary', t('sidebar.login'), t('sidebar.agyLoginTitle'), () => on.agyLogin?.());
+    const logoutBtn = () => btn('', t('sidebar.logout'), t('sidebar.agyLogoutTitle'), () => on.agyLogout?.());
+    const text = (s, title = '') => h('span', { class: 'sb-auth-text' + (state === 'in' ? ' sb-email' : ''), title }, s);
+    let auth;
+    if (state === 'missing') {
+      auth = h('div', { class: 'sb-auth sb-agy-missing' }, text(t('sidebar.agyMissing'), t('sidebar.agyMissingTitle')),
+        h('code', { class: 'sb-agy-install', title: t('sidebar.agyInstallTitle') }, AGY_INSTALL));
+    } else if (state === 'in') {
+      const key = agyAuth.method === 'apikey' || agyAuth.method === 'adc';
+      auth = h('div', { class: 'sb-auth' },
+        text(agyAuth.email || t(agyAuth.method === 'apikey' ? 'sidebar.agyApiKey' : agyAuth.method === 'adc' ? 'sidebar.agyAdc' : 'sidebar.loggedIn'),
+          key ? t('sidebar.agyKeyNote') : agyAuth.email || ''),
+        h('span', { class: 'sb-method', title: t('sidebar.loginMethod') }, agyAuth.method === 'google' ? 'Google' : ''),
+        key ? null : logoutBtn());
+    } else if (state === 'out') {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.notLoggedIn')), loginBtn());
+    } else if (state === 'unknown') {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.agyUnknown'), t('sidebar.agyUnknownTitle')), loginBtn(), logoutBtn());
+    } else {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.checking')));
+    }
+    return h('li', { class: `sb-acc sb-agy auth-${state}`, 'data-id': 'agy' },
+      h('div', { class: 'sb-acc-top', title: t('sidebar.agyTitle') },
+        h('span', { class: 'sb-adot', title: hasText(`sidebar.authDot.${state}`) ? t(`sidebar.authDot.${state}`) : '' }),
+        h('span', { class: 'sb-name' }, 'Antigravity'),
+        h('span', { class: 'sb-tag' }, 'agy'),
+        h('button', { class: 'sb-x', title: t('sidebar.refreshAuth'), disabled: state === 'checking', onclick: () => on.agyRefresh?.() }, '↻'),
+      ),
+      auth);
+  }
+
   function renderAccounts() {
     const rows = accounts.map((a) => {
       const isDefault = a.id === 'default';
@@ -522,7 +564,8 @@ export function mountSidebar(el, on) {
         if (label) on.addAccount(label, forProject);
       })));
     }
-    acctList.replaceChildren(...rows,
+    const agy = agyRow();
+    acctList.replaceChildren(...rows, ...(agy ? [agy] : []),
       h('li', {}, h('button', {
         class: 'sb-add', title: t('sidebar.newAccountTitle'),
         onclick: () => { editing = { id: null }; renderAccounts(); },
@@ -646,8 +689,13 @@ export function mountSidebar(el, on) {
       attn = new Map((s.status || []).filter((x) => x.attention).map((x) => [x.id, x.attention]));
       const pk = JSON.stringify([projects, activeId, [...status], [...asleep], [...attn], accounts.map((a) => [a.id, a.label, a.auth?.state])]);
       if (pk !== projKey) { projKey = pk; renderProjects(); }
-      const ak = JSON.stringify(accounts);
+      const ak = JSON.stringify([accounts, agyShown()]);
       if (ak !== acctKey && !editing) { acctKey = ak; renderAccounts(); }
+    },
+    /** Antigravity's login state (contract v3.24, main's AgyAuth). */
+    setAgyAuth(a) {
+      agyAuth = a || null;
+      if (!editing) renderAccounts();
     },
     /** Today's token usage per project: [{ id, usd, total, pct }] (contract v3.13); the line opens the usage panel. */
     setTokenBriefs(list) {

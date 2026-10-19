@@ -26,6 +26,7 @@ function agyArgs({ resume = false, prompt = '' } = {}) {
 // browser for its Google login (Linux display and session bus). Proxies: the user's own network settings.
 const AGY_ENV_NAMES = [
   'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LANGUAGE', 'TZ', 'TMPDIR', 'TEMP', 'TMP',
+  'AGY_ADC_AUTH', // agy's own documented switch to Google ADC sign-in (contract v3.24)
   'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
   'DBUS_SESSION_BUS_ADDRESS',
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy',

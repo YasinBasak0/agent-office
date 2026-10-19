@@ -181,7 +181,18 @@
     "backupNone": "Yok",
     "backupAuto": "Boştaki herhangi biri",
     "onBackup": "yedekte · {home} hesabına dönecek",
-    "onBackupTitle": "{home} hesabının limiti dolunca buraya geçti. O limit sıfırlanıp tüm sekmeler boşta kalınca {home} hesabına geri döner."
+    "onBackupTitle": "{home} hesabının limiti dolunca buraya geçti. O limit sıfırlanıp tüm sekmeler boşta kalınca {home} hesabına geri döner.",
+    "agyTitle": "Google Antigravity CLI (agy): bütün Antigravity projeleri için tek giriş. agy bunu sistem anahtar zincirinde tutar.",
+    "agyLoginTitle": "Google ile giriş için agy'yi burada başlat (tarayıcı açılır)",
+    "agyLogoutTitle": "agy'yi burada aç; çıkmak için istemine /logout yaz",
+    "agyMissing": "agy kurulu değil",
+    "agyMissingTitle": "Antigravity projesi Google'ın Antigravity CLI'ını ister. Bir terminalde kur, sonra ↻'a bas.",
+    "agyInstallTitle": "antigravity.google'daki kurulum komutu (bir terminalde kendin çalıştır)",
+    "agyApiKey": "Gemini API anahtarı",
+    "agyAdc": "Google ADC",
+    "agyKeyNote": "agy giriş yerine API anahtarı ya da ADC kullanıyor: /logout bir şey yapmaz. Bırakmak için GEMINI_API_KEY'i kaldır (ya da AGY_ADC_AUTH'u sil).",
+    "agyUnknown": "giriş agy'de",
+    "agyUnknownTitle": "agy girişini sistem anahtar zincirinde tutar, uygulama onu okumaz. Giriş yap gerekirse giriş yaptırır; Çıkış yap /logout için agy'yi açar."
   },
   "panel": {
     "types": {
@@ -275,7 +286,9 @@
     "hint": "Tarayıcı açılırsa orada onayla; terminal soru sorarsa burada yanıtla.",
     "retry": "Tekrar dene",
     "title": "{label} hesabına giriş",
-    "checking": "giriş denetleniyor…"
+    "checking": "giriş denetleniyor…",
+    "agyHint": "Açılan tarayıcıda Google ile giriş yap (SSH'te kodu buraya yapıştır). agy'nin istemi gelince giriş tamamdır: /exit yaz.",
+    "agyLogoutHint": "Antigravity'den çıkmak için /logout yazıp Enter'a bas, sonra /exit."
   },
   "terminal": {
     "exited": "— Claude kapandı — yeniden başlatmak için Enter —",

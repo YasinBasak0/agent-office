@@ -926,3 +926,7 @@ label.sb-langrow { cursor: pointer; }
 .up-astats { font-size: 11px; opacity: .85; margin: 2px 0 4px; }
 .up-agent .up-name { grid-column: 1 / 3; }
 .up-agent .up-share { grid-column: 1 / -1; }
+
+/* Antigravity's login row (v3.24): agy missing → its install line, selectable to copy */
+.sb-agy-missing { flex-wrap: wrap; }
+.sb-agy-install { display: block; width: 100%; margin-top: 2px; font-size: 10px; opacity: .75; user-select: all; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
