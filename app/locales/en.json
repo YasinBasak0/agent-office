@@ -182,7 +182,18 @@
     "backupNone": "None",
     "backupAuto": "Any free account",
     "onBackup": "on backup · back to {home}",
-    "onBackupTitle": "Moved here when {home} reached its usage limit. It goes back to {home} once that limit resets and every tab is idle."
+    "onBackupTitle": "Moved here when {home} reached its usage limit. It goes back to {home} once that limit resets and every tab is idle.",
+    "agyTitle": "Google Antigravity CLI (agy): one login for every Antigravity project. agy keeps it in the system keychain.",
+    "agyLoginTitle": "Start agy here to sign in with Google (a browser opens)",
+    "agyLogoutTitle": "Open agy here; type /logout at its prompt to sign out",
+    "agyMissing": "agy not installed",
+    "agyMissingTitle": "An Antigravity project needs Google's Antigravity CLI. Install it in a terminal, then press ↻.",
+    "agyInstallTitle": "Install command from antigravity.google (run it yourself in a terminal)",
+    "agyApiKey": "Gemini API key",
+    "agyAdc": "Google ADC",
+    "agyKeyNote": "agy uses an API key or ADC, not a login: /logout does nothing. To stop, remove GEMINI_API_KEY (or unset AGY_ADC_AUTH).",
+    "agyUnknown": "login kept by agy",
+    "agyUnknownTitle": "agy keeps its login in the system keychain, which the app does not read. Log in signs in if needed; Log out opens agy for /logout."
   },
   "panel": {
     "types": {
@@ -285,7 +296,9 @@
     "hint": "If a browser opens, approve there; if the terminal asks something, answer here.",
     "retry": "Try again",
     "title": "Log in to {label}",
-    "checking": "checking login…"
+    "checking": "checking login…",
+    "agyHint": "Sign in with Google in the browser that opens (over SSH, paste the code here). When agy's prompt appears you are logged in: type /exit.",
+    "agyLogoutHint": "Type /logout and press Enter to sign out of Antigravity, then /exit."
   },
   "terminal": {
     "exited": "— Claude exited — press Enter to restart —",

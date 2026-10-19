@@ -3016,3 +3016,59 @@ test('Windows pano (v3.19): CF_HDROP tam liste, FileNameW yalnız ilk dosya, gö
   for (const t of ['text/plain', 'text/html', 'electron application/osclipboard;format="FileNameW"',
     'electron application/osclipboard;format="CF_HDROP"']) assert.equal(OS.windowsImageType(t), false, t);
 });
+
+// --- Antigravity login in the Accounts section (v3.24, src/agy-auth.js)
+test('agy durumu: komut çıktısı; rc gürültüsü, yol, API anahtarı ve ADC yalnız var/yok olarak (v3.24)', () => {
+  const AG = require('../src/agy-auth.js');
+  assert.deepEqual(AG.parseAgyStatus('Welcome to zsh\n/Users/a/.local/bin/agy\n'), { path: '/Users/a/.local/bin/agy', apiKey: false, adc: false });
+  assert.deepEqual(AG.parseAgyStatus('/opt/x/agy\r\nAGY_STATUS_KEY=1\nAGY_STATUS_ADC=1\n'), { path: '/opt/x/agy', apiKey: true, adc: true });
+  assert.deepEqual(AG.parseAgyStatus('zsh: agy not found\n'), { path: null, apiKey: false, adc: false });
+  assert.equal(AG.parseAgyStatus('agy: aliased to /x/agy').path, null); // an alias line is not a path
+  assert.equal(AG.parseAgyStatus('').path, null);
+  // the command prints only markers, never a key's value
+  assert.doesNotMatch(AG.AGY_STATUS_COMMAND, /echo "?\$GEMINI_API_KEY/);
+});
+
+test('agy durumu: dosyalar (settings.json modelProvider, google_accounts.json active) ve durum (v3.24)', () => {
+  const AG = require('../src/agy-auth.js');
+  const path = require('node:path');
+  const home = '/h';
+  const fs = (files) => (f) => { if (f in files) return files[f]; throw new Error('ENOENT'); };
+  const dir = path.join(home, '.gemini', 'antigravity-cli');
+  const settings = path.join(dir, 'settings.json');
+  const acc = path.join(dir, 'google_accounts.json');
+  const shared = path.join(home, '.gemini', 'google_accounts.json');
+  const read = [];
+  const spy = (files) => (f) => { read.push(f); return fs(files)(f); };
+  const inst = { path: '/b/agy', apiKey: false, adc: false };
+
+  assert.deepEqual(AG.agyAuthState({ path: null, apiKey: true, adc: true }, AG.readAgyFiles(home, fs({}))), { installed: false, state: 'missing' });
+  assert.deepEqual(AG.agyAuthState(inst, AG.readAgyFiles(home, spy({ [acc]: '{"active":"me@gmail.com","old":["x@y.z"]}' }))),
+    { installed: true, state: 'in', email: 'me@gmail.com', method: 'google' });
+  assert.deepEqual(AG.agyAuthState(inst, AG.readAgyFiles(home, fs({ [shared]: '{"active":"s@g.com"}' }))).email, 's@g.com');
+  assert.deepEqual(AG.agyAuthState(inst, AG.readAgyFiles(home, fs({ [acc]: '{"active":null,"old":["me@gmail.com"]}' }))), { installed: true, state: 'out' });
+  assert.deepEqual(AG.agyAuthState(inst, AG.readAgyFiles(home, fs({ [acc]: '{"active":"not an email"}' }))).state, 'out');
+  assert.deepEqual(AG.agyAuthState(inst, AG.readAgyFiles(home, fs({ [acc]: 'broken{' }))), { installed: true, state: 'unknown' });
+  assert.deepEqual(AG.agyAuthState(inst, AG.readAgyFiles(home, fs({}))), { installed: true, state: 'unknown' });
+  // API key: documented as modelProvider "gemini" + GEMINI_API_KEY; one without the other is not a login
+  const gem = fs({ [settings]: '{"modelProvider":"gemini","theme":"dark"}' });
+  assert.deepEqual(AG.agyAuthState({ ...inst, apiKey: true }, AG.readAgyFiles(home, gem)), { installed: true, state: 'in', method: 'apikey' });
+  assert.equal(AG.agyAuthState(inst, AG.readAgyFiles(home, gem)).state, 'unknown');
+  assert.equal(AG.agyAuthState({ ...inst, apiKey: true }, AG.readAgyFiles(home, fs({}))).state, 'unknown');
+  assert.deepEqual(AG.agyAuthState({ ...inst, adc: true }, AG.readAgyFiles(home, fs({}))), { installed: true, state: 'in', method: 'adc' });
+  // only these files are read: no token, credential or keyring file
+  for (const f of read) assert.match(path.basename(f), /^(settings|google_accounts)\.json$/);
+});
+
+test('agy giriş ortamı: AGY_ADC_AUTH geçer, Claude/ofis geçmez; giriş ve kontrol agyEnv ile (v3.24)', () => {
+  const EN = require('../src/engine.js');
+  const env = EN.agyEnv({ ...SECRET_ENV, PATH: '/bin', HOME: '/h', AGY_ADC_AUTH: 'true', AGY_OTHER: 'x' }, 'darwin');
+  assert.equal(env.AGY_ADC_AUTH, 'true');
+  assert.equal('AGY_OTHER' in env, false);
+  for (const k of Object.keys(SECRET_ENV)) assert.equal(k in env, false, `${k} reached agy`);
+  const main = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  const block = main.slice(main.indexOf('// --- Antigravity login (contract v3.24'), main.indexOf('// --- account quota'));
+  assert.ok(block.length > 100);
+  assert.doesNotMatch(block, /accountEnv|ptyEnv|sessionEnv|process\.env(?!\))/, 'agy login/check must use agyEnv(process.env) only');
+  assert.equal((block.match(/EN\.agyEnv\(process\.env\)/g) || []).length, 2);
+});

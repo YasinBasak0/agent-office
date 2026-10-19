@@ -254,6 +254,18 @@ window.agentOffice = {
       check(id, 400);
     },
   },
+  // v3.24: Antigravity's login (?agy=in|out|unknown|missing; default: logged in)
+  agy: (() => {
+    const kind = q.get('agy') || 'in';
+    const auth = kind === 'missing' ? { installed: false, state: 'missing' }
+      : kind === 'in' ? { installed: true, state: 'in', email: 'you@gmail.com', method: 'google' } : { installed: true, state: kind };
+    const lis = listeners();
+    return {
+      auth: async () => ({ ...auth }),
+      login: async () => { setTimeout(() => { ev.data.emit('login:agy', 'agy (mock): sign in in the browser…\r\n'); ev.exit.emit('login:agy', 0); lis.emit({ ...auth }); }, 600); },
+      onAuth: (cb) => lis.add(cb),
+    };
+  })(),
   pty: {
     write: (id, d) => {
       if (id.startsWith('login:')) return; // fake login does not wait for input

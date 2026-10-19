@@ -23,6 +23,7 @@ const TU = require('./src/token-usage.js');
 const PD = require('./src/project-data.js');
 const FB = require('./src/fallback.js');
 const EN = require('./src/engine.js');
+const AG = require('./src/agy-auth.js');
 const IS_MAC = OS.isMac();
 const IS_WIN = OS.isWindows();
 // Windows: node-pty is loaded from app.asar.unpacked, because its ConPTY output runs in a worker thread whose script
@@ -430,6 +431,7 @@ function onFocus() {
   if (Date.now() - lastFocusCheck < 60000) return;
   lastFocusCheck = Date.now();
   checkAllAuth();
+  checkAgyAuth();
 }
 
 // `claude auth login` pty: same channel as the project ptys, id 'login:<accountId>'. One per account;
@@ -468,6 +470,65 @@ function startLogin(accountId) {
     logins.delete(id);
     send('pty:exit', id, exitCode);
     checkAuth(accountId, { showChecking: true });
+  });
+}
+
+// --- Antigravity login (contract v3.24, src/agy-auth.js): one login per user (agy has no config-folder variable).
+// The check and the login pty get only agyEnv's allowlist: nothing of Claude Code or the office reaches agy.
+const AGY_LOGIN = 'login:agy';
+let agyAuth = /** @type {any} */ ({ installed: false, state: 'checking' });
+let agyChecking = null;
+const sendAgyAuth = () => send('agy:auth', agyAuth);
+function agyStatus(env) {
+  if (IS_WIN) {
+    const g = (n) => OS.envGet(env, n);
+    return Promise.resolve({ path: OS.findAgy(env, isFile), apiKey: Boolean(g('GEMINI_API_KEY')), adc: g('AGY_ADC_AUTH') === 'true' });
+  }
+  return new Promise((resolve) => {
+    const child = execFile(shell(), ['-l', '-i', '-c', AG.AGY_STATUS_COMMAND], { env, timeout: 15000, cwd: app.getPath('home') },
+      (_err, stdout) => resolve(AG.parseAgyStatus(String(stdout || ''))));
+    try { child.stdin?.end(); } catch {}
+  });
+}
+function checkAgyAuth() {
+  if (agyChecking) return agyChecking;
+  agyChecking = (async () => {
+    const env = EN.agyEnv(process.env);
+    const status = await agyStatus(env);
+    const files = AG.readAgyFiles(env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.readFileSync(f, 'utf8'));
+    agyAuth = AG.agyAuthState(status, files);
+    sendAgyAuth();
+  })().catch((e) => console.error('agy auth:', e.message)).finally(() => { agyChecking = null; });
+  return agyChecking;
+}
+// "Giriş yap" / "Çıkış yap": agy itself in a login pty (sign-in happens on its first start; /logout is typed at its
+// prompt). Same channel and replace rules as `claude auth login`.
+function startAgyLogin() {
+  if (!win) return;
+  const id = AGY_LOGIN;
+  const old = logins.get(id);
+  if (old) { logins.delete(id); try { old.kill(); } catch {} }
+  const { cols, rows } = sizes.get(id) || lastSize;
+  const env = EN.agyEnv(process.env);
+  let t;
+  try {
+    const win32 = IS_WIN ? windowsAgy([], env) : null;
+    if (IS_WIN && !win32) return sendNoAgy(id);
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', EN.AGY_COMMAND, 'agy'], {
+      name: 'xterm-256color', cols, rows, cwd: app.getPath('home'), env,
+    });
+  } catch (e) {
+    console.error('agy login pty:', e.message);
+    send('pty:exit', id, -1);
+    return;
+  }
+  logins.set(id, t);
+  t.onData((d) => { if (logins.get(id) === t) send('pty:data', id, d); });
+  t.onExit(({ exitCode }) => {
+    if (logins.get(id) !== t) return;
+    logins.delete(id);
+    send('pty:exit', id, exitCode);
+    checkAgyAuth();
   });
 }
 
@@ -1339,6 +1400,8 @@ ipcMain.handle('accounts:refreshAuth', async (_e, id) => {
   return accountList();
 });
 ipcMain.handle('accounts:login', (_e, id) => { startLogin(id); });
+ipcMain.handle('agy:auth', async (_e, refresh) => { if (refresh) await checkAgyAuth(); return agyAuth; });
+ipcMain.handle('agy:login', () => { startAgyLogin(); });
 ipcMain.handle('accounts:logout', async (_e, id) => {
   const account = accountById(id);
   // the default account is the user's normal Claude Code login: the app does not log out of it
@@ -2047,6 +2110,7 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   loadUsageCache();
   lastFocusCheck = Date.now();
   checkAllAuth();
+  checkAgyAuth();
   // in the packaged app the icon comes from the .icns; under npm start set it on the Dock by hand (Linux has no app.dock)
   if (!app.isPackaged) try { app.dock?.setIcon(path.join(__dirname, 'build', 'icon.png')); } catch {}
   return createWindow();
