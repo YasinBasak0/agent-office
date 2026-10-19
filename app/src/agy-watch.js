@@ -17,10 +17,13 @@
 //   delivery), and attention.js raises 'done' for a project nobody is looking at.
 // The result is a session in the plugin's file shape (`session()`), handed to readOffice as an observed session, so
 // the office, the agent panel and attention.js need no Antigravity case.
+// Command Code tabs (contract v3.25) use the same watcher (`engine: 'commandcode'`) and, read-only, the newest
+// session file of the tab's folder in ~/.commandcode/projects/<slug>/ (cmdTranscriptPath).
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { draftAfter } = require('./sleep.js');
+const { ccSlugOf } = require('./token-usage.js');
 
 const QUIET_MS = 3000; // no output and no busy sign this long after the last one: the turn is over
 const SUBMIT_GRACE_MS = 8000; // after Enter, agy may take a while before its first busy line (model start)
@@ -36,6 +39,7 @@ const ASK_RE = new RegExp([
   String.raw`\?\s*\[y\/n(\/[a-z])*\]`,
   String.raw`\byes,? and run (in|without) sandbox`,
   String.raw`\bsubagent \S+ asks to\b`,
+  String.raw`\bdon'?t ask again\b`, // Command Code's permission prompt (commandcode.ai/docs/settings, v3.25)
   String.raw`\b(allow once|allow always|always allow|allow for (this|the|all) (session|conversation|future)|yes,? allow|no,? suggest changes|allow execution of|apply (this|these) changes?\?|waiting for (user |your )?(confirmation|approval))`,
 ].join('|'), 'i');
 // what the dialog is about: a tool name for stats.waiting.tool ('' when unknown)
@@ -72,10 +76,10 @@ const dayKey = (ms) => {
 
 /**
  * One agy tab's watcher. Feed it with output(data), input(data) and exit(); tick(now) ends quiet turns;
- * session(project) gives the office its view.
- * @param {number} [startAt]
+ * session(project) gives the office its view. engine/label: the observed CLI (v3.25: 'commandcode', 'Command Code').
+ * @param {number} [startAt] @param {{ engine?: 'agy' | 'commandcode', label?: string }} [o]
  */
-function createAgyWatch(startAt = Date.now()) {
+function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigravity' } = {}) {
   let busy = false;
   let turnOpen = false; // a turn that has not been counted yet
   let turnAt = 0; // when the current turn began
@@ -111,7 +115,7 @@ function createAgyWatch(startAt = Date.now()) {
     if (today.date !== date) today = { date, ids: [], log: [] };
     const id = `turn-${turns}`;
     today.ids.push(id);
-    today.log.push({ id, type: 'agy', description: 'Antigravity', spawnAt: turnAt, doneAt: now, isOk: true, toolCount: 0 });
+    today.log.push({ id, type: engine, description: label, spawnAt: turnAt, doneAt: now, isOk: true, toolCount: 0 });
     if (today.log.length > 200) today.log.splice(0, today.log.length - 200);
   };
 
@@ -209,7 +213,7 @@ function createAgyWatch(startAt = Date.now()) {
      */
     session(project, id, now = Date.now()) {
       return {
-        id, project, engine: 'agy', format: 2, updatedAt: endedAt || Math.max(updatedAt, now), ...(endedAt ? { endedAt } : {}),
+        id, project, engine, format: 2, updatedAt: endedAt || Math.max(updatedAt, now), ...(endedAt ? { endedAt } : {}),
         workers: [],
         stats: {
           isBossBusy: busy, turns,
@@ -245,12 +249,40 @@ function agyTranscriptPath(home, dir, read = (f) => fs.readFileSync(f, 'utf8')) 
   return path.join(agyDataDir(home), 'brain', id, '.system_generated', 'logs', 'transcript.jsonl');
 }
 
+// --- Command Code's session files (read-only, contract v3.25). Documented (commandcode.ai/docs/sessions):
+// ~/.commandcode/projects/<project-slug>/<session-id>.jsonl, append-only, one record per line, next to sidecars
+// (<id>.meta.json, <id>.checkpoints.jsonl, <id>.prompts.jsonl, <id>.share.json). The slug rule is not documented:
+// token-usage.js ccSlugOf (lower case, non-alphanumerics → '-', no leading dash) is taken from real folders.
+// Prompt records: `"role":"user"` (the message records parseEntryCC reads). ~/.commandcode/auth.json is never read.
+const CMD_PROMPT_RE = /"role"\s*:\s*"user"/g;
+/** The folder of Command Code's sessions for a working directory. */
+const cmdProjectDir = (home, dir) => path.join(home, '.commandcode', 'projects', ccSlugOf(dir));
+/** Does the folder have a Command Code session (`--continue` has one to open)? */
+function hasCmdSession(home, dir, list = (d) => fs.readdirSync(d)) {
+  try { return list(cmdProjectDir(home, dir)).some((f) => /^[\w-]+\.jsonl$/.test(f)); } catch { return false; }
+}
+/**
+ * The newest session file of a folder (the one `--continue` opens), or null.
+ * @param {string} home @param {string} dir
+ */
+function cmdTranscriptPath(home, dir) {
+  const d = cmdProjectDir(home, dir);
+  let best = null, at = -1;
+  let names = [];
+  try { names = fs.readdirSync(d); } catch { return null; }
+  for (const f of names) {
+    if (!/^[\w-]+\.jsonl$/.test(f)) continue; // the session itself, not a sidecar (<id>.prompts.jsonl, …)
+    try { const m = fs.statSync(path.join(d, f)).mtimeMs; if (m > at) { at = m; best = path.join(d, f); } } catch { /* gone */ }
+  }
+  return best;
+}
+
 /**
  * Reads what was appended to a transcript since `from` (a cursor { file, size, prompts }); returns the new cursor, or
- * null when the file is missing. Only the new bytes are read.
- * @param {string} file @param {{ file: string, size: number, prompts: number } | null} from
+ * null when the file is missing. Only the new bytes are read. promptRe: what a prompt record looks like.
+ * @param {string} file @param {{ file: string, size: number, prompts: number } | null} from @param {RegExp} [promptRe]
  */
-function readTranscript(file, from) {
+function readTranscript(file, from, promptRe = /"USER_INPUT"/g) {
   let st;
   try { st = fs.statSync(file); } catch { return null; }
   const start = from && from.file === file && from.size <= st.size ? from.size : 0;
@@ -262,10 +294,10 @@ function readTranscript(file, from) {
       const n = Math.min(st.size - start, 4 * 1024 * 1024);
       const buf = Buffer.alloc(n);
       fs.readSync(fd, buf, 0, n, st.size - n);
-      prompts += (buf.toString('utf8').match(/"USER_INPUT"/g) || []).length;
+      prompts += (buf.toString('utf8').match(promptRe) || []).length;
     } catch { /* unreadable: size only */ } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
   }
   return { file, size: st.size, prompts };
 }
 
-module.exports = { createAgyWatch, dayKey, plainText, agyTranscriptPath, readTranscript, BUSY_RE, ASK_RE, QUIET_MS, SUBMIT_GRACE_MS };
+module.exports = { createAgyWatch, dayKey, plainText, agyTranscriptPath, readTranscript, cmdProjectDir, hasCmdSession, cmdTranscriptPath, CMD_PROMPT_RE, BUSY_RE, ASK_RE, QUIET_MS, SUBMIT_GRACE_MS };

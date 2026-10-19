@@ -287,10 +287,9 @@ const savingsOf = (project) => savingsValue(project?.savings);
 
 // --- per-project engine (contract v3.22)
 // Project.engine: 'agy' runs Google Antigravity CLI in the project's tabs instead of Claude Code (v3.22);
-// 'commandcode' runs Command Code's `cmd` (contract v3.23, which the office tracks through its own mod); absent =
-// Claude Code. Never written for Claude Code. Neither engine keeps anything of Claude Code's setup (account folder,
-// plugin, status line, memory, MCP config) as its own: agy gets none of the office either, Command Code gets the
-// office's env and directory (its mod needs them) but has one app-wide login instead of the accounts.
+// 'commandcode' runs Command Code's `commandcode` (contract v3.25); absent = Claude Code. Never written for Claude
+// Code. Neither engine gets anything of Claude Code's setup (account folder, plugin, status line, memory, MCP
+// config) or of the office (directory, journal, savings); the app observes both one way.
 const ENGINES = ['claude', 'agy', 'commandcode'];
 const engineValue = (v) => (v === 'agy' || v === 'commandcode' ? v : null);
 const withEngine = (v) => (engineValue(v) ? { engine: v } : {});
@@ -356,9 +355,9 @@ function returnHome(state, id) {
 
 // Claude Code's session history folder: <account folder or ~/.claude>/projects/<path, non-alphanumerics → '-'>
 // (tried: /Users/a/.claude → -Users-a--claude). If it has a .jsonl, `claude --continue` finds a session to resume.
-// dotDir: another CLI's home folder with the same layout (Command Code's .commandcode, contract v3.23).
-const historyDir = (projectDir, configDir, home, dotDir = '.claude') =>
-  path.join(configDir || path.join(home, dotDir), 'projects', String(projectDir).replace(/[^a-zA-Z0-9]/g, '-'));
+// (Command Code names its folders differently: token-usage.js ccSlugOf, contract v3.25.)
+const historyDir = (projectDir, configDir, home) =>
+  path.join(configDir || path.join(home, '.claude'), 'projects', String(projectDir).replace(/[^a-zA-Z0-9]/g, '-'));
 
 module.exports = {
   historyDir,

@@ -152,7 +152,6 @@
           ".claude-plugin/plugin.json",
           "hooks/**",
           "types/**",
-          "mods/**",
           "tsconfig.json",
           "LICENSE"
         ]

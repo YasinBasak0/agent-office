@@ -321,7 +321,7 @@ test('proje başına motor: normalizeState, setProjectEngine, engineOf (v3.22)',
   assert.deepEqual(again.projects.map((p) => p.engine), [undefined, undefined, undefined, 'agy']);
 });
 
-test('Command Code motoru (v3.23): engine değerini anar; cmdArgs mod önce, resume sonra, istem en sonda (v3.23)', () => {
+test('Command Code motoru (v3.25): engine değerini anar; cmdArgs yalnız --continue ve istem, mod yok', () => {
   let s = P.normalizeState({
     projects: [
       { id: 'a', dir: '/a', engine: 'commandcode' },
@@ -336,20 +336,14 @@ test('Command Code motoru (v3.23): engine değerini anar; cmdArgs mod önce, res
   assert.equal('engine' in P.findProject(s, 'a'), false);
 
   const EN = require('../src/engine.js');
-  assert.deepEqual(EN.cmdArgs(), []);
-  assert.deepEqual(EN.cmdArgs(['--mod', '/m/office.ts']), ['--mod', '/m/office.ts']); // a fresh start: no resume, no prompt
-  assert.deepEqual(EN.cmdArgs([], ['--continue']), ['--continue']);
-  assert.deepEqual(EN.cmdArgs([], ['--resume', 'abc-1']), ['--resume', 'abc-1']);
-  // the prompt only with a resume (a fresh start takes it from the office's typed text instead), and last;
+  assert.deepEqual(EN.cmdArgs(), []); // a fresh start: no arguments, no mod
+  assert.deepEqual(EN.cmdArgs({ resume: true }), ['--continue']);
+  assert.deepEqual(EN.cmdArgs({ prompt: 'hi' }), []); // the prompt only with a resume
   // promptArg makes it one line, never starting with '-', without cmd.exe's special characters (quotes included)
-  assert.deepEqual(EN.cmdArgs([], ['--continue'], '  the "login" bug\n  is client-side '), ['--continue', 'the login bug is client-side']);
-  assert.deepEqual(EN.cmdArgs(['--mod', '/m/office.ts'], ['--resume', 'abc-1'], 'hi'), ['--mod', '/m/office.ts', '--resume', 'abc-1', 'hi']);
-  assert.equal(EN.CMD_COMMAND, 'exec cmd "$@"');
-  assert.equal(EN.CMD.bin, 'cmd');
+  assert.deepEqual(EN.cmdArgs({ resume: true, prompt: '  the "login" bug\n  is client-side ' }), ['--continue', 'the login bug is client-side']);
+  assert.ok(EN.CMD_COMMAND.endsWith('exec commandcode "$@"'));
+  assert.equal(EN.CMD.bin, 'commandcode');
   assert.equal(EN.CMD.home, '.commandcode');
-  // Command Code's own history folder keeps Claude Code's naming (P.historyDir's dotDir)
-  assert.equal(P.historyDir('/a/b', null, '/h', EN.CMD.home), path.join('/h', '.commandcode', 'projects', '-a-b'));
-  assert.equal(P.historyDir('/a/b', null, '/h'), path.join('/h', '.claude', 'projects', '-a-b'));
 });
 
 test('agy başlatma: --continue yalnız devam ederken, -i istemi yalnız devam ederken; komut satırı (v3.22)', () => {
@@ -426,7 +420,7 @@ test('agy başlatma satırı: rc dosyasının koyduğu AGENT_OFFICE_* gider, kul
     const env = EN.agyEnv({ ...SECRET_ENV, PATH: `${bin}:/usr/bin:/bin`, HOME: bin }, process.platform);
     // what a login shell's rc file might do: an office variable and a user's own variable
     const rc = 'export AGENT_OFFICE_DIRECTORY=/rc/dir AGENT_OFFICE_X=1 USERS_OWN=kept; ';
-    const r = spawnSync('/bin/sh', ['-c', rc + EN.AGY_COMMAND, 'agy', ...EN.agyArgs({ resume: true, prompt: 'carry on' })], { env, encoding: 'utf8' });
+    const r = spawnSync('/bin/sh', ['-c', rc + EN.AGY_COMMAND, 'agy', ...EN.agyArgs({ resume: true, prompt: 'carry on' })], { env, encoding: 'utf8', cwd: bin });
     assert.equal(r.status, 0, r.stderr);
     const [argv, out] = r.stdout.split('---\n');
     assert.deepEqual(argv.trim().split('\n'), ['--continue', '-i', 'carry on']);
@@ -434,6 +428,151 @@ test('agy başlatma satırı: rc dosyasının koyduğu AGENT_OFFICE_* gider, kul
     assert.match(out, /^USERS_OWN=kept$/m);
     for (const v of SECRET_VALUES) assert.equal(out.includes(v), false, v);
   } finally { fs.rmSync(bin, { recursive: true, force: true }); }
+});
+
+// v3.25: Command Code gets the same allowlist treatment as agy (the user's hard rule: no leaks to third-party CLIs).
+test('Command Code ortamı: izin listesi; Claude, Anthropic, ofis, MCP, Savings geçmez; yalnız belgelenmiş kendi değişkenleri (v3.25)', () => {
+  const EN = require('../src/engine.js');
+  const user = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/Users/a', USER: 'a', SHELL: '/bin/zsh', LANG: 'tr_TR.UTF-8',
+    LC_ALL: 'tr_TR.UTF-8', TMPDIR: '/var/folders/x/', COMMAND_CODE_API_KEY: 'users-own-cc-key', CMD_ZDR: '1',
+    COMMANDCODE_SKIP_UPDATES: '1', DO_NOT_TRACK: '1', GEMINI_API_KEY: 'gem', AGY_ADC_AUTH: 'true', CMD_OTHER: 'x' };
+  const env = EN.cmdEnv({ ...SECRET_ENV, ...user }, 'darwin');
+  for (const k of Object.keys(SECRET_ENV)) assert.equal(k in env, false, `${k} reached Command Code`);
+  for (const k of Object.keys(env)) assert.doesNotMatch(k, /ANTHROPIC|CLAUDE|AGENT_OFFICE|MCP/i);
+  const values = JSON.stringify(env);
+  for (const v of SECRET_VALUES) assert.equal(values.includes(v), false, `a secret value reached Command Code: ${v}`);
+  assert.equal(env.COMMAND_CODE_API_KEY, 'users-own-cc-key');
+  assert.equal(env.CMD_ZDR, '1');
+  assert.equal(env.COMMANDCODE_SKIP_UPDATES, '1');
+  assert.equal(env.DO_NOT_TRACK, '1');
+  for (const k of ['GEMINI_API_KEY', 'AGY_ADC_AUTH', 'CMD_OTHER']) assert.equal(k in env, false, `${k} is not Command Code's`);
+  assert.deepEqual(Object.keys(EN.cmdEnv({ PATH: '/bin', HOME: '/h' }, 'linux')).sort(), ['COLORTERM', 'HOME', 'PATH', 'TERM']);
+  const winUser = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', APPDATA: 'C:\\a', USERPROFILE: 'C:\\u', PATHEXT: '.EXE;.CMD', ComSpec: 'C:\\Windows\\cmd.exe' };
+  const w = EN.cmdEnv({ ...SECRET_ENV, claude_code_oauth_token: 'lower-secret', Agent_Office_Directory: 'x-secret', agent_office_savings: 'strict-secret', ...winUser }, 'win32');
+  for (const k of Object.keys(winUser)) assert.equal(w[k], winUser[k], k);
+  for (const k of Object.keys(w)) assert.doesNotMatch(k, /ANTHROPIC|CLAUDE|AGENT_OFFICE|MCP/i);
+  assert.equal(JSON.stringify(w).includes('secret'), false);
+});
+
+test('startCommandCode: ortam yalnız cmdEnv; sessionEnv, ptyEnv, ofis dizini, mod, eklenti yok (v3.25)', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = src.indexOf('function startCommandCode(');
+  assert.ok(start > 0);
+  const body = src.slice(start, src.indexOf('\n}\n', start)).replace(/\/\/.*$/gm, '');
+  assert.match(body, /const env = EN\.cmdEnv\(process\.env\);/);
+  for (const banned of ['sessionEnv', 'ptyEnv', 'officeDirectoryFile', 'AGENT_OFFICE_', 'sharedConfig', 'pluginDir', 'usageStatusLine', '--mod', 'managerOf', 'savings', 'CLAUDE_', 'env.', 'env[']) {
+    assert.equal(body.includes(banned), false, `startCommandCode uses ${banned}`);
+  }
+  // no mod is shipped or passed any more
+  assert.equal(src.includes('commandCodeMod'), false);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', '..', 'plugin', 'mods', 'agent-office.ts')), false);
+  assert.equal(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8').includes('mods/'), false);
+});
+
+test('Command Code başlatma satırı: rc dosyasının AGENT_OFFICE_*\'ı gider; argv yalnız Command Code argümanları (v3.25)', { skip: process.platform === 'win32' }, () => {
+  const EN = require('../src/engine.js');
+  const { spawnSync } = require('node:child_process');
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-ccl-'));
+  try {
+    fs.writeFileSync(path.join(bin, 'commandcode'), '#!/bin/sh\nprintf "%s\\n" "$@"\necho ---\nenv\n', { mode: 0o755 });
+    const env = EN.cmdEnv({ ...SECRET_ENV, PATH: `${bin}:/usr/bin:/bin`, HOME: bin }, process.platform);
+    const rc = 'export AGENT_OFFICE_DIRECTORY=/rc/dir AGENT_OFFICE_MANAGER=1 USERS_OWN=kept; ';
+    const r = spawnSync('/bin/sh', ['-c', rc + EN.CMD_COMMAND, EN.CMD.bin, ...EN.cmdArgs({ resume: true, prompt: 'carry on' })], { env, encoding: 'utf8', cwd: bin });
+    assert.equal(r.status, 0, r.stderr);
+    const [argv, out] = r.stdout.split('---\n');
+    assert.deepEqual(argv.trim().split('\n'), ['--continue', 'carry on']);
+    assert.doesNotMatch(out, /^(ANTHROPIC|CLAUDE|AGENT_OFFICE)/m);
+    assert.doesNotMatch(out, /MCP/);
+    assert.match(out, /^USERS_OWN=kept$/m);
+    for (const v of SECRET_VALUES) assert.equal(out.includes(v), false, v);
+  } finally { fs.rmSync(bin, { recursive: true, force: true }); }
+});
+
+test('Command Code klasör adı: tek yardımcı (ccSlugOf) hem geçmiş hem token hem izleme için (v3.25)', () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const TUm = require('../src/token-usage.js');
+  const AWm = require('../src/agy-watch.js');
+  assert.equal(TUm.ccSlugOf('/Users/a/My Proj'), 'users-a-my-proj');
+  assert.equal(AWm.cmdProjectDir('/h', '/Users/a/x'), path.join('/h', '.commandcode', 'projects', 'users-a-x'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-cch-'));
+  try {
+    const d = path.join(home, '.commandcode', 'projects', 'users-a-x');
+    fs.mkdirSync(d, { recursive: true });
+    assert.equal(AWm.hasCmdSession(home, '/Users/a/x'), false);
+    assert.equal(AWm.cmdTranscriptPath(home, '/Users/a/x'), null);
+    fs.writeFileSync(path.join(d, 's1.prompts.jsonl'), '{}\n'); // a sidecar is not a session
+    assert.equal(AWm.hasCmdSession(home, '/Users/a/x'), false);
+    fs.writeFileSync(path.join(d, 'abc-1.jsonl'), '{"type":"message","message":{"role":"user"}}\n');
+    assert.equal(AWm.hasCmdSession(home, '/Users/a/x'), true);
+    assert.equal(AWm.hasCmdSession(home, '/Users/a/y'), false);
+    // Claude Code's naming ('-Users-a-x') is not Command Code's
+    fs.mkdirSync(path.join(home, '.commandcode', 'projects', '-Users-a-z'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.commandcode', 'projects', '-Users-a-z', 'q.jsonl'), '{}\n');
+    assert.equal(AWm.hasCmdSession(home, '/Users/a/z'), false);
+    assert.equal(AWm.cmdTranscriptPath(home, '/Users/a/x'), path.join(d, 'abc-1.jsonl'));
+    const cur = AWm.readTranscript(path.join(d, 'abc-1.jsonl'), null, AWm.CMD_PROMPT_RE);
+    assert.equal(cur.prompts, 1);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  // main.js uses that one helper, never Claude Code's historyDir, for Command Code
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(src, /const hasCmdHistory = \(dir\) => AW\.hasCmdSession\(/);
+  assert.match(src, /TU\.ccSlugOf/);
+});
+
+test('Command Code token okuma: yalnız projects/*.jsonl; auth.json asla okunmaz (v3.25)', async () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const TUm = require('../src/token-usage.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-cct-'));
+  const realRead = fs.readFileSync, realOpen = fs.openSync, realCreate = fs.createReadStream;
+  const touched = [];
+  try {
+    const root = path.join(home, '.commandcode');
+    fs.mkdirSync(path.join(root, 'projects', 'tmp-p'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'auth.json'), '{"apiKey":"cc-secret"}');
+    fs.writeFileSync(path.join(root, 'projects', 'tmp-p', 's.jsonl'), JSON.stringify({
+      type: 'message', id: 'm1', timestamp: new Date().toISOString(), model: 'm',
+      message: { role: 'assistant', content: [] }, usage: { inputTokens: 10, outputTokens: 1, costUsd: 0.01 } }) + '\n');
+    const names = fs.readdirSync(path.join(root, 'projects'));
+    const folders = TUm.projectFolders([...names, 'auth.json'], ['/tmp/p'], [], TUm.ccSlugOf).map((n) => path.join(root, 'projects', n));
+    assert.deepEqual(folders, [path.join(root, 'projects', 'tmp-p')]);
+    fs.readFileSync = (f, ...a) => { touched.push(String(f)); return realRead(f, ...a); };
+    fs.openSync = (f, ...a) => { touched.push(String(f)); return realOpen(f, ...a); };
+    fs.createReadStream = (f, ...a) => { touched.push(String(f)); return realCreate(f, ...a); };
+    // every path the scanner's fs.promises touches is recorded
+    const fsp = new Proxy(fs.promises, { get: (t, k) => (typeof t[k] === 'function' ? (f, ...a) => { touched.push(String(f)); return t[k](f, ...a); } : t[k]) });
+    const recs = await new TUm.UsageScanner({ fsp }).scanFolders(folders, { since: 0 });
+    assert.equal(recs.size, 1);
+    assert.ok(touched.some((f) => f.endsWith('s.jsonl')));
+    assert.equal(touched.some((f) => f.includes('auth.json')), false, 'auth.json was read');
+  } finally {
+    fs.readFileSync = realRead; fs.openSync = realOpen; fs.createReadStream = realCreate;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+  for (const f of ['main.js', 'src/token-usage.js', 'src/agy-watch.js', 'src/engine.js']) {
+    const code = fs.readFileSync(path.join(__dirname, '..', f), 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert.equal(code.includes('auth.json'), false, `${f} names auth.json`);
+  }
+});
+
+test('Command Code sekmesi gözlemlenir: agy-watch engine commandcode, uyku { cmd } ile --continue (v3.25)', () => {
+  const AWm = require('../src/agy-watch.js');
+  const Zm = require('../src/sleep.js');
+  const w = AWm.createAgyWatch(1000, { engine: 'commandcode', label: 'Command Code' });
+  w.input('fix it', 1100); w.input('\r', 1200);
+  assert.equal(w.isBusy, true);
+  w.output("Run npm test? Yes, don't ask again for this project", 1300);
+  assert.equal(w.waiting?.kind, 'permission');
+  w.input('1', 1400);
+  assert.equal(w.tick(20000), true);
+  const s = w.session('p', 'cmd-x', 20000);
+  assert.equal(s.engine, 'commandcode');
+  assert.equal(s.stats.today.log[0].type, 'commandcode');
+  assert.equal(s.stats.today.log[0].description, 'Command Code');
+  assert.deepEqual(Zm.wakeOptions({ cmd: true }, false), { resume: true });
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(src, /asleep\.set\(id, isCmd\(r\.project\) \? \{ cmd: true \} : \{ agy: true \}\)/);
 });
 
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
@@ -1089,16 +1228,11 @@ test('Windows: claude PATH\'te (PATHEXT sırası, Path anahtarı), yoksa kurulum
   assert.equal(OS.findOnPath('git.exe', { PATH: 'C:\\Git\\cmd' }, filesAt('C:\\Git\\cmd\\git.exe')), 'C:\\Git\\cmd\\git.exe');
 });
 
-test('Command Code motoru (v3.23): Windows Windows kabuğunun cmd.exe\'i asla seçmez, `cmd` ile `commandcode` aranır', () => {
+test('Command Code motoru (v3.25): Windows\'ta yalnız `commandcode` aranır, `cmd` (System32\\cmd.exe) asla', () => {
   const ComSpec = 'C:\\Windows\\system32\\cmd.exe';
-  // commandcode first, then cmd; a `cmd` hit that is the Windows shell (ComSpec) is never returned
-  assert.equal(OS.findCommandCode({ PATH: 'C:\\Users\\a\\bin', ComSpec }, filesAt('C:\\Users\\a\\bin\\commandcode.exe')),
-    'C:\\Users\\a\\bin\\commandcode.exe');
-  assert.equal(OS.findCommandCode({ PATH: 'C:\\Windows;C:\\Users\\a\\bin', ComSpec }, filesAt('C:\\Users\\a\\bin\\cmd.exe')),
-    'C:\\Users\\a\\bin\\cmd.exe');
-  assert.equal(OS.findCommandCode({ PATH: 'C:\\Windows', ComSpec }, filesAt(ComSpec)), null);
-  // no ComSpec in the env: a `cmd` hit stands (nothing says it is the shell)
-  assert.equal(OS.findCommandCode({ PATH: 'C:\\Windows' }, filesAt('C:\\Windows\\cmd.exe')), 'C:\\Windows\\cmd.exe');
+  assert.equal(OS.findCommandCode({ PATH: 'C:\\Users\\a\\bin', ComSpec }, filesAt('C:\\Users\\a\\bin\\commandcode.cmd')),
+    'C:\\Users\\a\\bin\\commandcode.cmd');
+  assert.equal(OS.findCommandCode({ PATH: 'C:\\Windows\\system32;C:\\Users\\a\\bin', ComSpec }, filesAt(ComSpec, 'C:\\Users\\a\\bin\\cmd.exe')), null);
 });
 
 test('Windows: agy yalnız PATH\'te aranır; yoksa null (v3.22)', () => {
@@ -2353,7 +2487,7 @@ test('token kullanımı: fiyat tablosu ve tam fiyat karşılığı', () => {
   assert.ok(Math.abs(w.cost.read - 1000 * 5 / 1e6) < 1e-12);
 });
 
-test('token kullanımı: Command Code kaydı (v3.23) — camelCase usage, kendi $ karşılığı, başlıksız klasör adı', () => {
+test('token kullanımı: Command Code kaydı (v3.25) — camelCase usage, kendi $ karşılığı, başlıksız klasör adı', () => {
   const line = JSON.stringify({
     type: 'message', id: 'cc1', timestamp: '2026-10-19T19:39:39.879Z', model: 'z-ai/glm-5.3-flash',
     message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },

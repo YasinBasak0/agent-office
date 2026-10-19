@@ -49,7 +49,7 @@ function priceOf(model) {
 
 /**
  * What a request would have cost at the full input price, in tokens (fpt) and in $; `cost` splits the $ by kind.
- * A record that carries its own $ (Command Code's costUsd, contract v3.23) keeps it: the breakdown is scaled to
+ * A record that carries its own $ (Command Code's costUsd, contract v3.25) keeps it: the breakdown is scaled to
  * that total, and the full-price estimate uses the fallback price (only the % share of the panel depends on it).
  */
 function weigh(r) {
@@ -82,7 +82,7 @@ function parseLine(line, { sub = false } = {}) {
 /** parseLine on an already parsed line. */
 function parseEntry(d, { sub = false } = {}) {
   if (!d) return null;
-  if (d.type === 'message') return parseEntryCC(d, { sub }); // Command Code's tree store (contract v3.23)
+  if (d.type === 'message') return parseEntryCC(d, { sub }); // Command Code's tree store (contract v3.25)
   if (d.type !== 'assistant') return null;
   const m = d.message;
   const u = m && m.usage;
@@ -107,7 +107,7 @@ function parseEntry(d, { sub = false } = {}) {
 }
 
 /**
- * A Command Code session entry (contract v3.23, tree store): {"type":"message","id","timestamp","
+ * A Command Code session entry (contract v3.25, tree store): {"type":"message","id","timestamp","
  * message":{"role":"assistant",…},"usage":{"inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens",
  * "costUsd"},"model"}. One line per API response (no per-block copies). Its costUsd is authoritative — the PRICES
  * table is Claude's — so the record carries it and weigh scales to it.
@@ -153,7 +153,7 @@ const ccSlugOf = (dir) => slugOf(String(dir).toLowerCase()).replace(/^-+/, '');
  * Folder names (under <config>/projects) of a project: its folder and its tabs' folders, plus worktrees of its
  * folder made elsewhere (`<dir>-wt-…` next to it, Claude Code's `<dir>/.claude/worktrees/…`). A name that is
  * exactly another project's folder belongs to that project. `slug`: the folder naming (Command Code strips the
- * leading dash, contract v3.23); default Claude Code's.
+ * leading dash, contract v3.25); default Claude Code's.
  */
 function projectFolders(names, dirs, otherDirs = [], slug = slugOf) {
   const exact = new Set(dirs.map(slug));
@@ -166,7 +166,7 @@ function projectFolders(names, dirs, otherDirs = [], slug = slugOf) {
 const NL = 10;
 const USAGE = Buffer.from('"usage"');
 const ASSISTANT = Buffer.from('"assistant"');
-const MESSAGE = Buffer.from('"message"'); // Command Code's tree store (contract v3.23)
+const MESSAGE = Buffer.from('"message"'); // Command Code's tree store (contract v3.25)
 const USER = Buffer.from('"user"');
 const TOOL_USE = Buffer.from('"tool_use"');
 const LABEL_MAX = 160;
