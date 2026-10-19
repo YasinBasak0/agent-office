@@ -1639,36 +1639,50 @@ async function linuxClipboardFiles() {
   return [];
 }
 // Windows: Explorer puts CF_HDROP (every file) and FileNameW (the first) on the clipboard; Electron 44 shows such
-// formats as 'electron application/osclipboard;format="…"' items. If it shows none and the clipboard holds no text
-// (a file copy has none), PowerShell's Get-Clipboard reads the file list (slower, so only then).
-async function windowsClipboardFiles() {
+// formats as 'electron application/osclipboard;format="…"' items, in no set order, so every kind is read and
+// pickWindowsFiles prefers the full list (v3.19). If that gives no full list and the clipboard holds no text (a file
+// copy has none) and no image, PowerShell's Get-Clipboard reads the file list (slower, so only then). The same pass
+// notes an image (a screenshot is CF_DIB/PNG, which has('image/png') may not report).
+/** @param {string} text the clipboard's text, already read */
+async function windowsClipboard(text) {
+  /** @type {{ drop?: string[], uri?: string[], name?: string[] }} */
+  const found = {};
+  let image = false;
   try {
     for (const item of await clipboard.read()) {
       for (const type of item.types) {
+        if (OS.windowsImageType(type)) image = true;
         const kind = OS.windowsClipboardKind(type);
-        if (!kind) continue;
-        const blob = await item.getType(type);
+        if (!kind || found[kind]?.length) continue;
+        const blob = await item.getType(type).catch(() => null);
         if (!(blob instanceof Blob)) continue;
         const buf = Buffer.from(await blob.arrayBuffer());
-        const files = kind === 'drop' ? OS.filesFromDropFiles(buf)
+        found[kind] = kind === 'drop' ? OS.filesFromDropFiles(buf)
           : kind === 'name' ? OS.filesFromFileNameW(buf) : OS.filesFromUriList(buf.toString('utf8'), 'win32');
-        if (files.length) return files;
       }
     }
   } catch {}
-  try { if (await clipboard.readText()) return []; } catch {}
+  const picked = OS.pickWindowsFiles(found);
+  if (picked.complete && picked.files.length) return { files: picked.files, image };
+  if (!picked.files.length && (text || image)) return { files: [], image };
   const out = await new Promise((resolve) => {
-    execFile('powershell.exe', OS.POWERSHELL_FILES, { timeout: 4000, windowsHide: true }, (err, stdout) => resolve(err ? '' : String(stdout || '')));
+    execFile('powershell.exe', OS.POWERSHELL_FILES, { timeout: 8000, windowsHide: true }, (err, stdout) => resolve(err ? '' : String(stdout || '')));
   });
-  return OS.filesFromLines(out);
+  const listed = OS.filesFromLines(out);
+  return { files: listed.length ? listed : picked.files, image };
 }
-const clipboardFiles = () => (IS_MAC ? macClipboardFiles() : IS_WIN ? windowsClipboardFiles() : linuxClipboardFiles());
+const clipboardFiles = () => (IS_MAC ? macClipboardFiles() : linuxClipboardFiles());
 const IMAGE_TYPES = ['image/png', 'image/tiff', 'image/jpeg', 'image/gif', 'image/heic'];
 async function clipboardHasImage() {
   for (const t of IMAGE_TYPES) if (await clipboard.has(t)) return true;
   return false;
 }
 ipcMain.handle('clipboard:read', async () => {
+  if (IS_WIN) {
+    const text = await clipboard.readText().catch(() => '');
+    const { files, image } = await windowsClipboard(text);
+    return { files, hasImage: !files.length && (image || await clipboardHasImage().catch(() => false)), text };
+  }
   const files = await clipboardFiles();
   return { files, hasImage: !files.length && await clipboardHasImage(), text: await clipboard.readText() };
 });

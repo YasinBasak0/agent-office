@@ -4,7 +4,7 @@ import { Terminal } from '../node_modules/@xterm/xterm/lib/xterm.mjs';
 import { FitAddon } from '../node_modules/@xterm/addon-fit/lib/addon-fit.mjs';
 import { t } from './i18n.js';
 import { platform, isMac, isModKey, keyOf } from './platform.js';
-import { translateKey, imagePasteKey, quotePath } from '../src/terminal-keys.mjs';
+import { translateKey, isPasteKey, pasteAction } from '../src/terminal-keys.mjs';
 
 // Text lives in locales/*.json (terminal.exited). A line already written to the terminal is not rewritten on a language change.
 
@@ -71,21 +71,21 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
     if (restartable && d === '\r') { dead = false; term.reset(); pty.restart(projectId); needSize = true; resize(); }
   });
 
-  // Depending on clipboard content: image → Claude Code's image paste key (Ctrl+V; Alt+V on Windows: it reads the
-  // image from the clipboard itself), files copied from Finder / a file manager / Explorer → quoted paths, text →
-  // xterm's (bracketed) paste.
+  // Depending on clipboard content (pasteAction): files copied from Finder / a file manager / Explorer → quoted
+  // paths, image → Claude Code's image paste key (Ctrl+V; Alt+V on Windows: it reads the image from the clipboard
+  // itself), text → xterm's (bracketed) paste. Windows takes text before an image (v3.19).
   async function paste() {
     if (dead) return;
     let clip = null;
     try { clip = await window.agentOffice.clipboard.read(); } catch { return; }
-    if (clip.files?.length) pty.write(projectId, clip.files.map(quote).join(' ') + ' ');
-    else if (clip.hasImage) pty.write(projectId, imagePasteKey(platform));
-    else if (clip.text) term.paste(clip.text);
+    const act = pasteAction(clip, platform);
+    if (act && 'pty' in act) pty.write(projectId, act.pty);
+    else if (act && 'text' in act) term.paste(act.text);
     term.focus();
   }
 
-  // File drag-and-drop: write the paths (quoting those with spaces) to the terminal.
-  const quote = (p) => quotePath(p, platform);
+  // File drag-and-drop: write the paths (quoting those with spaces) to the terminal. The path comes from
+  // webUtils.getPathForFile in the preload (File.path is gone in Electron 32+); Windows quotes with "…" (quotePath).
   let depth = 0;
   const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
   el.addEventListener('dragenter', (e) => { if (hasFiles(e)) { depth++; el.classList.add('drop'); } });
@@ -97,13 +97,15 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
     if (!hasFiles(e)) return;
     e.preventDefault();
     const paths = [...e.dataTransfer.files].map((f) => window.agentOffice.pathForFile(f)).filter(Boolean);
-    if (paths.length && !dead) pty.write(projectId, paths.map(quote).join(' ') + ' ');
+    const act = pasteAction({ files: paths }, platform);
+    if (act && 'pty' in act && !dead) pty.write(projectId, act.pty);
     term.focus();
   });
 
   // ⌘V in the terminal is caught here: Chromium's own paste would send empty text for images/files.
-  // Linux and Windows: Ctrl+Shift+V pastes (Ctrl+V goes to claude, which reads the image from the clipboard); Ctrl+Shift+C/X
-  // are not passed to xterm (it would send ^C) and are left to Copy/Cut in the menu.
+  // Linux: Ctrl+Shift+V pastes (Ctrl+V goes to claude, which reads the image from the clipboard). Windows: Ctrl+V and
+  // Ctrl+Shift+V paste (claude has no Ctrl+V there; its image key is Alt+V, which paste() sends for an image; v3.19).
+  // Linux and Windows: Ctrl+Shift+C/X are not passed to xterm (it would send ^C) and are left to Copy/Cut in the menu.
   // Cmd+Enter / Ctrl+Enter: xterm would send a bare CR; claude gets ctrl+enter (send a queued message now).
   // macOS Option+Q (TR @) and other ASCII symbols the layout composes with Option: xterm would send ESC+key (Meta).
   term.attachCustomKeyEventHandler((ev) => {
@@ -112,15 +114,14 @@ export function mountTerminal(el, { projectId, theme, restartable = !String(proj
       if (ev.type === 'keydown') { ev.preventDefault(); term.input(seq); }
       return false;
     }
-    // macOS: ⌘V and ⌘⇧V (Shift optional, as before); Linux and Windows: Ctrl+Shift
-    const mod = isMac ? ev.metaKey && !ev.ctrlKey && !ev.altKey : isModKey(ev);
-    if (ev.type !== 'keydown' || !mod) return true;
+    // macOS: ⌘V and ⌘⇧V (Shift optional, as before); Linux: Ctrl+Shift+V; Windows: Ctrl+V and Ctrl+Shift+V
+    if (isPasteKey(ev, platform)) {
+      if (ev.type === 'keydown') { ev.preventDefault(); if (once()) paste(); }
+      return false;
+    }
+    if (ev.type !== 'keydown' || isMac || !isModKey(ev)) return true;
     const key = keyOf(ev);
-    if (!isMac && (key === 'c' || key === 'x')) return false;
-    if (key !== 'v') return true;
-    ev.preventDefault();
-    if (once()) paste();
-    return false;
+    return !(key === 'c' || key === 'x');
   });
   el.addEventListener('paste', (e) => {
     e.preventDefault();

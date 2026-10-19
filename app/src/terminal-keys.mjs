@@ -41,3 +41,39 @@ export function quotePath(p, platform) {
   if (platform === 'win32') return /[\s"'&()^%!;,=`$]/.test(p) ? `"${p.replace(/"/g, '')}"` : p;
   return /[\s'"\\$`!&;()<>|*?]/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p;
 }
+
+/**
+ * Is this key event the terminal's paste key (v3.19)? macOS: ⌘V (⌘⇧V too). Linux: Ctrl+Shift+V (Ctrl+V goes to
+ * claude, whose image paste key is Ctrl+V there). Windows: Ctrl+V and Ctrl+Shift+V. Claude Code binds no Ctrl+V on
+ * native Windows (its image key is Alt+V, because Ctrl+V is the terminal's paste, as in Windows Terminal); xterm would
+ * send ^V and nothing would happen. AltGr (Ctrl+Alt on Windows) is not paste. The letter comes from `code` off macOS,
+ * so other layouts (Turkish F, Cyrillic) paste with the key in V's place, as Windows Terminal does.
+ * @param {{ key?: string, code?: string, metaKey?: boolean, ctrlKey?: boolean, altKey?: boolean, shiftKey?: boolean }} ev
+ * @param {string} platform process.platform
+ */
+export function isPasteKey(ev, platform) {
+  if (platform === 'darwin') return Boolean(ev.metaKey && !ev.ctrlKey && !ev.altKey) && (ev.key || '').toLowerCase() === 'v';
+  const v = ev.code ? ev.code === 'KeyV' : (ev.key || '').toLowerCase() === 'v';
+  if (!v || !ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+  return platform === 'win32' ? true : Boolean(ev.shiftKey);
+}
+
+/**
+ * What a paste writes to claude, from main's clipboard:read answer: { pty } bytes to write as they are (quoted file
+ * paths, space-separated with a trailing space; or Claude Code's image paste key, which makes it read the image from
+ * the clipboard itself), { text } for xterm's (bracketed) paste, or null for nothing.
+ * Files come first everywhere. macOS and Linux: an image before text (unchanged). Windows: text before an image, as
+ * Windows Terminal's Ctrl+V does: Excel, Word and browsers put a picture next to copied text, and a screenshot has
+ * no text.
+ * @param {{ files?: string[], hasImage?: boolean, text?: string } | null | undefined} clip
+ * @param {string} platform process.platform
+ * @returns {{ pty: string } | { text: string } | null}
+ */
+export function pasteAction(clip, platform) {
+  if (!clip) return null;
+  const files = (clip.files || []).filter(Boolean);
+  if (files.length) return { pty: files.map((p) => quotePath(p, platform)).join(' ') + ' ' };
+  const image = clip.hasImage ? { pty: imagePasteKey(platform) } : null;
+  const text = clip.text ? { text: clip.text } : null;
+  return (platform === 'win32' ? text || image : image || text) || null;
+}
