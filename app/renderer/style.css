@@ -917,3 +917,11 @@ label.sb-langrow { cursor: pointer; }
 .up-key.tok { background: var(--accent); }
 .up-key.usd { background: #f2c14e; }
 .up-note { font-size: 11px; line-height: 1.4; }
+/* costliest sub-agents and the fixed prefix (contract v3.21) */
+.up-fold > summary { cursor: pointer; list-style: none; }
+.up-fold > summary::-webkit-details-marker { display: none; }
+.up-fold > summary::before { content: '▸'; display: inline-block; width: 10px; }
+.up-fold[open] > summary::before { content: '▾'; }
+.up-astats { font-size: 11px; opacity: .85; margin: 2px 0 4px; }
+.up-agent .up-name { grid-column: 1 / 3; }
+.up-agent .up-share { grid-column: 1 / -1; }

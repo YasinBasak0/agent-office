@@ -660,3 +660,36 @@ windowsImageType(type: string): boolean   // image/* or osclipboard PNG, CF_DIB,
 - **Images.** With no files, a clipboard image (`clipboard.has('image/…')`, or a `read()` type `windowsImageType` accepts) sends `ESC v` (Alt+V) and Claude Code reads the image from the clipboard itself. When the clipboard also holds text (Excel, Word, browsers add a picture), the text is pasted, as Windows Terminal does.
 - **Drag and drop** onto the terminal writes the same quoted paths; the path is `webUtils.getPathForFile` in the preload (`File.path` was removed in Electron 32).
 - **Text** goes through xterm's `paste()`: CRLF becomes CR and bracketed paste wraps it when Claude Code turned it on.
+
+## Costliest sub-agents and the fixed prefix (v3.21)
+
+To tune a per-agent step budget the panel shows which sub-agent runs cost the most and how much of the cache reads is the fixed prefix (system prompt + tools + opening instructions) that every step reads again. Same transcripts, same scanner; nothing new is written.
+
+```ts
+type AgentRun = {
+  id: string; session: string             // agent-<id>.jsonl and its parent session
+  label: string                            // <agent>.meta.json description, else the first line of its first prompt ('' if neither); ≤ 160 chars
+  agentType: string                        // meta.json agentType ('' if none)
+  model: string                            // the model of most of its requests, '[1m]' dropped
+  steps: number                            // deduplicated requests (assistant responses)
+  tools: number                            // distinct tool_use ids
+  tokens: TokenKinds; usd: number          // as v3.13, over the whole run
+  at: number                               // its first request
+}
+type AgentStats = {
+  count: number; usd: number; steps: number; avgSteps: number
+  long: { limit: 40; count: number; usd: number; share: number }   // runs with more than `limit` steps; share of `usd` (0..1)
+  top: AgentRun[]                          // the 10 costliest, by usd
+}
+type PrefixPart = { sessions: number; avg: number; requests: number; reads: number; prefixReads: number; share: number }
+type PrefixStats = PrefixPart & { main: PrefixPart; sub: PrefixPart }
+// TokenReport gains (tokens:report only; tokens:brief does not compute them):
+//   agents: { today: AgentStats; week: AgentStats; all: AgentStats }
+//   prefix: { today: PrefixStats; week: PrefixStats; all: PrefixStats }
+```
+
+- **Per transcript** (`src/token-usage.js`). `UsageScanner.sessions(folders)` (after `scanFolders`) returns one summary per `.jsonl` read so far: steps, tokens and $, first and last request, main model, prefix, and for a sub-agent's file its label, type and tool calls. While a sub-agent's file is read, its tool_use ids are collected from the assistant lines that are parsed anyway, and its first `user` line is parsed once for the prompt; `agent-<id>.meta.json` is read once when the file is first seen. A summary is cached per file and dropped only when new bytes of it are read, so a refresh with nothing new does not walk the records again. On 3.4 GB of real transcripts the first scan costs about 2% more than v3.13 alone (5.3 s vs 5.2 s warm); a refresh of every project with the new stats takes about 0.1 s.
+- **Agents.** A run counts in the period its first request falls in (Today / 7 days / Since added), with all of its tokens. `avgSteps = steps / count`; `long` is the runs above 40 steps (`LONG_STEPS`), the budget being tuned.
+- **Prefix.** A transcript's prefix is its first request's input + cache write + cache read. For a period, every transcript (boss sessions and sub-agents) with requests in it counts its requests `n` and cache reads `reads` in the period; `prefixReads = Σ min(prefix × n, reads)` (it cannot have re-read more than it read); `share = prefixReads / reads`; `avg` is the mean prefix per transcript. `main` and `sub` split boss sessions and sub-agents.
+- **Panel.** Two collapsible sections after "By model" (`<details>`, open by default; collapsed or open stays so across the 15 s re-reads while the app runs): **Most expensive agents** with the period's agent $, "N steps per agent on average (M agents) · over 40 steps: K · P of agent cost", then up to 10 rows: label (ellipsis; tooltip label · type · model), $, "model · steps · tool calls · date", "read · write · in · out" tokens. **Fixed prefix**: "≈ T tokens per session · ≈ P of cache reads", a row each for Main session and Sub-agents (average prefix, bar = share of their cache reads, sessions and steps), and a note that a large share means trimming MCP tools, skills or the manager text saves on every step.
+- **Dev mock.** `?usage` includes made-up agents and prefix numbers.

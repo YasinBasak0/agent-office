@@ -457,6 +457,25 @@
     "legendTokens": "token",
     "legendCost": "maliyet",
     "noteRead": "Önbellek okuması, modelin daha önce gördüğü bağlamdır; tam fiyatın onda biri.",
-    "noteEstimate": "$ tutarı API liste fiyatlarıyla bir tahmindir, fatura değil."
+    "noteEstimate": "$ tutarı API liste fiyatlarıyla bir tahmindir, fatura değil.",
+    "agents": {
+      "title": "En pahalı ajanlar",
+      "cost": "tüm ajanlar ≈ {usd}",
+      "none": "Bu dönemde alt ajan yok.",
+      "avgSteps": "Ajan başına ortalama {steps} adım ({n} ajan)",
+      "long": "{n} adımdan uzun: {count} · ajan maliyetinin {pct} kadarı",
+      "longTitle": "Bir adım modele giden bir istektir. Bu dönemde {n} adımdan uzun süren ajanlar ve tüm alt ajan maliyetindeki payları: {n} adımlık bir bütçenin keseceği kısım.",
+      "meta": "{model} · {steps} adım · {tools} araç çağrısı · {date}",
+      "tokens": "okuma {read} · yazma {write} · girdi {input} · çıktı {output}"
+    },
+    "prefix": {
+      "title": "Sabit önek",
+      "summary": "oturum başına ≈ {tokens} token · önbellek okumalarının ≈ {pct} kadarı",
+      "howTitle": "Önek; sistem istemi, araçlar (MCP sunucuları, yetenekler) ve ilk talimatlardır: her oturumun ilk isteğinden (girdi + önbellek yazma + önbellek okuma) tahmin edilir. Sonraki her adım onu yeniden okur; önek × adım ÷ tüm önbellek okumaları payını verir.",
+      "main": "Ana oturum",
+      "sub": "Alt ajanlar",
+      "share": "önbellek okumalarının {pct} kadarı · {n} oturum · {steps} adım",
+      "note": "Pay büyükse MCP araçlarını, yetenekleri ya da yönetici metnini kısaltmak her adımda tasarruf sağlar."
+    }
   }
 }

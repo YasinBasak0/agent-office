@@ -70,6 +70,11 @@ const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0
 function parseLine(line, { sub = false } = {}) {
   let d;
   try { d = JSON.parse(line); } catch { return null; }
+  return parseEntry(d, { sub });
+}
+
+/** parseLine on an already parsed line. */
+function parseEntry(d, { sub = false } = {}) {
   if (!d || d.type !== 'assistant') return null;
   const m = d.message;
   const u = m && m.usage;
@@ -127,6 +132,27 @@ function projectFolders(names, dirs, otherDirs = []) {
 const NL = 10;
 const USAGE = Buffer.from('"usage"');
 const ASSISTANT = Buffer.from('"assistant"');
+const USER = Buffer.from('"user"');
+const TOOL_USE = Buffer.from('"tool_use"');
+const LABEL_MAX = 160;
+
+/** The first line of a prompt (string or [{ type: 'text', text }]), trimmed and cut to LABEL_MAX characters. */
+function firstLine(content) {
+  let text = typeof content === 'string' ? content : '';
+  if (Array.isArray(content)) {
+    const b = content.find((x) => x && x.type === 'text' && typeof x.text === 'string');
+    text = b ? b.text : '';
+  }
+  const line = text.split('\n').map((x) => x.trim()).find(Boolean) || '';
+  return line.length > LABEL_MAX ? `${line.slice(0, LABEL_MAX - 1)}…` : line;
+}
+
+/** tool_use block ids of an assistant line. */
+function toolIds(d) {
+  const c = d && d.message && d.message.content;
+  if (!Array.isArray(c)) return [];
+  return c.filter((b) => b && b.type === 'tool_use').map((b) => String(b.id || ''));
+}
 const tick = () => new Promise((r) => setImmediate(r));
 
 class UsageScanner {
@@ -134,7 +160,12 @@ class UsageScanner {
   constructor({ chunkSize = 1 << 20, fsp = fs.promises } = {}) {
     this.chunkSize = chunkSize;
     this.fsp = fsp;
-    /** @type {Map<string, { ino: number, size: number, mtimeMs: number, offset: number, recs: Map<string, any> }>} */
+    /**
+     * Per file: where reading stopped and its records; a sub-agent's file also its tool_use ids, first prompt line
+     * and `<agent>.meta.json` (description, agentType). `sum` is the cached fileSummary, dropped when bytes are read.
+     * @type {Map<string, { ino: number, size: number, mtimeMs: number, offset: number, recs: Map<string, any>,
+     *   sub?: boolean, tools?: Set<string>, prompt?: string, meta?: { description?: string, agentType?: string } | null, sum?: any }>}
+     */
     this.files = new Map();
     this.bytesRead = 0;
     this.queue = Promise.resolve();
@@ -166,9 +197,14 @@ class UsageScanner {
     let c = this.files.get(file);
     if (!c && st.mtimeMs < since) return null;
     if (c && (c.ino !== st.ino || st.size < c.offset)) c = null; // replaced or truncated: from the start
-    if (!c) { c = { ino: st.ino, size: 0, mtimeMs: 0, offset: 0, recs: new Map() }; this.files.set(file, c); }
-    if (c.size === st.size && c.mtimeMs === st.mtimeMs) return c.recs;
     const sub = file.includes(`${path.sep}subagents${path.sep}`);
+    if (!c) {
+      c = { ino: st.ino, size: 0, mtimeMs: 0, offset: 0, recs: new Map(), sub, sum: null };
+      if (sub) { c.tools = new Set(); c.prompt = ''; c.meta = await this.readMeta(file); }
+      this.files.set(file, c);
+    }
+    if (c.size === st.size && c.mtimeMs === st.mtimeMs) return c.recs;
+    c.sum = null;
     let fh;
     try { fh = await this.fsp.open(file, 'r'); } catch { return c.recs; }
     try {
@@ -189,8 +225,19 @@ class UsageScanner {
           const line = pending.length ? Buffer.concat([...pending, chunk.subarray(start, nl)]) : chunk.subarray(start, nl);
           pending = [];
           if (line.indexOf(USAGE) !== -1 && line.indexOf(ASSISTANT) !== -1) {
-            const r = parseLine(line.toString('utf8'), { sub });
-            if (r) keep(c.recs, r);
+            let d = null;
+            try { d = JSON.parse(line.toString('utf8')); } catch { /* a broken line */ }
+            const r = parseEntry(d, { sub });
+            if (r) {
+              keep(c.recs, r);
+              if (sub && line.indexOf(TOOL_USE) !== -1) for (const id of toolIds(d)) c.tools.add(id);
+            }
+          } else if (sub && !c.prompt && line.indexOf(USER) !== -1) {
+            // the sub-agent's task: its first user line (only until one is found)
+            try {
+              const d = JSON.parse(line.toString('utf8'));
+              if (d && d.type === 'user' && d.message) c.prompt = firstLine(d.message.content);
+            } catch { /* a broken line */ }
           }
           start = nl + 1;
           lineStart = pos + start;
@@ -207,6 +254,31 @@ class UsageScanner {
       await fh.close().catch(() => {});
     }
     return c.recs;
+  }
+
+  /** `<dir>/agent-x.meta.json` next to `agent-x.jsonl`: { description, agentType } or null. Read once per file. */
+  async readMeta(file) {
+    try {
+      const m = JSON.parse(await this.fsp.readFile(file.replace(/\.jsonl$/, '.meta.json'), 'utf8'));
+      if (!m || typeof m !== 'object') return null;
+      const str = (v) => (typeof v === 'string' ? v.slice(0, LABEL_MAX) : '');
+      return { description: str(m.description), agentType: str(m.agentType) };
+    } catch { return null; }
+  }
+
+  /**
+   * One summary per transcript (session or sub-agent run) under the folders, from what was read already (call after
+   * scanFolders). Cached per file until new bytes arrive.
+   */
+  sessions(folders) {
+    const prefixes = folders.map((d) => d + path.sep);
+    const out = [];
+    for (const [file, c] of this.files) {
+      if (!c.recs.size || !prefixes.some((p) => file.startsWith(p))) continue;
+      if (!c.sum) c.sum = fileSummary(file, c);
+      out.push(c.sum);
+    }
+    return out;
   }
 
   /** Scans the folders (serially with other scans) and returns their deduplicated records. */
@@ -226,6 +298,94 @@ class UsageScanner {
       return mergeRecords(maps);
     });
   }
+}
+
+// ---- per transcript: sub-agent runs and the fixed prefix (contract v3.21)
+/** Steps above which a sub-agent run counts as long (the step budget being tuned). */
+const LONG_STEPS = 40;
+const TOP_AGENTS = 10;
+
+/**
+ * A transcript's totals: steps (deduplicated requests), tokens and $ by kind, its main model (most requests), first
+ * and last request, and its fixed prefix: the first request's input + cache write + cache read (system prompt,
+ * tools and the opening prompt, which every later step reads again).
+ */
+function fileSummary(file, c) {
+  const tokens = emptyTokens();
+  let usd = 0;
+  let start = Infinity;
+  let last = -Infinity;
+  let prefix = 0;
+  const models = new Map();
+  for (const r of c.recs.values()) {
+    const w = weigh(r);
+    usd += w.usd;
+    tokens.input += r.input; tokens.write5m += r.w5; tokens.write1h += r.w1; tokens.read += r.read; tokens.output += r.output;
+    if (r.t < start) { start = r.t; prefix = r.input + r.w5 + r.w1 + r.read; }
+    if (r.t > last) last = r.t;
+    models.set(r.model, (models.get(r.model) || 0) + 1);
+  }
+  let model = '';
+  let most = 0;
+  for (const [m, n] of models) if (n > most) { most = n; model = m; }
+  const base = path.basename(file, '.jsonl');
+  const sub = Boolean(c.sub);
+  return {
+    file, sub,
+    session: sub ? path.basename(path.dirname(path.dirname(file))) : base,
+    id: sub ? base.replace(/^agent-/, '') : base,
+    label: sub ? (c.meta && c.meta.description) || c.prompt || '' : '',
+    agentType: sub ? (c.meta && c.meta.agentType) || '' : '',
+    model: model.replace(/\[.*?\]/g, ''),
+    steps: c.recs.size, tools: sub ? c.tools.size : 0,
+    tokens, usd, start, last, prefix, recs: c.recs,
+  };
+}
+
+/** Sub-agent runs that started in [from, to]: the costliest TOP_AGENTS, average steps, the share of long runs. */
+function agentStats(sessions, from, to) {
+  const runs = sessions.filter((s) => s.sub && s.start >= from && s.start <= to);
+  const usd = runs.reduce((n, s) => n + s.usd, 0);
+  const steps = runs.reduce((n, s) => n + s.steps, 0);
+  const long = runs.filter((s) => s.steps > LONG_STEPS);
+  const longUsd = long.reduce((n, s) => n + s.usd, 0);
+  const top = [...runs].sort((a, b) => b.usd - a.usd).slice(0, TOP_AGENTS).map((s) => ({
+    id: s.id, session: s.session, label: s.label, agentType: s.agentType, model: s.model,
+    steps: s.steps, tools: s.tools, tokens: { ...s.tokens }, usd: s.usd, at: s.start,
+  }));
+  return {
+    count: runs.length, usd, steps, avgSteps: runs.length ? steps / runs.length : 0,
+    long: { limit: LONG_STEPS, count: long.length, usd: longUsd, share: usd ? longUsd / usd : 0 },
+    top,
+  };
+}
+
+/**
+ * The fixed prefix over [from, to]: every transcript with requests in it, its prefix and its requests and cache
+ * reads in the window. prefixReads = Σ min(prefix × requests, cache reads) per transcript (a prefix cannot be read
+ * more than was read); share = prefixReads / reads.
+ */
+function prefixStats(sessions, from, to) {
+  const part = () => ({ sessions: 0, prefix: 0, avg: 0, requests: 0, reads: 0, prefixReads: 0, share: 0 });
+  const out = { ...part(), main: part(), sub: part() };
+  for (const s of sessions) {
+    if (s.last < from || s.start > to) continue;
+    let n = 0;
+    let reads = 0;
+    if (s.start >= from && s.last <= to) { n = s.steps; reads = s.tokens.read; }
+    else for (const r of s.recs.values()) if (r.t >= from && r.t <= to) { n++; reads += r.read; }
+    if (!n) continue;
+    const pr = Math.min(s.prefix * n, reads);
+    for (const p of [out, s.sub ? out.sub : out.main]) {
+      p.sessions++; p.prefix += s.prefix; p.requests += n; p.reads += reads; p.prefixReads += pr;
+    }
+  }
+  for (const p of [out, out.main, out.sub]) {
+    p.avg = p.sessions ? p.prefix / p.sessions : 0;
+    p.share = p.reads ? p.prefixReads / p.reads : 0;
+    delete p.prefix;
+  }
+  return out;
 }
 
 // ---- totals
@@ -264,7 +424,7 @@ const HOUR = 3600e3;
  * Records → TokenReport (CONTRACT v3.13): totals for today (since local midnight), the last 7 days and since the
  * project was added (`since`; null = everything in the transcripts), and 24 hourly buckets ending with this hour.
  */
-function summarize(records, { now = Date.now(), since = null } = {}) {
+function summarize(records, { now = Date.now(), since = null, sessions = null } = {}) {
   const today = emptyTotals();
   const week = emptyTotals();
   const all = emptyTotals();
@@ -294,13 +454,25 @@ function summarize(records, { now = Date.now(), since = null } = {}) {
     ...tot,
     models: Object.entries(tot.models).map(([model, v]) => ({ model, ...v })).sort((a, b) => b.usd - a.usd),
   });
-  return { now, since: Number.isFinite(since) ? since : null, firstAt, today: finish(today), week: finish(week), all: finish(all), hours };
+  const rep = { now, since: Number.isFinite(since) ? since : null, firstAt, today: finish(today), week: finish(week), all: finish(all), hours };
+  if (sessions) {
+    // sub-agent runs and the fixed prefix per period (contract v3.21)
+    const to = now + 60e3;
+    const periods = { today: midnight, week: weekFrom, all: from };
+    rep.agents = {};
+    rep.prefix = {};
+    for (const [k, f] of Object.entries(periods)) {
+      rep.agents[k] = agentStats(sessions, f, to);
+      rep.prefix[k] = prefixStats(sessions, f, to);
+    }
+  }
+  return rep;
 }
 
 /** The sidebar line's numbers: today's $ and its full-price-equivalent share. */
 const brief = (rep) => ({ usd: rep.today.usd, total: rep.today.total, pct: rep.today.total ? rep.today.fpt / rep.today.total : 0 });
 
 module.exports = {
-  WEIGHTS, PRICES, priceOf, weigh, parseLine, keep, mergeRecords, slugOf, projectFolders,
-  UsageScanner, summarize, startOfDay, brief,
+  WEIGHTS, PRICES, priceOf, weigh, parseLine, parseEntry, keep, mergeRecords, slugOf, projectFolders,
+  UsageScanner, summarize, startOfDay, brief, firstLine, fileSummary, agentStats, prefixStats, LONG_STEPS,
 };

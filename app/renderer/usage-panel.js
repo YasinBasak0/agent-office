@@ -2,6 +2,8 @@
 // mountUsagePanel(el, { load, anchor }) → { show(project), hide(), shownId(), refresh() }
 // - load(projectId) → TokenReport (main's src/token-usage.js summarize) | null; re-read every 15 s while open.
 // - with anchor, the panel covers that element's height (the office canvas), like the agent panel.
+// - report.agents / report.prefix (contract v3.21): the costliest sub-agent runs and the fixed prefix, in two
+//   collapsible sections (their open state is kept while the app runs).
 import { onLang, t, locale } from './i18n.js';
 
 const REFRESH_MS = 15000;
@@ -41,6 +43,7 @@ export function mountUsagePanel(el, { load, anchor, onClose }) {
   let timer = 0;
   let seq = 0;
   let failed = false;
+  const folds = { agents: true, prefix: true }; // collapsible sections: open?
 
   el.classList.add('agent-panel', 'usage-panel');
   el.tabIndex = -1;
@@ -133,6 +136,51 @@ export function mountUsagePanel(el, { load, anchor, onClose }) {
     }).join('');
   }
 
+  const shortDate = (at) => new Date(at).toLocaleString(locale(), { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+  /** A collapsible section; `key` keeps its open state across re-renders. */
+  function fold(key, label, inner) {
+    return `<details class="ap-sec up-fold" data-fold="${key}"${folds[key] ? ' open' : ''}>
+      <summary class="ap-label">${label}</summary>${inner}</details>`;
+  }
+
+  /** The costliest sub-agent runs of the period (contract v3.21). */
+  function agentsSec(a) {
+    if (!a) return '';
+    if (!a.count) return fold('agents', esc(t('usage.agents.title')), `<div class="ap-empty">${esc(t('usage.agents.none'))}</div>`);
+    const stats = `<div class="up-astats" title="${esc(t('usage.agents.longTitle', { n: a.long.limit }))}">
+      ${esc(t('usage.agents.avgSteps', { steps: Math.round(a.avgSteps).toLocaleString(locale()), n: a.count }))}
+      · ${esc(t('usage.agents.long', { n: a.long.limit, count: a.long.count, pct: fmtPct(a.long.share * 100) }))}</div>`;
+    const rows = a.top.map((r) => {
+      const tk = r.tokens;
+      const label = r.label || r.agentType || r.id;
+      const tip = [r.label, r.agentType, r.model].filter(Boolean).join(' · ');
+      return `<li class="up-row up-agent">
+        <span class="up-name" title="${esc(tip)}">${esc(label)}</span>
+        <span class="up-num mono">${fmtUsd(r.usd)}</span>
+        <span class="up-share">${esc(t('usage.agents.meta', { model: (r.model || '?').replace(/^claude-/, ''), steps: r.steps, tools: r.tools, date: shortDate(r.at) }))}</span>
+        <span class="up-share mono">${esc(t('usage.agents.tokens', { read: fmtTokens(tk.read), write: fmtTokens(tk.write5m + tk.write1h), input: fmtTokens(tk.input), output: fmtTokens(tk.output) }))}</span>
+      </li>`;
+    }).join('');
+    const label = `${esc(t('usage.agents.title'))} <span class="ap-dim">${esc(t('usage.agents.cost', { usd: fmtUsd(a.usd) }))}</span>`;
+    return fold('agents', label, `${stats}<ul class="up-list">${rows}</ul>`);
+  }
+
+  /** The fixed prefix (system prompt + tools) and the share of cache reads it accounts for (contract v3.21). */
+  function prefixSec(px) {
+    if (!px) return '';
+    if (!px.sessions) return fold('prefix', esc(t('usage.prefix.title')), `<div class="ap-empty">${esc(t('usage.none'))}</div>`);
+    const row = (k, p) => (p.sessions ? `<li class="up-row" data-prefix="${k}">
+        <span class="up-name">${esc(t(`usage.prefix.${k}`))}</span>
+        ${bar(p.share * 100, 'tok')}
+        <span class="up-num mono">${fmtTokens(p.avg)}</span>
+        <span class="up-share">${esc(t('usage.prefix.share', { pct: fmtPct(p.share * 100), n: p.sessions, steps: p.requests }))}</span>
+      </li>` : '');
+    const head = `<div class="up-astats" title="${esc(t('usage.prefix.howTitle'))}">${esc(t('usage.prefix.summary', { tokens: fmtTokens(px.avg), pct: fmtPct(px.share * 100) }))}</div>`;
+    return fold('prefix', esc(t('usage.prefix.title')), `${head}<ul class="up-list">${row('main', px.main)}${row('sub', px.sub)}</ul>
+      <div class="ap-note up-note">${esc(t('usage.prefix.note'))}</div>`);
+  }
+
   function chart(hours) {
     const maxT = Math.max(1, ...hours.map((x) => x.total));
     const maxU = Math.max(1e-9, ...hours.map((x) => x.usd));
@@ -179,6 +227,8 @@ export function mountUsagePanel(el, { load, anchor, onClose }) {
         <div class="ap-sec"><div class="ap-label">${esc(t('usage.byKind'))}</div><ul class="up-list">${kindRows(tot)}</ul></div>
         <div class="ap-sec"><div class="ap-label">${esc(t('usage.byPart'))}</div><ul class="up-list">${partRows(tot)}</ul></div>
         <div class="ap-sec"><div class="ap-label">${esc(t('usage.byModel'))}</div><ul class="up-list">${modelRows(tot)}</ul></div>
+        ${agentsSec(report.agents?.[period])}
+        ${prefixSec(report.prefix?.[period])}
         <div class="ap-sec"><div class="ap-label">${esc(t('usage.last24h'))}</div>${chart(report.hours)}</div>
         <div class="ap-note up-note">${esc(t('usage.noteRead'))}<br>${esc(t('usage.noteEstimate'))}</div>`;
     }
@@ -187,6 +237,12 @@ export function mountUsagePanel(el, { load, anchor, onClose }) {
     const b = el.querySelector('.ap-body');
     if (b) b.scrollTop = scroll;
   }
+
+  // a collapsible section remembers whether it is open (the panel re-renders every 15 s)
+  el.addEventListener('toggle', (e) => {
+    const d = e.target;
+    if (d instanceof HTMLElement && d.tagName === 'DETAILS' && d.dataset.fold && d.dataset.fold in folds) folds[d.dataset.fold] = d.hasAttribute('open');
+  }, true);
 
   el.addEventListener('click', (e) => {
     const b = /** @type {Element} */ (e.target).closest('button');
