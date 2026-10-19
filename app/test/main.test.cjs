@@ -2642,3 +2642,22 @@ test('yedek hesap (v3.17): proje durumu: yedek seçimi, otomatik geçiş, eve d�
   assert.deepEqual(r2.moved, ['x']);
   assert.deepEqual(P.findProject(r2.state, 'x'), { id: 'x', dir: '/x', name: 'x', accountId: 'default', backupAccount: 'b' });
 });
+
+test('pencere başlığı ve kenar çubuğu bölmesi (v3.18): ~ ile klasör, başlık, bölme sınırları', async () => {
+  const L = await import('../src/layout.mjs');
+  assert.equal(L.tildePath('/Users/me/Projects/x', '/Users/me'), '~/Projects/x');
+  assert.equal(L.tildePath('/Users/me', '/Users/me/'), '~');
+  assert.equal(L.tildePath('/Users/meow/x', '/Users/me'), '/Users/meow/x');
+  assert.equal(L.tildePath('/opt/x', '/Users/me'), '/opt/x');
+  assert.equal(L.tildePath('/opt/x', null), '/opt/x');
+  assert.equal(L.tildePath('C:\\Users\\Me\\code\\x', 'c:\\users\\me'), '~\\code\\x');
+  assert.equal(L.windowTitle({ name: 'x', dir: '/Users/me/Projects/x' }, '/Users/me', 'Agent Office'), 'x — ~/Projects/x — Agent Office');
+  assert.equal(L.windowTitle(null, '/Users/me', 'Agent Office'), 'Agent Office');
+  // wanted height kept within both minimums; no wanted height → the default share
+  assert.equal(L.clampSplit(300, 900, 2), 300);
+  assert.equal(L.clampSplit(10, 900, 2), L.SPLIT_MIN_BOTTOM);
+  assert.equal(L.clampSplit(5000, 900, 2), 900 - 2 - L.SPLIT_MIN_TOP);
+  assert.equal(L.clampSplit(NaN, 1000), Math.round(1000 * L.SPLIT_DEFAULT));
+  // too short for both: the projects part keeps its minimum
+  assert.equal(L.clampSplit(200, 200, 2), 48);
+});

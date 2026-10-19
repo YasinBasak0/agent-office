@@ -49,6 +49,22 @@ button { font: inherit; color: inherit; }
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  flex: 0 0 auto;
+  max-width: 30%; /* the folder beside it gives way first */
+}
+/* v3.18: the active project's folder; a long path is cut from the left ("…/Projects/x") so its end stays visible.
+   no-drag so its full-path tooltip shows (a drag region gets no hover on macOS). */
+#project-dir {
+  -webkit-app-region: no-drag;
+  flex: 0 1000 auto;
+  min-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  opacity: .6;
+  font-size: 11px;
+  margin-left: -6px;
 }
 #warn {
   -webkit-app-region: no-drag;
@@ -58,7 +74,7 @@ button { font: inherit; color: inherit; }
   padding: 2px 6px;
   cursor: help;
 }
-#stats { margin-left: auto; opacity: .75; }
+#stats { margin-left: auto; opacity: .75; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 #toggle-sidebar {
   -webkit-app-region: no-drag;
   background: none;
@@ -99,8 +115,36 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 .sb-list { list-style: none; margin: 0; padding: 0; }
 #sb-projects { flex: 0 1 auto; overflow-y: auto; min-height: 0; }
-#sb-projects::-webkit-scrollbar { width: 6px; }
-#sb-projects::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
+#sb-projects::-webkit-scrollbar, .sb-bottom::-webkit-scrollbar { width: 6px; }
+#sb-projects::-webkit-scrollbar-thumb, .sb-bottom::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
+
+/* Split (v3.18): PROJECTS on top takes the rest; ACCOUNTS + settings below has a draggable height (sidebar.js sets
+   --accounts-h in px, default a share of the sidebar) and scrolls on its own. Minimums match src/layout.mjs. */
+.sb-top {
+  flex: 1 1 0;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sb-split {
+  flex: 0 0 2px;
+  position: relative;
+  background: var(--accent);
+  cursor: row-resize;
+  z-index: 1;
+}
+/* a wider grab area than the 2 px line */
+.sb-split::before { content: ''; position: absolute; left: 0; right: 0; top: -4px; bottom: -4px; }
+.sb-split:hover, body.dragging-split .sb-split { box-shadow: 0 0 0 1px var(--accent); filter: brightness(1.25); }
+body.dragging-split, body.dragging-split * { cursor: row-resize !important; user-select: none; }
+.sb-bottom {
+  flex: 0 1 var(--accounts-h, 38%);
+  min-height: 96px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 8px;
+}
 
 .sb-proj {
   display: grid;
@@ -212,11 +256,7 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 .sb-note.is-none { opacity: .7; }
 
-.sb-accounts {
-  margin-top: auto;
-  border-top: 2px solid var(--accent);
-  padding-bottom: 2px;
-}
+.sb-accounts { padding-bottom: 2px; }
 .sb-acc {
   display: flex;
   flex-direction: column;

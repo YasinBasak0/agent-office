@@ -1727,6 +1727,7 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      additionalArguments: [`--agent-office-home=${app.getPath('home')}`],   // preload's agentOffice.home (v3.18)
     },
   });
   // The window shows only its own page: no new windows, no navigating elsewhere; web links open in the browser.

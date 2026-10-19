@@ -4,6 +4,7 @@
 import { hasText, locale, onLang, t } from './i18n.js';
 import { modLabel } from './platform.js';
 import { isBossHere, projectStatus } from '../src/project-status.mjs';
+import { clampSplit } from '../src/layout.mjs';
 
 function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -125,12 +126,22 @@ export function mountSidebar(el, on) {
   let noteTimer = null;
   const projList = h('ul', { class: 'sb-list', id: 'sb-projects' });
   const acctList = h('ul', { class: 'sb-list', id: 'sb-accounts' });
+  // v3.18: PROJECTS on top, ACCOUNTS and settings below; the line between them is a splitter (drag, double-click resets)
+  // and the lower part scrolls on its own.
+  const splitter = h('div', { class: 'sb-split', id: 'sb-split', role: 'separator', 'aria-orientation': 'horizontal' });
+  const bottom = h('div', { class: 'sb-bottom', id: 'sb-bottom' });
   el.append(
-    h('div', { class: 'sb-head' }, projHead),
-    projList,
-    addProjectBtn,
-    resumeAllBtn,
-    resumeNote,
+    h('div', { class: 'sb-top', id: 'sb-top' },
+      h('div', { class: 'sb-head' }, projHead),
+      projList,
+      addProjectBtn,
+      resumeAllBtn,
+      resumeNote,
+    ),
+    splitter,
+    bottom,
+  );
+  bottom.append(
     h('div', { class: 'sb-accounts' },
       h('div', { class: 'sb-head' }, acctHead),
       acctList,
@@ -150,6 +161,7 @@ export function mountSidebar(el, on) {
   /** Text of the persistent elements (headings, buttons, sublines). */
   function renderChrome() {
     projHead.textContent = t('sidebar.projects');
+    splitter.title = t('sidebar.splitTitle');
     acctHead.textContent = t('sidebar.accounts');
     addProjectBtn.textContent = t('sidebar.addProject');
     addProjectBtn.title = t('sidebar.addProjectTitle', { mod: modLabel });
@@ -487,7 +499,50 @@ export function mountSidebar(el, on) {
     if (!editing) renderAccounts();
   });
 
+  // ---- Splitter (v3.18): the lower part's height in px, null = default share (style.css --accounts-h) ----
+  let splitH = null;
+  function applySplit() {
+    if (splitH == null) { el.style.removeProperty('--accounts-h'); return; }
+    const total = el.clientHeight;
+    // hidden (sidebar collapsed) or not laid out yet: keep the wanted height as it is
+    el.style.setProperty('--accounts-h', (total ? clampSplit(splitH, total, splitter.offsetHeight) : splitH) + 'px');
+  }
+  splitter.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    splitter.setPointerCapture(e.pointerId);
+    document.body.classList.add('dragging-split');
+    const grab = e.clientY - splitter.getBoundingClientRect().top; // keep the line under the pointer
+    const move = (ev) => {
+      const r = el.getBoundingClientRect();
+      splitH = clampSplit(r.bottom - el.clientTop - (ev.clientY - grab) - splitter.offsetHeight, el.clientHeight, splitter.offsetHeight);
+      applySplit();
+    };
+    const up = () => {
+      if (!document.body.classList.contains('dragging-split')) return;
+      splitter.removeEventListener('pointermove', move);
+      document.body.classList.remove('dragging-split');
+      if (splitH != null) on.setSplit?.(splitH);
+    };
+    splitter.addEventListener('pointermove', move);
+    splitter.addEventListener('pointerup', up, { once: true });
+    splitter.addEventListener('lostpointercapture', up, { once: true });
+  });
+  splitter.addEventListener('dblclick', () => {
+    splitH = null;
+    applySplit();
+    on.setSplit?.(null);
+  });
+  // the window got shorter or taller: the saved height is clamped again (the saved value itself is kept)
+  new ResizeObserver(() => applySplit()).observe(el);
+
   return {
+    /** Lower part's height in px (saved by the app), or null for the default share. */
+    setSplit(px) {
+      const n = Number(px);
+      splitH = px != null && Number.isFinite(n) && n > 0 ? n : null;
+      applySplit();
+    },
     /** Language setting, active language and languages: { setting: 'auto' | code, lang, languages: [{ code, name }] }. */
     setLanguage(li) {
       if (!li) return;
