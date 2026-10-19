@@ -1052,7 +1052,7 @@ test('inside the app with manager mode on, the manager section is appended to th
   const manager = sections[1]
   expect(manager?.scope).toBe('session')
   expect(manager?.text).toContain('You are the manager in Agent Office')
-  expect(manager?.text).toContain("Don't end a turn with a list of remaining work")
+  expect(manager?.text).toContain("Don't end a turn with remaining work")
   expect(manager?.text).toContain('take precedence over this')
   // work across projects (app contract v3.5): another project's job is done in its folder, so it shows up there
   expect(manager?.text).toContain("work in that project's folder with absolute paths")
@@ -1481,7 +1481,7 @@ test('the boss, a teammate and unknown agents get no step budget, even in Strict
   await $.turn.start({ text: 'build it', turnId: 'turn-1' })
   await spawnAgent($, 'Pair on it', 'teammate')
   for (let i = 0; i < 20; i++) {
-    const boss = await $.tool.call({ tool: 'Agent', prompt: 'x' } as never)
+    const boss = await $.tool.call({ tool: 'Agent', prompt: 'x; done when npm test passes' } as never)
     expect(stepOf(boss)).toEqual([])
     expect((boss as { deny?: string }).deny).toBeUndefined()
     const mate = await agentCall($)

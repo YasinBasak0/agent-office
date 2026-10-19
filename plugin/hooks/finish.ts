@@ -210,7 +210,7 @@ export type StopInput = {
 }
 
 // still to wake the loop: background work in flight or a cron of the session
-function isWaiting(e: StopInput) {
+export function isWaiting(e: StopInput) {
   const inFlight = Array.isArray(e.background_tasks) ? e.background_tasks : []
   const crons = Array.isArray(e.session_crons) ? e.session_crons : []
   return inFlight.some(task => task?.status !== 'completed' && task?.status !== 'failed' && task?.status !== 'killed') || crons.length > 0
