@@ -3016,3 +3016,177 @@ test('Windows pano (v3.19): CF_HDROP tam liste, FileNameW yalnız ilk dosya, gö
   for (const t of ['text/plain', 'text/html', 'electron application/osclipboard;format="FileNameW"',
     'electron application/osclipboard;format="CF_HDROP"']) assert.equal(OS.windowsImageType(t), false, t);
 });
+
+// --- Antigravity in the office (contract v3.23, src/agy-watch.js). Fixtures: the approval prompts are agy's
+// documented ones (antigravity.google/docs/cli/modes, /features, /subagents); the busy line (spinner + "esc to
+// cancel") and the screen around them are guessed (Gemini CLI's look), as is the transcript's record content.
+const AW = require('../src/agy-watch.js');
+const AGY = {
+  banner: '\x1b[?25l\x1b[2J\x1b[H\x1b[1mAntigravity CLI\x1b[0m 1.3.6\r\n\x1b[2m~/Projects/shop-api\x1b[0m\r\n> ',
+  echo: (s) => s,
+  spin: (n) => `\x1b[2K\r\x1b[36m${'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[n % 10]}\x1b[0m Thinking… \x1b[2m(esc to cancel, ${n}s)\x1b[0m`,
+  answer: '\x1b[2K\r\x1b[0mDone. I added the refund endpoint and its test.\r\n\r\n> ',
+  createFile: '\x1b[2K\r\x1b[33m●\x1b[0m Create file: src/utils/formatter.ts\r\n\x1b[1mAllow create this file? [y/n/f]\x1b[0m ',
+  sandbox: '\r\n\x1b[1mRun command:\x1b[0m npm test\r\n  1. Yes, and run in sandbox\r\n  2. Yes, and run without sandbox restrictions\r\n  3. No\r\n',
+  subagent: '\x1b[s\x1b[1;1H\x1b[43m Subagent 12 asks to run "npm test" (ctrl+k) \x1b[0m\x1b[u',
+};
+
+test('agy izleyici: plainText kaçış dizilerini atar; desenler belgelenmiş onay istemlerini tanır (v3.23)', () => {
+  assert.equal(AW.plainText('\x1b[1mA\x1b[0m\x1b]0;title\x07B\r\nC'), 'AB\nC');
+  for (const s of [AGY.createFile, AGY.sandbox, AGY.subagent, 'Allow execution of: rm? ', '● Allow once']) assert.equal(AW.ASK_RE.test(AW.plainText(s)), true, s);
+  for (const s of [AGY.banner, AGY.answer, 'Do you want me to add tests?', 'I will allow the user to retry.']) assert.equal(AW.ASK_RE.test(AW.plainText(s)), false, s);
+  assert.equal(AW.BUSY_RE.test(AW.plainText(AGY.spin(3))), true);
+  assert.equal(AW.BUSY_RE.test(AW.plainText(AGY.banner + AGY.answer)), false);
+});
+
+test('agy izleyici: gönderilen istem tur başlatır, sessizlik bitirir; tur sayısı ve teslim; yazarken meşgul değil (v3.23)', () => {
+  const t0 = 1_000_000;
+  const w = AW.createAgyWatch(t0);
+  w.output(AGY.banner, t0 + 100);
+  for (const [i, ch] of [...'add a refund endpoint'].entries()) { w.input(ch, t0 + 1000 + i * 50); w.output(AGY.echo(ch), t0 + 1010 + i * 50); }
+  assert.equal(w.isBusy, false, 'typing echo is not work');
+  assert.equal(w.blocker(), 'draft');
+  w.input('\r', t0 + 3000);
+  assert.equal(w.isBusy, true);
+  assert.equal(w.tick(t0 + 3000 + AW.QUIET_MS + 10), false, 'the model may take a while to start');
+  for (let n = 0; n < 6; n++) w.output(AGY.spin(n), t0 + 4000 + n * 1000);
+  assert.equal(w.tick(t0 + 9500), false);
+  w.output(AGY.answer, t0 + 9600);
+  assert.equal(w.tick(t0 + 9600 + 1000), false);
+  assert.equal(w.tick(t0 + 9600 + AW.QUIET_MS + 1), true);
+  assert.equal(w.isBusy, false);
+  assert.equal(w.turns, 1);
+  const s = w.session('shop-api', 'agy-p1-1', t0 + 20000);
+  assert.equal(s.engine, 'agy');
+  assert.equal(s.stats.isBossBusy, false);
+  assert.equal(s.stats.turns, 1);
+  assert.deepEqual(s.stats.today.ids, ['turn-1']);
+  assert.equal(s.updatedAt, t0 + 20000, 'live while agy runs');
+  assert.equal(w.blocker(), '');
+  // Enter on an empty prompt starts nothing
+  w.input('\r', t0 + 30000);
+  assert.equal(w.isBusy, false);
+});
+
+test('agy izleyici: belgelenmiş onay istemi bekleyen onay olur, bir tuş yanıtlar; çalışma kendiliğinden başlarsa da tur (v3.23)', () => {
+  const t0 = 2_000_000;
+  const w = AW.createAgyWatch(t0);
+  // started with -i <prompt>: the busy line alone opens the turn
+  w.output(AGY.spin(0), t0 + 500);
+  assert.equal(w.isBusy, true);
+  w.output(AGY.createFile, t0 + 2000);
+  assert.deepEqual(w.waiting, { kind: 'permission', tool: 'Edit', since: t0 + 2000 });
+  assert.equal(w.tick(t0 + 60_000), false, 'a dialog holds the turn, however long');
+  w.output(AGY.createFile, t0 + 61_000); // redrawn: same dialog
+  assert.equal(w.waiting?.since, t0 + 2000);
+  assert.equal(w.blocker(), 'busy');
+  w.input('y', t0 + 62_000);
+  assert.equal(w.waiting, null);
+  w.output('\x1b[2K\ry\r\n', t0 + 62_100); // the dialog's last frame: not a new dialog
+  assert.equal(w.waiting, null);
+  w.output(AGY.spin(1), t0 + 63_000);
+  w.output(AGY.sandbox, t0 + 64_000);
+  assert.equal(w.waiting?.tool, 'Shell');
+  w.input('1', t0 + 65_000);
+  w.output(AGY.answer, t0 + 66_000);
+  assert.equal(w.tick(t0 + 70_000), true);
+  assert.equal(w.turns, 1, 'one turn, however many dialogs');
+  // a sub-agent's request between turns
+  w.output(AGY.subagent, t0 + 80_000);
+  assert.equal(w.waiting?.tool, 'Shell');
+  w.input('\x0b', t0 + 81_000);
+  w.exit(t0 + 82_000);
+  const s = w.session('shop-api', 'x', t0 + 90_000);
+  assert.equal(s.endedAt, t0 + 82_000);
+  assert.equal(s.stats.waiting, undefined);
+  assert.equal(w.turns, 2);
+});
+
+test('agy izleyici: döküm büyümesi meşgul işareti; ilk okuma taban; döküm yolu last_conversations.json\'dan (v3.23)', () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-home-'));
+  try {
+    const dir = '/Users/me/Projects/shop-api';
+    const base = path.join(home, '.gemini', 'antigravity-cli');
+    assert.equal(AW.agyTranscriptPath(home, dir), null, 'no map');
+    fs.mkdirSync(path.join(base, 'cache'), { recursive: true });
+    fs.writeFileSync(path.join(base, 'cache', 'last_conversations.json'), JSON.stringify({ [`${dir}/`]: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', '/x': '../../etc' }));
+    const file = AW.agyTranscriptPath(home, dir);
+    assert.equal(file, path.join(base, 'brain', 'a1b2c3d4-e5f6-7890-abcd-ef1234567890', '.system_generated', 'logs', 'transcript.jsonl'));
+    assert.equal(AW.agyTranscriptPath(home, '/x'), null, 'odd id');
+    assert.equal(AW.readTranscript(file, null), null, 'missing file');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{"step_index":0,"type":"USER_INPUT","content":"hi"}\n{"step_index":1,"type":"PLANNER_RESPONSE","content":"hello"}\n');
+    const t0 = 3_000_000;
+    const w = AW.createAgyWatch(t0);
+    let cur = AW.readTranscript(file, null);
+    assert.equal(cur.prompts, 1);
+    w.transcript(cur, t0 + 100);
+    assert.equal(w.isBusy, false, 'the first read is the baseline (--continue)');
+    fs.appendFileSync(file, '{"step_index":2,"type":"USER_INPUT","content":"add tests"}\n');
+    cur = AW.readTranscript(file, cur);
+    assert.equal(cur.prompts, 2);
+    w.transcript(cur, t0 + 1000);
+    assert.equal(w.isBusy, true);
+    fs.appendFileSync(file, '{"step_index":3,"type":"run_command","content":"npm test"}\n');
+    w.transcript(cur = AW.readTranscript(file, cur), t0 + 5000);
+    assert.equal(w.tick(t0 + 5000 + AW.QUIET_MS - 1), false, 'growth keeps it busy');
+    w.transcript(cur = AW.readTranscript(file, cur), t0 + 9000);
+    assert.equal(w.tick(t0 + 9000), true);
+    assert.equal(w.turns, 1);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('agy ofiste: izlenen oturum readOffice ve nextAttention\'dan Claude oturumu gibi geçer (v3.23)', () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const S = require('../src/sessions.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-office-'));
+  try {
+    const t0 = new Date(2026, 9, 19, 11, 0, 0).getTime();
+    const w = AW.createAgyWatch(t0);
+    const projects = [{ id: 'p1', name: 'shop-api' }];
+    const read = (now) => S.readOffice(['shop-api'], now, root, null, null, [w.session('shop-api', 'agy-p1-1', now)]);
+    let d = read(t0 + 10);
+    assert.equal(d.projects[0].engine, 'agy');
+    assert.equal(d.isBossBusy, false);
+    let a = N.nextAttention(N.emptyAttention(), projects, d.projects, null);
+    w.input('fix it', t0 + 100); w.input('\r', t0 + 200);
+    d = read(t0 + 300);
+    assert.equal(d.isBossBusy, true);
+    assert.equal(d.projects[0].isBossBusy, true);
+    a = N.nextAttention(a.state, projects, d.projects, null);
+    w.output(AGY.createFile, t0 + 1000);
+    d = read(t0 + 1100);
+    assert.equal(d.isBossAsking, true);
+    assert.deepEqual(d.projects[0].waiting, { tool: 'Edit', since: t0 + 1000 });
+    a = N.nextAttention(a.state, projects, d.projects, null);
+    assert.deepEqual(a.events, [{ kind: 'permission', id: 'p1', tool: 'Edit' }]);
+    assert.equal(a.attention.get('p1'), 'permission');
+    w.input('y', t0 + 5000);
+    w.output(AGY.answer, t0 + 5100);
+    w.tick(t0 + 5100 + AW.QUIET_MS + 1);
+    d = read(t0 + 10_000);
+    assert.equal(d.isBossBusy, false);
+    assert.equal(d.delivered, 1);
+    assert.equal(d.projects[0].delivered, 1);
+    a = N.nextAttention(a.state, projects, d.projects, null);
+    assert.deepEqual(a.events, [{ kind: 'done', id: 'p1' }]);
+    // ended run: still counted today, and in the end-of-day summary
+    w.exit(t0 + 20_000);
+    const ended = w.session('shop-api', 'agy-p1-1', t0 + 30_000);
+    d = S.readOffice(['shop-api'], t0 + 30_000, root, null, null, [ended]);
+    assert.equal(d.delivered, 1);
+    assert.equal(d.isBossBusy, false);
+    const today = S.readToday(['shop-api'], t0 + 30_000, root, null, [ended]);
+    assert.equal(today.deliveries.length, 1);
+    assert.equal(today.deliveries[0].type, 'agy');
+    // an odd id is ignored
+    assert.equal(S.readOffice(['shop-api'], t0, root, null, null, [{ ...ended, id: '../x' }]).delivered, 0);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('agy uyku: { agy } her zaman --continue ile uyanır; izleyici dosya yazmaz, agy\'ye bir şey vermez (v3.23)', () => {
+  assert.deepEqual(require('../src/sleep.js').wakeOptions({ agy: true }, false), { resume: true });
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'src', 'agy-watch.js'), 'utf8').replace(/\/\/.*$/gm, '');
+  for (const banned of ['writeFile', 'appendFile', 'mkdir', 'rmSync', 'unlink', 'rename', "'w'", 'child_process', 'process.env']) assert.equal(src.includes(banned), false, `agy-watch uses ${banned}`);
+});
