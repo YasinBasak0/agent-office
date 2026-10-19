@@ -254,6 +254,46 @@ test('sessionEnv: bağlam sınırı CLAUDE_CODE_AUTO_COMPACT_WINDOW olur; Otomat
   assert.equal(both.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '400000');
 });
 
+test('proje başına tasarruf: normalizeState, setProjectSavings, savingsOf; Normal yazılmaz (v3.20)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', savings: 'off' },
+      { id: 'b', dir: '/b', savings: 'strict' },
+      { id: 'c', dir: '/c', savings: 'normal' },
+      { id: 'd', dir: '/d', savings: 'max' },
+      { id: 'e', dir: '/e' },
+    ],
+  }, { id });
+  assert.deepEqual(s.projects.map((p) => P.savingsOf(p)), ['off', 'strict', 'normal', 'normal', 'normal']);
+  assert.deepEqual(s.projects.map((p) => p.savings), ['off', 'strict', undefined, undefined, undefined]);
+  assert.equal(P.setProjectSavings(s, 'e', 'normal'), s);
+  assert.equal(P.setProjectSavings(s, 'e', null), s);
+  assert.equal(P.setProjectSavings(s, 'zz', 'off'), s);
+  s = P.setProjectSavings(s, 'e', 'strict');
+  assert.equal(P.findProject(s, 'e').savings, 'strict');
+  s = P.setProjectSavings(s, 'a', 'normal'); // back to the default: the field goes
+  assert.equal('savings' in P.findProject(s, 'a'), false);
+});
+
+test('sessionEnv: tasarruf seviyesi başına ortam; Kapalı kullanıcınınkine dokunmaz (v3.20)', () => {
+  const SAVINGS_VARS = ['AGENT_OFFICE_STEP_BUDGET', 'AGENT_OFFICE_STEP_CAP', 'AGENT_OFFICE_BASH_OUTPUT', 'AGENT_OFFICE_MCP_OUTPUT',
+    'BASH_MAX_OUTPUT_LENGTH', 'MAX_MCP_OUTPUT_TOKENS'];
+  const pick = (env) => SAVINGS_VARS.map((k) => env[k]);
+  assert.deepEqual(pick(A.sessionEnv({ PATH: '/bin' }, { savings: 'normal' })), ['40', undefined, '15000', '15000', '15000', '15000']);
+  assert.deepEqual(pick(A.sessionEnv({ PATH: '/bin' }, { savings: 'strict' })), ['25', '1', '8000', '8000', '8000', '8000']);
+  assert.deepEqual(pick(A.sessionEnv({ PATH: '/bin' })), pick(A.sessionEnv({ PATH: '/bin' }, { savings: 'normal' }))); // default Normal
+  assert.deepEqual(pick(A.sessionEnv({ PATH: '/bin' }, { savings: 'bogus' })), ['40', undefined, '15000', '15000', '15000', '15000']);
+  // Off: the app's own carriers go (a tab started from a Strict one), the user's own caps stay
+  const user = { PATH: '/bin', AGENT_OFFICE_STEP_BUDGET: '25', AGENT_OFFICE_STEP_CAP: '1', AGENT_OFFICE_BASH_OUTPUT: '8000',
+    AGENT_OFFICE_MCP_OUTPUT: '8000', BASH_MAX_OUTPUT_LENGTH: '50000', MAX_MCP_OUTPUT_TOKENS: '30000' };
+  assert.deepEqual(pick(A.sessionEnv(user, { savings: 'off' })), [undefined, undefined, undefined, undefined, '50000', '30000']);
+  // Normal after Strict: no cap left behind
+  assert.equal(A.sessionEnv(user, { savings: 'normal' }).AGENT_OFFICE_STEP_CAP, undefined);
+  // the values live in one table
+  assert.deepEqual(Object.keys(A.SAVINGS), ['off', 'normal', 'strict']);
+  assert.equal(A.SAVINGS_DEFAULT, 'normal');
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });

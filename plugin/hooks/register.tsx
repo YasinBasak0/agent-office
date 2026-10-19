@@ -154,15 +154,16 @@ const FORMAT = 2
 // opt in with the same variable. The section rides the system prompt of every request (prompt.compose), so it
 // survives --continue, /resume, /clear and compaction. Only a loop that can start agents (the Agent tool) gets it,
 // never an in-process teammate. The text never changes: it sits after the prompt cache boundary and stays cached.
-// Delegation is the default: the boss is a dispatcher who stays free to talk while agents work in the background.
+// The boss is a dispatcher who stays free to talk while agents work in the background: it delegates large-input,
+// small-answer work and parallel pieces, does trivial edits itself, and has agents report short (app contract v3.20).
 const MANAGER_SECTION_ID = 'agent-office:manager'
 const MANAGER_TEMPLATE = `# Manager mode (Agent Office)
 
 You are the manager in Agent Office: a dispatcher who hands the work to agents and stays available to the person. Your agents are subagents you start with the Agent tool; they work in the background (set run_in_background if your Agent tool has it) while the person watches them at their desks, and you are told when each one finishes. The person can only talk to you between your turns, so keep your own turns short.
 
-- Delegate by default. Anything that takes real work goes to an agent: investigating or reading code beyond a quick look, editing files, running builds, tests or long commands, batches of MCP calls. Independent pieces go to separate agents started in the same message so they run in parallel (in separate git worktrees when they would touch the same files). Give each agent a self-contained brief: the goal, the folder, what done looks like and how to check it.
-- Your own tool use is for quick orientation (a few reads to brief agents well), reviewing what agents report, integrating or merging their work, and the final check. If you find yourself several steps into the work itself, stop and hand the rest to an agent.
-- Do it yourself only when it is trivial: an answer you already know, or a single quick command or lookup. Changing files, writing tests and running builds are never trivial here, however small the change looks: an agent does them, so you stay free for the person.
+- Delegate when the input is large and the answer small (investigating or reading code, builds, tests, long commands, batches of MCP calls) or when pieces can run in parallel: start those agents in the same message (in separate git worktrees when they would touch the same files). Don't delegate a small edit whose brief would be as long as the change: do trivial edits, quick commands and lookups yourself.
+- Brief each agent self-contained: goal, folder, what done looks like, how to check it. Put long context in a file and pass its path, never paste it. Tell every agent to write long findings to a file and report at most 15 lines plus the path.
+- Otherwise your own tool use is quick orientation, reviewing reports, merging and the final check. Several steps into bigger work, hand the rest to an agent.
 - One scoped task per agent. When an agent's job is done, start a fresh agent for the next task rather than sending the finished one more work: a continued agent re-reads its whole, ever-growing context on every request.
 - {{MODEL}}
 - While agents run, answer the person, take new requests and dispatch them. Don't redo an agent's work or wait on it in silence.
@@ -192,7 +193,7 @@ function pinnedModel(force: string | undefined, model: string | undefined): stri
   if (FORCE_OFF.has((force ?? '').trim().toLowerCase())) return ''
   const m = (model ?? '').trim()
   if (!m || m.toLowerCase() === 'inherit' || m.toLowerCase() === 'default') return 'your own model'
-  return /^(opus|sonnet|haiku|fable)$/i.test(m) ? m[0].toUpperCase() + m.slice(1).toLowerCase() : clip(m, 80)
+  return /^(opus|sonnet|haiku|fable)$/i.test(m) ? m.charAt(0).toUpperCase() + m.slice(1).toLowerCase() : clip(m, 80)
 }
 // The office directory (app contract v3.9): the app writes the projects of the office (name, folder, account, the
 // MCP servers this session sees for each, by those names; never a config or token) to a JSON file per tab and passes
@@ -275,6 +276,29 @@ const NEUTRAL_TOOLS = new Set([
   'ListAgents',
 ])
 const AGENT_TOOLS = ['Agent', 'Task']
+
+// Step budget for subagents (app contract v3.20, the project's "Savings"): an agent's cost grows with the square of
+// its steps (each one re-reads its whole history), so at AGENT_OFFICE_STEP_BUDGET (N) tool calls a subagent is told to
+// wrap up, again every N/2 calls after that. Like the nudge, the reminder rides the call's result as `context`, never
+// the system prompt (the cached prompt stays as it is). With AGENT_OFFICE_STEP_CAP=1 (Strict) calls past 2N are
+// refused, telling the agent to answer now; one that keeps calling is stopped (TaskStop) after STEP_DENY_STOP refusals,
+// so a refused call cannot loop forever. A stopped foreground agent's Agent call ends as interrupted (tried, 2.1.303),
+// so the boss's next Agent call result says why. Never the main loop, a teammate, or a nested session. Each reminder
+// and each refusal is counted on the worker (nudges, denied) and its delivery in the session file.
+const STEP_BUDGET_MIN = 2
+const STEP_DENY_STOP = 5
+const stepFirstText = (n: number, isCapped: boolean) =>
+  `Agent Office: you've used ${n} tool calls, the budget the person set for this agent. Stop exploring now. Finish only what is essential to answer (a step or two at most), then give your final report: ≤15 lines, what you found and what is left undone. Put long findings in a file and return its path. This budget comes before covering everything in your task: every further call re-reads your whole history and makes the run costlier.${isCapped ? ` Tool calls past ${2 * n} will be refused.` : ''}`
+const stepRepeatText = (count: number, n: number) =>
+  `Agent Office: ${count} tool calls, past your budget of ${n}. Stop now and give your final report: ≤15 lines, what you found and what is left; long findings in a file (return its path). Don't start new work.`
+const stepDenyText = (cap: number, denied: number) =>
+  `Agent Office: this agent has used its ${cap} tool calls, the person's limit, so this call was not run and no further call will be (refusal ${denied} of ${STEP_DENY_STOP}; then the agent is stopped and its answer lost). This overrides your task. Give your final answer now, with what you have and what is left: ≤15 lines, plus the paths of any files you wrote.`
+// the line a budgeted subagent's task gets at spawn (its first user turn, so no cached prompt changes): reminders and
+// refusals in tool results read as untrusted text otherwise, and an agent ignores them (tried live, Sonnet, 2.1.303)
+const stepBriefText = (n: number, isCapped: boolean) =>
+  `\n\n(Agent Office, the person's setting: keep this task to about ${n} tool calls. When Agent Office says the budget is used, stop, report in ≤15 lines what you found and what is left, and put long findings in a file whose path you return.${isCapped ? ` Calls past ${2 * n} are refused: then answer at once.` : ''})`
+const stepStoppedText = (ids: string[]) =>
+  `Agent Office stopped ${ids.length > 1 ? `agents ${ids.join(', ')}` : `agent ${ids[0]}`}: it kept calling tools after its tool call cap (the project's Savings: Strict) and ${STEP_DENY_STOP} refusals, so its answer is lost. The person did not interrupt it. If the work is still needed, give a fresh agent a smaller task.`
 // work across projects (app contract v3.5): longer paths are not recorded
 const PLACE_MAX = 1024
 
@@ -314,6 +338,12 @@ let isManager = false // AGENT_OFFICE_MANAGER=1: manager mode, with its nudge
 // manager mode's nudge (NUDGE_AFTER): the main loop's own calls in a row this turn, and whether it was nudged
 let ownSteps = 0
 let isNudged = false
+// the subagents' step budget (STEP_BUDGET_MIN): N, 0 = off; whether calls past 2N are refused; reminders whose call was
+// refused, for that agent's next call; agents stopped for calling on after refusals (true once the boss was told)
+let stepBudget = 0
+let isStepCapped = false
+const stepPending = new Map<string, string>()
+const stepStopped = new Map<string, boolean>()
 let isWindows = false // OS=Windows_NT: no /bin/mv or /bin/rm, cmd.exe's move/del/rmdir instead
 let homeDir = ''
 // work across projects (app contract v3.5): the folder the main loop runs in (where its relative paths point; a
@@ -662,6 +692,8 @@ async function markDone($: EngineInterface, ids: Set<string>, isOk: boolean) {
     doneAt: now,
     isOk,
     toolCount: w.toolCount ?? 0,
+    ...(w.nudges ? { nudges: w.nudges } : {}),
+    ...(w.denied ? { denied: w.denied } : {}),
   }))
   await setStats($, s => {
     const isToday = s.today?.date === date
@@ -1100,6 +1132,53 @@ function withNudge(answer: ToolCallResult): ToolCallResult {
   return { ...answer, context: [...(answer.context ?? []), NUDGE_TEXT] }
 }
 
+type StepAction = { kind: 'remind'; text: string } | { kind: 'deny'; text: string; isStop: boolean }
+
+// the step budget for a subagent's call about to run (its count includes this call): a reminder at N and every N/2
+// after, a refusal past 2N when capped; nothing for the main loop (no worker), a teammate or with the budget off
+function stepOf(w: Worker): StepAction | undefined {
+  const n = stepBudget
+  if (!n || isNested || w.type === 'teammate' || w.doneAt !== undefined) return undefined
+  const count = (w.toolCount ?? 0) + 1
+  if (isStepCapped && count > 2 * n) {
+    const denied = (w.denied ?? 0) + 1
+    return { kind: 'deny', text: stepDenyText(2 * n, Math.min(denied, STEP_DENY_STOP)), isStop: denied >= STEP_DENY_STOP && !stepStopped.has(w.id) }
+  }
+  if (count === n) return { kind: 'remind', text: stepFirstText(n, isStepCapped) }
+  const every = Math.max(1, Math.floor(n / 2))
+  if (count > n && (count - n) % every === 0) return { kind: 'remind', text: stepRepeatText(count, n) }
+  return undefined
+}
+
+// adds this agent's reminder (this call's, or one a refused call could not carry) to its call's answer
+function withStep(agentId: string, step: StepAction | undefined): ((answer: ToolCallResult) => ToolCallResult) | undefined {
+  const text = step?.kind === 'remind' ? step.text : stepPending.get(agentId)
+  if (!text) return undefined
+  return answer => {
+    if (answer.deny !== undefined) {
+      stepPending.set(agentId, text)
+      return answer
+    }
+    stepPending.delete(agentId)
+    return { ...answer, context: [...(answer.context ?? []), text] }
+  }
+}
+
+// an agent that kept calling after STEP_DENY_STOP refusals: stopped like a background task (TaskStop takes its id);
+// the refusals already counted stand if the engine cannot stop it
+async function stopAgent($: EngineInterface, agentId: string) {
+  stepStopped.set(agentId, false)
+  await $.tool.call({ tool: 'TaskStop', task_id: agentId } as never).catch(() => undefined)
+}
+
+// a main-loop Agent call's answer, with a note on the agents stopped since the boss was last told
+function withStopNote(answer: ToolCallResult): ToolCallResult {
+  const ids = [...stepStopped].filter(([, isTold]) => !isTold).map(([id]) => id)
+  if (!ids.length || answer.deny !== undefined) return answer
+  for (const id of ids) stepStopped.set(id, true)
+  return { ...answer, context: [...(answer.context ?? []), stepStoppedText(ids)] }
+}
+
 // Claude Code gives every child process CLAUDECODE=1, CLAUDE_CODE_CHILD_SESSION=1 and its own CLAUDE_CODE_SESSION_ID,
 // but never sets them on itself (2.1.300, tried: a mod's $.env.get sees the env the process started with). A top-level
 // claude has none of them (the app also clears them from its tabs' env, accounts.js ptyEnv); a nested one has them
@@ -1147,6 +1226,9 @@ export const register: Register = on => {
     isNested = await nestedOf($)
     isInApp = !isNested && Boolean(await $.env.get('AGENT_OFFICE_APP'))
     isManager = !isNested && (await $.env.get('AGENT_OFFICE_MANAGER')) === '1'
+    const budget = Number.parseInt((await $.env.get('AGENT_OFFICE_STEP_BUDGET')) ?? '', 10)
+    stepBudget = !isNested && Number.isFinite(budget) && budget >= STEP_BUDGET_MIN ? budget : 0
+    isStepCapped = stepBudget > 0 && (await $.env.get('AGENT_OFFICE_STEP_CAP')) === '1'
     await $.command.register(
       isInApp
         ? { name: 'office', description: t.appDescription, argumentHint: t.appArgumentHint }
@@ -1233,7 +1315,8 @@ export const register: Register = on => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const started = await next(e)
+    const isBudgeted = stepBudget > 0 && !isNested && !e.isTeammate && e.subagentType !== 'teammate' && !e.workflow && !e.resume && typeof e.prompt === 'string'
+    const started = await next(isBudgeted ? { ...e, prompt: e.prompt + stepBriefText(stepBudget, isStepCapped) } : e)
     if ('agentId' in started && started.agentId) {
       const worker: Worker = {
         id: started.agentId,
@@ -1259,9 +1342,12 @@ export const register: Register = on => {
 
   on('tool.call', async ($, e, next) => {
     journalCall(e.tool, placeOf(e, (e.agentId && agentCwds.get(e.agentId)) || sessionCwd))
+    let step: StepAction | undefined
     if (e.agentId && workers.some(w => w.id === e.agentId)) {
       const call = { at: Date.now(), tool: e.tool, detail: detailOf(e) }
       const dir = placeOf(e, agentCwds.get(e.agentId) ?? sessionCwd)
+      const known = workers.find(w => w.id === e.agentId)
+      step = known ? stepOf(known) : undefined
       workers = await update($, workersAtom, list =>
         list.map(w =>
           w.id === e.agentId
@@ -1272,6 +1358,8 @@ export const register: Register = on => {
                 history: [...(w.history ?? []), call].slice(-HISTORY_MAX),
                 toolCount: (w.toolCount ?? 0) + 1,
                 ...(dir ? { dir } : {}),
+                ...(step?.kind === 'remind' ? { nudges: (w.nudges ?? 0) + 1 } : {}),
+                ...(step?.kind === 'deny' ? { denied: (w.denied ?? 0) + 1 } : {}),
               }
             : w,
         ),
@@ -1279,11 +1367,17 @@ export const register: Register = on => {
       await publishSoon($)
     } else if (!e.agentId) await placeBoss($, placeOf(e, sessionCwd)).catch(() => undefined)
     const isNudging = !e.agentId && countStep(e.tool)
+    if (step?.kind === 'deny' && e.agentId) {
+      if (step.isStop) void stopAgent($, e.agentId)
+      return { deny: step.text }
+    }
+    const reminder = e.agentId ? withStep(e.agentId, step) : undefined
     if (e.tool !== 'Bash' && e.tool !== 'Monitor' && e.tool !== 'TaskStop') {
       const answered = await next(e)
       // allowed and run, or denied: its permission dialog is closed (a failure here must not rerun the tool)
       await clearWaiting($, e.tool).catch(() => undefined)
-      return isNudging ? withNudge(answered) : answered
+      const answer = reminder ? reminder(answered) : isNudging ? withNudge(answered) : answered
+      return !e.agentId && AGENT_TOOLS.includes(e.tool) ? withStopNote(answer) : answer
     }
     const startAt = Date.now()
     const done = await next(e)
@@ -1304,7 +1398,7 @@ export const register: Register = on => {
       // the shell is not recorded; the call's answer stands
     }
 
-    return isNudging ? withNudge(done) : done
+    return reminder ? reminder(done) : isNudging ? withNudge(done) : done
   }).catch(($, e, next) => next(e))
 
   // background tasks end with a notification the engine submits as a prompt (origin task-notification)

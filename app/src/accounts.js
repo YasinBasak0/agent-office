@@ -100,6 +100,19 @@ function ptyEnv(base, configDir = null) {
   return env;
 }
 
+// Savings per project (contract v3.20): every value of the levels lives here. stepBudget: tool calls before a subagent
+// is told to wrap up (again every stepBudget/2); stepCap: calls past 2 × stepBudget are refused; bashOutput: characters
+// of a Bash result Claude reads inline; mcpOutput: tokens of an MCP tool result. Off (null) changes nothing. The
+// sidebar tooltip (locales sidebar.savingsTitle) names these numbers: change it with them.
+const SAVINGS = {
+  off: null,
+  normal: { stepBudget: 40, stepCap: false, bashOutput: 15000, mcpOutput: 15000 },
+  strict: { stepBudget: 25, stepCap: true, bashOutput: 8000, mcpOutput: 8000 },
+};
+const SAVINGS_LEVELS = Object.keys(SAVINGS);
+const SAVINGS_DEFAULT = 'normal';
+const SAVINGS_ENV = ['AGENT_OFFICE_STEP_BUDGET', 'AGENT_OFFICE_STEP_CAP', 'AGENT_OFFICE_BASH_OUTPUT', 'AGENT_OFFICE_MCP_OUTPUT'];
+
 // The env of a project's claude in the app, on top of ptyEnv: AGENT_OFFICE_APP marks the app (the plugin's /office
 // then gives the summary only); AGENT_OFFICE_MANAGER=1 turns on the plugin's manager mode (sidebar setting, default
 // on: the boss delegates to agents; per project since v3.10). Off, the variable is left out, even when the app itself
@@ -116,10 +129,25 @@ function ptyEnv(base, configDir = null) {
 // Capped, AGENT_OFFICE_CONTEXT_CAP carries it to the launch line, which exports CLAUDE_CODE_AUTO_COMPACT_WINDOW=<n>
 // after the rc files. Claude Code 2.1.300 then compacts when the context nears min(n, model window) − ~33k, in the
 // main session and in every subagent (same process). Auto leaves the user's own CLAUDE_CODE_AUTO_COMPACT_WINDOW alone.
-function sessionEnv(env, { manager = true, agentModel = null, contextCap = null } = {}) {
+//
+// savings (contract v3.20): the project's "Savings" level, SAVINGS below (the one place its values live). On, the
+// plugin gets the subagents' step budget (AGENT_OFFICE_STEP_BUDGET = N, AGENT_OFFICE_STEP_CAP=1 refuses calls past 2N)
+// and Claude Code its tool output caps: BASH_MAX_OUTPUT_LENGTH (characters of a Bash result kept inline; 2.1.303
+// truncates longer output to it) and MAX_MCP_OUTPUT_TOKENS (an MCP tool result's token limit, default 25000). The
+// launch line exports both again from AGENT_OFFICE_BASH_OUTPUT / AGENT_OFFICE_MCP_OUTPUT after the rc files. Off
+// leaves the user's own BASH_MAX_OUTPUT_LENGTH and MAX_MCP_OUTPUT_TOKENS alone.
+function sessionEnv(env, { manager = true, agentModel = null, contextCap = null, savings = SAVINGS_DEFAULT } = {}) {
   const out = { ...env, AGENT_OFFICE_APP: '1' };
   delete out.AGENT_OFFICE_AGENT_MODEL;
   delete out.AGENT_OFFICE_CONTEXT_CAP;
+  for (const name of SAVINGS_ENV) delete out[name];
+  const saving = SAVINGS_LEVELS.includes(savings) ? SAVINGS[savings] : SAVINGS[SAVINGS_DEFAULT];
+  if (saving) {
+    out.AGENT_OFFICE_STEP_BUDGET = String(saving.stepBudget);
+    if (saving.stepCap) out.AGENT_OFFICE_STEP_CAP = '1';
+    out.AGENT_OFFICE_BASH_OUTPUT = out.BASH_MAX_OUTPUT_LENGTH = String(saving.bashOutput);
+    out.AGENT_OFFICE_MCP_OUTPUT = out.MAX_MCP_OUTPUT_TOKENS = String(saving.mcpOutput);
+  }
   if (agentModel) {
     out.AGENT_OFFICE_AGENT_MODEL = agentModel;
     out.CLAUDE_CODE_SUBAGENT_MODEL = agentModel;
@@ -233,5 +261,6 @@ const loginAccountId = (ptyId) =>
 
 module.exports = {
   DEFAULT_ID, DEFAULT_ACCOUNT, normalizeAccounts, addAccount, renameAccount, setAccountShare, removeAccount, accountOf, ptyEnv, sessionEnv,
+  SAVINGS, SAVINGS_LEVELS, SAVINGS_DEFAULT,
   lastJsonObject, authFromStatus, authFromRun, localizeAuth, claudeCommand, withAuth, loginPtyId, loginAccountId,
 };

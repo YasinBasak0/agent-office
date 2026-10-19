@@ -394,6 +394,15 @@ async function setContextCap(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/** Per-project savings (v3.20): 'off' | 'normal' | 'strict'; main restarts the idle tabs. */
+async function setSavings(projectId, value) {
+  try {
+    const r = await api.projects.setSavings?.(projectId, value);
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 /** Per-project backup account (v3.17): null (none) | 'auto' | an account id; nothing restarts. */
 async function setBackup(projectId, value) {
   try {
@@ -476,6 +485,7 @@ sidebar = mountSidebar($('sidebar'), {
   setProjectManager,
   setAgentModel,
   setContextCap,
+  setSavings,
   setBackup,
   addAccount,
   renameAccount,
