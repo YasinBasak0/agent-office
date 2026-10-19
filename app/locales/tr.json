@@ -286,6 +286,7 @@
     "hint": "Tarayıcı açılırsa orada onayla; terminal soru sorarsa burada yanıtla.",
     "retry": "Tekrar dene",
     "title": "{label} hesabına giriş",
+    "agyLogoutTitle": "Antigravity'den çıkış",
     "checking": "giriş denetleniyor…",
     "agyHint": "Açılan tarayıcıda Google ile giriş yap (SSH'te kodu buraya yapıştır). agy'nin istemi gelince giriş tamamdır: /exit yaz.",
     "agyLogoutHint": "Antigravity'den çıkmak için /logout yazıp Enter'a bas, sonra /exit."

@@ -538,6 +538,7 @@ function openAgy(mode) {
   login.open({ id: 'agy', label: 'Antigravity' }, {
     start: () => api.agy.login(),
     hint: () => t(mode === 'logout' ? 'login.agyLogoutHint' : 'login.agyHint'),
+    title: () => t(mode === 'logout' ? 'login.agyLogoutTitle' : 'login.title', { label: 'Antigravity' }),
   });
 }
 api.agy?.onAuth(setAgyAuth);

@@ -78,7 +78,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
 
   /**
    * @param {{ id: string, label: string }} account
-   * @param {{ start: () => Promise<unknown>, hint: () => string }} [ext] a login that is not a Claude account's
+   * @param {{ start: () => Promise<unknown>, hint: () => string, title?: () => string }} [ext] a login that is not a Claude account's
    *   (Antigravity, v3.24): how its pty starts and the hint above the terminal.
    */
   function open(account, ext) {
@@ -118,7 +118,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
   function setLabel(label) {
     if (!cur) return;
     cur.label = label;
-    cur.title.textContent = t('login.title', { label });
+    cur.title.textContent = cur.ext?.title ? cur.ext.title() : t('login.title', { label });
   }
 
   function close() {
@@ -146,7 +146,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
     cur.x.title = t('login.close');
     cur.hint.textContent = cur.ext ? cur.ext.hint() : t('login.hint');
     cur.retry.textContent = t('login.retry');
-    cur.title.textContent = t('login.title', { label: cur.label });
+    cur.title.textContent = cur.ext?.title ? cur.ext.title() : t('login.title', { label: cur.label });
     cur.status.textContent = (cur.statusText && cur.statusText()) || '';
   });
 

@@ -296,6 +296,7 @@
     "hint": "If a browser opens, approve there; if the terminal asks something, answer here.",
     "retry": "Try again",
     "title": "Log in to {label}",
+    "agyLogoutTitle": "Log out of Antigravity",
     "checking": "checking login…",
     "agyHint": "Sign in with Google in the browser that opens (over SSH, paste the code here). When agy's prompt appears you are logged in: type /exit.",
     "agyLogoutHint": "Type /logout and press Enter to sign out of Antigravity, then /exit."
