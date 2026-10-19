@@ -403,6 +403,21 @@ async function setSavings(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/**
+ * Per-project engine (v3.22): 'agy' (Antigravity) | null (Claude Code); main starts every tab of the project again,
+ * fresh, or refuses / asks first when a tab is working (r.refused; the row's select goes back on the re-render).
+ * The usage panel is Claude Code's only: it closes when its project moves to Antigravity.
+ */
+async function setEngine(projectId, value) {
+  try {
+    const r = await api.projects.setEngine?.(projectId, value);
+    if (value === 'agy' && !r?.refused && usagePanel?.shownId() === projectId) usagePanel.hide();
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+    return r;
+  } catch (e) { console.error(e); return null; }
+}
+
 /** Per-project backup account (v3.17): null (none) | 'auto' | an account id; nothing restarts. */
 async function setBackup(projectId, value) {
   try {
@@ -486,6 +501,7 @@ sidebar = mountSidebar($('sidebar'), {
   setAgentModel,
   setContextCap,
   setSavings,
+  setEngine,
   setBackup,
   addAccount,
   renameAccount,

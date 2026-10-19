@@ -309,6 +309,26 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.savings')), sel);
   }
 
+  // The program the project's tabs run (contract v3.22): Claude Code or Google Antigravity CLI (`agy`). Changing it
+  // starts every tab of the project again, fresh; an Antigravity project hides the Claude-only settings.
+  function engineSelect(p) {
+    const now = p.engine === 'agy' ? 'agy' : 'claude';
+    const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
+    const sel = h('select', {
+      class: 'sb-acct sb-mode',
+      title: t('sidebar.engineTitle'),
+      onclick: (e) => e.stopPropagation(),
+      // refused (a tab is working) or cancelled: the select shows the engine that stays
+      onchange: async (e) => {
+        const r = await on.setEngine?.(p.id, e.target.value === 'agy' ? 'agy' : null);
+        if (r?.refused) e.target.value = now;
+      },
+    },
+    opt('claude', t('sidebar.engineClaude')), opt('agy', t('sidebar.engineAgy')));
+    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
+      h('span', { class: 'sb-acct-label' }, t('sidebar.engine')), sel);
+  }
+
   // The account the project continues on when its own reaches the usage limit (contract v3.17): none, any other
   // logged-in account with quota left, or one account. Nothing restarts when it changes.
   function backupSelect(p) {
@@ -349,6 +369,7 @@ export function mountSidebar(el, on) {
       const s = stats.get(p.name);
       const live = status.get(p.id);
       const sleeping = !live && asleep.has(p.id);
+      const claude = p.engine !== 'agy'; // Antigravity (v3.22): no account, boss, model, cap, savings, backup or token cost
       return h('li', {
         class: 'sb-proj' + (p.id === activeId ? ' active' : ''),
         'data-id': p.id,
@@ -356,7 +377,8 @@ export function mountSidebar(el, on) {
         onclick: () => on.select(p.id),
         oncontextmenu: (e) => { e.preventDefault(); on.projectMenu?.(p); },
       },
-        h('span', { class: 'sb-dot' + (live ? ' live' : sleeping ? ' asleep' : ''), title: live ? t('sidebar.claudeRunning') : sleeping ? t('sidebar.claudeAsleep') : t('sidebar.claudeStopped') }),
+        h('span', { class: 'sb-dot' + (live ? ' live' : sleeping ? ' asleep' : ''), title: !claude ? (live ? t('sidebar.agyRunning') : sleeping ? t('sidebar.agyAsleep') : t('sidebar.agyStopped'))
+          : live ? t('sidebar.claudeRunning') : sleeping ? t('sidebar.claudeAsleep') : t('sidebar.claudeStopped') }),
         h('span', { class: 'sb-name' }, p.name),
         attn.get(p.id) === 'permission'
           ? h('span', { class: 'sb-attn permission', title: t('sidebar.attnPermission') }, '✋')
@@ -367,18 +389,20 @@ export function mountSidebar(el, on) {
           onclick: (e) => { e.stopPropagation(); on.removeProject(p); },
         }, '×'),
         h('div', { class: 'sb-meta' },
-          accountSelect(p),
-          managerSelect(p),
-          agentModelSelect(p),
-          contextCapSelect(p),
-          savingsSelect(p),
-          backupSelect(p),
-          onBackupTag(p),
-          loginBadge(p),
+          engineSelect(p),
+          claude ? accountSelect(p) : null,
+          claude ? managerSelect(p) : null,
+          claude ? agentModelSelect(p) : null,
+          claude ? contextCapSelect(p) : null,
+          claude ? savingsSelect(p) : null,
+          claude ? backupSelect(p) : null,
+          claude ? onBackupTag(p) : null,
+          claude ? loginBadge(p) : null,
+          claude ? null : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint')),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),
         h('button', {
-          class: 'sb-cost', hidden: !briefs.has(p.id), title: t('sidebar.costTitle'),
+          class: 'sb-cost', hidden: !claude || !briefs.has(p.id), title: t('sidebar.costTitle'),
           onclick: (e) => { e.stopPropagation(); on.openUsage?.(p); },
         }, costText(briefs.get(p.id))),
       );

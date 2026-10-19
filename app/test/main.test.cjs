@@ -294,6 +294,117 @@ test('sessionEnv: tasarruf seviyesi başına ortam; Kapalı kullanıcınınkine 
   assert.equal(A.SAVINGS_DEFAULT, 'normal');
 });
 
+test('proje başına motor: normalizeState, setProjectEngine, engineOf (v3.22)', () => {
+  let s = P.normalizeState({
+    projects: [
+      { id: 'a', dir: '/a', engine: 'agy' },
+      { id: 'b', dir: '/b', engine: 'claude' },
+      { id: 'c', dir: '/c', engine: 'gemini' },
+      { id: 'd', dir: '/d' },
+    ],
+  }, { id });
+  assert.deepEqual(s.projects.map((p) => P.engineOf(p)), ['agy', 'claude', 'claude', 'claude']);
+  assert.equal('engine' in s.projects[1], false); // Claude Code (the default) is never written
+  assert.equal('engine' in s.projects[2], false); // unknown values are dropped
+  assert.equal(P.engineOf(null), 'claude');
+  assert.deepEqual(P.ENGINES, ['claude', 'agy']);
+  assert.equal(P.setProjectEngine(s, 'a', 'agy'), s);
+  assert.equal(P.setProjectEngine(s, 'zz', 'agy'), s);
+  assert.equal(P.setProjectEngine(s, 'd', null), s);
+  assert.equal(P.setProjectEngine(s, 'd', 'claude'), s); // 'claude' = null
+  assert.equal(P.setProjectEngine(s, 'd', 'gemini'), s); // invalid = Claude Code
+  s = P.setProjectEngine(s, 'd', 'agy');
+  assert.equal(P.engineOf(P.findProject(s, 'd')), 'agy');
+  s = P.setProjectEngine(s, 'a', 'claude'); // back to Claude Code: the field goes
+  assert.equal('engine' in P.findProject(s, 'a'), false);
+  const again = P.normalizeState(JSON.parse(JSON.stringify(s)), { id });
+  assert.deepEqual(again.projects.map((p) => p.engine), [undefined, undefined, undefined, 'agy']);
+});
+
+test('agy başlatma: --continue yalnız devam ederken, -i istemi yalnız devam ederken; komut satırı (v3.22)', () => {
+  const EN = require('../src/engine.js');
+  assert.deepEqual(EN.agyArgs(), []);
+  assert.deepEqual(EN.agyArgs({ resume: false, prompt: 'carry on' }), []); // a fresh start gets no prompt
+  assert.deepEqual(EN.agyArgs({ resume: true }), ['--continue']);
+  assert.deepEqual(EN.agyArgs({ resume: true, prompt: '  --carry\non "now"  ' }), ['--continue', '-i', 'carry on now']);
+  assert.deepEqual(EN.agyArgs({ resume: true, prompt: '   ' }), ['--continue']); // nothing left of the prompt
+  assert.ok(EN.AGY_COMMAND.endsWith('exec agy "$@"')); // arguments via "$@", argv0 'agy'; no CLAUDE_CONFIG_DIR export
+  assert.equal(EN.AGY_COMMAND.includes('CLAUDE'), false);
+});
+
+// The user's hard rule (v3.22): nothing of Claude Code, Anthropic, the office or MCP reaches agy; its env is an allowlist.
+const SECRET_ENV = {
+  ANTHROPIC_API_KEY: 'sk-ant-secret', ANTHROPIC_AUTH_TOKEN: 'tok', ANTHROPIC_BASE_URL: 'https://proxy',
+  CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret', CLAUDE_CONFIG_DIR: '/Users/a/Library/Application Support/Agent Office/accounts/x',
+  CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', CLAUDECODE: '1', CLAUDE_PID: '42',
+  AGENT_OFFICE_DIRECTORY: '/Users/a/Library/Application Support/Agent Office/directory/p.json', AGENT_OFFICE_APP: '1',
+  AGENT_OFFICE_CONFIG_DIR: '/x', AGENT_OFFICE_STATUSLINE: 'cmd', AGENT_OFFICE_STEP_BUDGET: '40', AGENT_OFFICE_MANAGER: '1',
+  GITHUB_MCP_TOKEN: 'ghp_secret', MCP_SERVER_TOKEN: 'mcp-secret', GOOGLE_MCP_TOKEN: 'g-mcp-secret',
+  BASH_MAX_OUTPUT_LENGTH: '15000', MAX_MCP_OUTPUT_TOKENS: '15000', OPENAI_API_KEY: 'sk-openai', AWS_SECRET_ACCESS_KEY: 'aws',
+  GH_TOKEN: 'gh', NODE_OPTIONS: '--require /evil.js', ELECTRON_RUN_AS_NODE: '1', npm_config_token: 'npm',
+};
+const SECRET_VALUES = Object.values(SECRET_ENV).filter((v) => v.length > 2);
+
+test('agy ortamı: izin listesi; Claude, Anthropic, ofis, MCP ve uygulamanın başka hiçbir değişkeni geçmez (v3.22)', () => {
+  const EN = require('../src/engine.js');
+  const user = { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/Users/a', USER: 'a', LOGNAME: 'a', SHELL: '/bin/zsh',
+    LANG: 'tr_TR.UTF-8', LC_ALL: 'tr_TR.UTF-8', TMPDIR: '/var/folders/x/', TERM: 'dumb',
+    GEMINI_API_KEY: 'users-own-gemini', GOOGLE_CLOUD_PROJECT: 'proj' };
+  const env = EN.agyEnv({ ...SECRET_ENV, ...user }, 'darwin');
+  for (const k of Object.keys(SECRET_ENV)) assert.equal(k in env, false, `${k} reached agy`);
+  for (const k of Object.keys(env)) assert.doesNotMatch(k, /ANTHROPIC|CLAUDE|AGENT_OFFICE|MCP/i);
+  const values = JSON.stringify(env);
+  for (const v of SECRET_VALUES) assert.equal(values.includes(v), false, `a secret value reached agy: ${v}`);
+  assert.equal(env.PATH, user.PATH);
+  assert.equal(env.HOME, '/Users/a');
+  assert.equal(env.LC_ALL, 'tr_TR.UTF-8');
+  assert.equal(env.GEMINI_API_KEY, 'users-own-gemini'); // the user's own Google / Gemini settings, only when present
+  assert.equal(env.GOOGLE_CLOUD_PROJECT, 'proj');
+  assert.equal(env.TERM, 'xterm-256color');
+  assert.equal(env.COLORTERM, 'truecolor');
+  assert.deepEqual(Object.keys(EN.agyEnv({ PATH: '/bin', HOME: '/h' }, 'linux')).sort(), ['COLORTERM', 'HOME', 'PATH', 'TERM']);
+  // Windows: its system variables, compared without case; the same secrets stay out
+  const winUser = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', APPDATA: 'C:\\a', LOCALAPPDATA: 'C:\\l', USERPROFILE: 'C:\\u',
+    PATHEXT: '.EXE;.CMD', ComSpec: 'C:\\Windows\\cmd.exe', 'ProgramFiles(x86)': 'C:\\pf86', ProgramFiles: 'C:\\pf', TEMP: 'C:\\t' };
+  const w = EN.agyEnv({ ...SECRET_ENV, claude_code_oauth_token: 'lower-secret', Agent_Office_Directory: 'x-secret', ...winUser }, 'win32');
+  for (const k of Object.keys(winUser)) assert.equal(w[k], winUser[k], k);
+  for (const k of Object.keys(w)) assert.doesNotMatch(k, /ANTHROPIC|CLAUDE|AGENT_OFFICE|MCP/i);
+  assert.equal(JSON.stringify(w).includes('secret'), false);
+  // Windows-only names are not passed on macOS / Linux
+  assert.equal('ComSpec' in EN.agyEnv(winUser, 'darwin'), false);
+});
+
+test('startAgy: ortam yalnız agyEnv; sessionEnv, ptyEnv, ofis dizini, eklenti ve MCP dosyası yok (v3.22)', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  const start = src.indexOf('function startAgy(');
+  assert.ok(start > 0);
+  const body = src.slice(start, src.indexOf('\n}\n', start)).replace(/\/\/.*$/gm, ''); // code only, no comments
+  assert.match(body, /const env = EN\.agyEnv\(process\.env\);/);
+  for (const banned of ['sessionEnv', 'ptyEnv', 'officeDirectoryFile', 'sharedConfig', 'pluginDir', 'usageStatusLine', 'AGENT_OFFICE_', 'CLAUDE_', 'env.', 'env[']) {
+    assert.equal(body.includes(banned), false, `startAgy uses ${banned}`);
+  }
+});
+
+test('agy başlatma satırı: rc dosyasının koyduğu AGENT_OFFICE_* gider, kullanıcınınki kalır; argv yalnız agy argümanları (v3.22)', { skip: process.platform === 'win32' }, () => {
+  const EN = require('../src/engine.js');
+  const { spawnSync } = require('node:child_process');
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-agy-'));
+  try {
+    fs.writeFileSync(path.join(bin, 'agy'), '#!/bin/sh\nprintf "%s\\n" "$@"\necho ---\nenv\n', { mode: 0o755 });
+    const env = EN.agyEnv({ ...SECRET_ENV, PATH: `${bin}:/usr/bin:/bin`, HOME: bin }, process.platform);
+    // what a login shell's rc file might do: an office variable and a user's own variable
+    const rc = 'export AGENT_OFFICE_DIRECTORY=/rc/dir AGENT_OFFICE_X=1 USERS_OWN=kept; ';
+    const r = spawnSync('/bin/sh', ['-c', rc + EN.AGY_COMMAND, 'agy', ...EN.agyArgs({ resume: true, prompt: 'carry on' })], { env, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const [argv, out] = r.stdout.split('---\n');
+    assert.deepEqual(argv.trim().split('\n'), ['--continue', '-i', 'carry on']);
+    assert.doesNotMatch(out, /^(ANTHROPIC|CLAUDE|AGENT_OFFICE)/m);
+    assert.match(out, /^USERS_OWN=kept$/m);
+    for (const v of SECRET_VALUES) assert.equal(out.includes(v), false, v);
+  } finally { fs.rmSync(bin, { recursive: true, force: true }); }
+});
+
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
   const pretty = JSON.stringify({ loggedIn: false, authMethod: 'none', nested: { a: 1 } }, null, 2);
   assert.deepEqual(A.lastJsonObject(`rc: hello {not json}\n${pretty}\nbye`), { loggedIn: false, authMethod: 'none', nested: { a: 1 } });
@@ -945,6 +1056,14 @@ test('Windows: claude PATH\'te (PATHEXT sırası, Path anahtarı), yoksa kurulum
   assert.equal(OS.findClaude(bare, filesAt('C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd')), 'C:\\Users\\b\\AppData\\Roaming\\npm\\claude.cmd');
   assert.equal(OS.findClaude(bare, () => false), null);
   assert.equal(OS.findOnPath('git.exe', { PATH: 'C:\\Git\\cmd' }, filesAt('C:\\Git\\cmd\\git.exe')), 'C:\\Git\\cmd\\git.exe');
+});
+
+test('Windows: agy yalnız PATH\'te aranır; yoksa null (v3.22)', () => {
+  const env = { Path: 'C:\\Windows;C:\\Users\\a\\.local\\bin', PATHEXT: '.COM;.EXE;.BAT;.CMD;.PS1' };
+  assert.equal(OS.findAgy(env, filesAt('C:\\Users\\a\\.local\\bin\\agy.exe')), 'C:\\Users\\a\\.local\\bin\\agy.exe');
+  assert.equal(OS.findAgy(env, filesAt('C:\\Users\\a\\.local\\bin\\agy.ps1')), null);
+  assert.equal(OS.findAgy(env, filesAt('C:\\Users\\a\\.local\\bin\\claude.exe')), null);
+  assert.equal(OS.findAgy({ PATH: 'C:\\Windows' }, () => false), null);
 });
 
 test('Windows: .exe doğrudan, .cmd cmd.exe /d /s /c ile tek satır (tırnaklar korunur)', () => {

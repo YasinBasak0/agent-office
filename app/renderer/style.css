@@ -352,6 +352,7 @@ body.dragging-split, body.dragging-split * { cursor: row-resize !important; user
 .sb-warn:hover { color: var(--status-bg); background: var(--err); }
 .sb-tag { font-size: 10px; opacity: .5; }
 .sb-tag.sb-onbackup { opacity: .85; color: var(--accent); white-space: nowrap; }
+.sb-tag.sb-agy { opacity: .7; white-space: nowrap; }
 .sb-input {
   flex: 1;
   min-width: 0;
