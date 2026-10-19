@@ -261,6 +261,22 @@ export function mountSidebar(el, on) {
       h('span', { class: 'sb-acct-label' }, t('sidebar.projectManager')), sel);
   }
 
+  // The model of the project's boss session (contract v3.27): Auto (claude's default) or one model, `--model`.
+  function bossModelSelect(p) {
+    const now = ['sonnet', 'opus', 'haiku'].includes(p.bossModel) ? p.bossModel : 'auto';
+    const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
+    const sel = h('select', {
+      class: 'sb-acct sb-mode',
+      title: t('sidebar.bossModelTitle'),
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => on.setBossModel?.(p.id, e.target.value === 'auto' ? null : e.target.value),
+    },
+    opt('auto', t('sidebar.bossModelAuto')), opt('sonnet', t('sidebar.bossModelSonnet')),
+    opt('opus', t('sidebar.bossModelOpus')), opt('haiku', t('sidebar.bossModelHaiku')));
+    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
+      h('span', { class: 'sb-acct-label' }, t('sidebar.bossModel')), sel);
+  }
+
   // The model the project's agents run on (contract v3.14): Auto (the boss picks per agent) or one pinned model.
   // Applies like the boss setting: next start, idle tabs right away.
   function agentModelSelect(p) {
@@ -398,6 +414,7 @@ export function mountSidebar(el, on) {
           engineSelect(p),
           claude ? accountSelect(p) : null,
           claude ? managerSelect(p) : null,
+          claude ? bossModelSelect(p) : null,
           claude ? agentModelSelect(p) : null,
           claude ? contextCapSelect(p) : null,
           claude ? savingsSelect(p) : null,

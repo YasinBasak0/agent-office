@@ -377,6 +377,15 @@ async function setProjectManager(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/** Per-project boss model (v3.27): 'sonnet' | 'opus' | 'haiku' | null (Auto); main restarts the idle tabs. */
+async function setBossModel(projectId, value) {
+  try {
+    const r = await api.projects.setBossModel?.(projectId, value);
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 /** Per-project subagent model (v3.14): 'sonnet' | 'haiku' | 'opus' | null (Auto); main restarts the idle tabs. */
 async function setAgentModel(projectId, value) {
   try {
@@ -499,6 +508,7 @@ sidebar = mountSidebar($('sidebar'), {
   projectMenu: (p) => api.projects.menu?.(p.id).catch((e) => console.error(e)),
   setAccount,
   setProjectManager,
+  setBossModel,
   setAgentModel,
   setContextCap,
   setSavings,

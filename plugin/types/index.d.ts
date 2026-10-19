@@ -14,6 +14,9 @@ export type Worker = {
   // step budget (app contract v3.20): wrap-up reminders it got, and tool calls refused past the hard cap
   nudges?: number
   denied?: number
+  // harness gates (app contract v3.26): same-error reminders it got, and identical retries refused (Strict)
+  repeats?: number
+  repeatDenied?: number
   result?: string // the agent's final answer, ≤ 4000 chars (600 before v2.6), once done
   // work across projects (app contract v3.5): the folder it last worked in, absolute (its last file's folder, a
   // Glob/Grep path, a leading `cd`, its spawn cwd); left out = the session's own folder
@@ -39,9 +42,9 @@ export type Shell = {
 // waiting (contract v2.6): a permission dialog is open for `tool`, since `since`; gone once it is answered
 export type Waiting = { kind: 'permission'; tool: string; since: number }
 // one delivery of the day (contract v2.9): what the end-of-day summary lists
-export type Delivery = { id: string; type: string; description: string; spawnAt: number; doneAt: number; isOk: boolean; toolCount: number; nudges?: number; denied?: number }
+export type Delivery = { id: string; type: string; description: string; spawnAt: number; doneAt: number; isOk: boolean; toolCount: number; nudges?: number; denied?: number; repeats?: number; repeatDenied?: number }
 // bossDir (app contract v3.5): the folder the main loop works in this turn, same rules as Worker.dir; left out = the session's own
-export type OfficeStats = { delivered: number; isBossBusy: boolean; today?: { date: string; ids: string[]; log?: Delivery[] }; waiting?: Waiting; bossDir?: string }
+export type OfficeStats = { delivered: number; isBossBusy: boolean; today?: { date: string; ids: string[]; log?: Delivery[] }; waiting?: Waiting; bossDir?: string; repeats?: number; repeatDenied?: number }
 
 // the last frame the viewer wrote: its number and the theme's colours (hex without #)
 export type OfficeFrame = { gen: number; accent: string; frameColor: string; title: string }

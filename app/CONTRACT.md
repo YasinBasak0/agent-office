@@ -792,6 +792,35 @@ OfficeData.projects[i].engine?: 'agy' | 'commandcode'
 - **Skipped** (Claude Code's files): as for agy in v3.22 (pid files, account moves, usage limits, `restartIdle`, `checkTurns`, session moving: `main.moveCc`). Switching away while a tab runs asks (`main.engineCcConfirm`/`main.engineCcDetail`).
 - **Not checked** against an installed `commandcode`: the slug rule, the busy/approval screen text and the `"role":"user"` record shape.
 
+## Harness gates: verification before done, same-error stop, reviewer, facts file (v3.26)
+
+Plugin only (`plugin/hooks/harness.ts`, wired in `register.tsx`); no app change. Never in a nested session; non-Claude engines never load the plugin.
+- **Verification gate.** A loop (boss or subagent) that changed files (Edit/Write/NotebookEdit/MultiEdit, or a Bash command that clearly writes: redirection, `sed -i`, `mv`/`cp`/`rm`, `git apply`…) and ran no check since (`VERIFY_COMMANDS`: npm/pnpm/yarn test/build/lint, node --test, pytest, cargo, go, tsc, eslint, make test/check, gradle/mvn, dotnet…) is blocked once at `classic.Stop` / `classic.SubagentStop` with *"you changed files but ran no test/build/lint since…"*. One block per change set (max 2 per prompt); none when nothing changed, when the final message says why no check applies, or while background work is in flight. It runs before the finish guard (v3.10); a stop it blocks is not judged. On when Savings sets a step budget (Normal/Strict, `AGENT_OFFICE_STEP_BUDGET`); `AGENT_OFFICE_VERIFY=1` forces it on, `=0` off.
+- **Same error twice.** A failed call's error (error result or non-zero exit) is normalized (paths, numbers, times, hex dropped; first 3 meaningful lines) and hashed per loop. The 2nd hit gets a one-time `context` reminder; in Strict (`AGENT_OFFICE_STEP_CAP=1`) from the 3rd hit the identical call (tool + input) is refused. Counted as `repeats` / `repeatDenied` on the worker and its delivery, and on `stats` for the boss.
+- **Brief check.** A manager-mode boss's Agent call whose prompt names no acceptance check gets one `context` note per prompt. MANAGER_TEMPLATE asks for deliverable, non-goals, acceptance check and the facts file path, and names the reviewer's three moments (≤3038 chars).
+- **Reviewer.** `plugin/agents/reviewer.md` (`agent-office:reviewer`, `model: opus`, read-only tools). Without FORCE (Agent model **Auto**) it runs on Opus. With a pinned Agent model it **follows the pin**: Claude Code 2.1.303 applies `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` in the subagent model resolver (`JB` → `ozt`), after `agent.spawn`, and it drops both the Agent `model` (also a hook's rewrite) and the definition's `model`. Tried live (`-p --model sonnet`, SUBAGENT_MODEL=haiku, FORCE=1, hook setting `e.model = 'opus'` for this type): the agent's meta recorded `model: "opus"`, its transcript ran on `claude-haiku-5-5`. So no hook is shipped.
+  - Why follow the pin rather than drop FORCE for it: the pin is the person's cost cap, and without FORCE the boss's `model` parameter would override the pin for every agent, not just the reviewer.
+  - Cost of the choice: on a Haiku/Sonnet-pinned project the reviewer is only as sharp as the pin; to get an Opus review there, set the project's Agent model to Auto or Opus.
+- **Facts file.** `<data dir>/facts/<project-slug>.md`, seeded once in the app from package.json scripts, Makefile targets, Cargo.toml, pyproject.toml, go.mod (≤40 lines, secret-looking scripts skipped); only its path reaches the boss, as one session-scoped section `agent-office:facts`. Nothing is written in the project.
+
+## Boss model per project (v3.27)
+
+A project can pin the model of its main session (the boss), like `claude --model <x>`. App `projects.js` (`BOSS_MODELS`, `setProjectBossModel`, `bossModelOf`, `bossModelArgs`), `main.js` (`startPty`, `projects:setBossModel`), `renderer/sidebar.js`, `renderer/app.js`, `preload.js`.
+
+```ts
+// state.json, per project (absent = Auto)
+Project.bossModel?: 'sonnet' | 'opus' | 'haiku'
+agentOffice.projects.setBossModel(id: string, value: 'sonnet' | 'opus' | 'haiku' | null): Promise<{ restarted: string[] }>   // null: Auto
+bossModelArgs(project): string[]   // ['--model', <alias>] or []
+```
+
+- **Mechanism** (Claude Code 2.1.303, `claude --help` and the bundle). `--model <model>` ("Model for the current session", an alias such as `opus`/`sonnet`/`haiku` or a full name) and the `ANTHROPIC_MODEL` env var both set the session model; the flag wins over the variable and over settings. The flag is used: it is explicit on the launch line like `--plugin-dir`/`--settings`, needs no rc-file re-export (the shell's rc files cannot undo it, unlike an env var) and leaves the user's own `ANTHROPIC_MODEL` untouched for Auto. `bossModelArgs` puts `['--model', <alias>]` first among the start arguments in `startPty`, before the resume arguments, so a variadic option cannot swallow it and `--resume`/`--continue` keep working.
+- **Auto** adds nothing: Claude Code's own default (or the user's `ANTHROPIC_MODEL`/settings). An unknown value is never written.
+- **Tabs.** Every claude tab of the project starts through `startPty`, so the main tab and the worktree tabs (and extra same-folder tabs) all get the flag.
+- **Reload.** `projects:setBossModel` writes the field (removed for Auto) and restarts the project's idle tabs with `--resume`/`--continue` like `projects:setAgentModel` (`restartIdle`); busy, drafting, sleeping and stopped tabs take it at their next start.
+- **Sidebar.** In each project row, right before **Agent model**: **Boss model** [**Auto** | **Sonnet** | **Opus** | **Haiku**] / **Müdür modeli** [**Otomatik** | **Sonnet** | **Opus** | **Haiku**], the same look (`.sb-acct .sb-mode`). The tooltip says Opus is the strongest but costs about 5x Sonnet per token and Haiku is the cheapest. Hidden for `agy` and `commandcode` projects with the other Claude-only controls (`claude ? bossModelSelect(p) : null`); `bossModelArgs` also returns `[]` for them, so a leftover field does nothing.
+- **Agent model stays independent** (v3.14, `CLAUDE_CODE_SUBAGENT_MODEL`). Boss = Sonnet with Agent = Haiku gives the "Sonnet builds, Haiku searches" split: the boss session runs on Sonnet and every sub-agent is pinned to Haiku.
+
 ## Link your Agent Offices on other computers (v3.28, phase 1)
 
 The same person's Agent Offices on different computers pair once and then see each other's office live, over the internet, peer to peer. A project still runs on one computer (its owner); a paired device may type prompts into that project's boss tab when the owner allows it. Phase 2 (not here): moving code by git and P2P, remote approve/deny of permission prompts. App `src/link-core.js` (pure), `src/link.js` (networking, no Electron), `src/link-host.js` (main: keys, commands, IPC), `renderer/devices.js` (UI); `main.js` only wires them.

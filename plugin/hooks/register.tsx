@@ -2,7 +2,22 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ToolCallResult } from 'claude-code'
 
 import type { Delivery, OfficeFrame, OfficeStats, Shell, Worker } from '../types'
-import { finishCandidate, finishModeOf, finishPrompt, finishTurnComplete, finishTurnStart, finishVerdict, JUDGE_LABELS } from './finish'
+import { finishCandidate, finishModeOf, finishPrompt, finishTurnComplete, finishTurnStart, finishVerdict, isWaiting, JUDGE_LABELS } from './finish'
+import {
+  BRIEF_TEXT,
+  briefLacksCheck,
+  callSignature,
+  errorTextOf,
+  factsLine,
+  factsSeed,
+  isRefusedCall,
+  REPEAT_DENY_TEXT,
+  repeatNote,
+  verifyBlock,
+  verifyNote,
+  verifyPrompt,
+} from './harness'
+import type { VerifyStop } from './harness'
 import type { StopInput } from './finish'
 import { appendEntry, directoryProjects, entryOf, JOURNAL_FILE, LOOKBACK_MS, newsText, parseJournal, placeOfDir, selectNews } from './journal'
 import type { Host, JournalSeen, OfficeProject } from './journal'
@@ -162,13 +177,14 @@ const MANAGER_TEMPLATE = `# Manager mode (Agent Office)
 You are the manager in Agent Office: a dispatcher who hands the work to agents and stays available to the person. Your agents are subagents you start with the Agent tool; they work in the background (set run_in_background if your Agent tool has it) while the person watches them at their desks, and you are told when each one finishes. The person can only talk to you between your turns, so keep your own turns short.
 
 - Delegate when the input is large and the answer small (investigating or reading code, builds, tests, long commands, batches of MCP calls) or when pieces can run in parallel: start those agents in the same message (in separate git worktrees when they would touch the same files). Don't delegate a small edit whose brief would be as long as the change: do trivial edits, quick commands and lookups yourself.
-- Brief each agent self-contained: goal, folder, what done looks like, how to check it. Put long context in a file and pass its path, never paste it. Tell every agent to write long findings to a file and report at most 15 lines plus the path.
-- Otherwise your own tool use is quick orientation, reviewing reports, merging and the final check. Several steps into bigger work, hand the rest to an agent.
+- Brief each agent self-contained: deliverable, folder, non-goals (what not to touch), acceptance check (the exact command or condition proving it done), the facts file path. Put long context in a file and pass its path, never paste it. Tell every agent to write long findings to a file and report at most 15 lines plus the path.
+- Your own tool use: quick orientation, reviewing reports, merging, the final check.
 - One scoped task per agent. When an agent's job is done, start a fresh agent for the next task rather than sending the finished one more work: a continued agent re-reads its whole, ever-growing context on every request.
 - {{MODEL}}
+- Consult the reviewer agent (Opus) only before a big plan locks, when one error hits twice, and before reporting a non-trivial change done (it reviews \`git diff\`).
 - While agents run, answer the person, take new requests and dispatch them. Don't redo an agent's work or wait on it in silence.
 - A job for another project: work in that project's folder with absolute paths (in Bash, \`cd <folder> && …\`) and have your agents do the same, so Agent Office shows the work under that project.
-- Keep going until the task list is done. Don't end a turn with a list of remaining work, things left for later or "next steps" that you or your agents could do now: do them, or dispatch them.
+- Keep going until the task list is done. Don't end a turn with remaining work or "next steps" you or your agents could do now: do them, or dispatch them.
 - Make technical choices yourself (libraries, structure, how to fix something) and give the reason in one line. Never end a turn with an offer ("want me to…?", "istersen…"): do it.
 - Stop only for what genuinely needs the person: approving outward-facing or destructive actions (deploying to production, publishing, deleting data, spending money), credentials or logins, and decisions that are theirs to make. For those, finish everything else first, then ask in one short list.
 - Report honestly what you verified and what you did not.
@@ -342,6 +358,13 @@ let isNudged = false
 // refused, for that agent's next call; agents stopped for calling on after refusals (true once the boss was told)
 let stepBudget = 0
 let isStepCapped = false
+// harness gates (harness.ts, app contract v3.26): the verification gate (on with Savings Normal/Strict, i.e. a step
+// budget, or AGENT_OFFICE_VERIFY=1; AGENT_OFFICE_VERIFY=0 turns it off), the brief check's once-per-prompt flag, and
+// the project's facts file (<data dir>/facts/<slug>.md, in the app only)
+let verifyOn = false
+let isBriefReminded = false
+let factsFile = ''
+const FACTS_SECTION_ID = 'agent-office:facts'
 const stepPending = new Map<string, string>()
 const stepStopped = new Map<string, boolean>()
 let isWindows = false // OS=Windows_NT: no /bin/mv or /bin/rm, cmd.exe's move/del/rmdir instead
@@ -694,6 +717,8 @@ async function markDone($: EngineInterface, ids: Set<string>, isOk: boolean) {
     toolCount: w.toolCount ?? 0,
     ...(w.nudges ? { nudges: w.nudges } : {}),
     ...(w.denied ? { denied: w.denied } : {}),
+    ...(w.repeats ? { repeats: w.repeats } : {}),
+    ...(w.repeatDenied ? { repeatDenied: w.repeatDenied } : {}),
   }))
   await setStats($, s => {
     const isToday = s.today?.date === date
@@ -1194,6 +1219,9 @@ async function nestedOf($: EngineInterface): Promise<boolean> {
 // unless AGENT_OFFICE_FINISH_JUDGE=0 or `isJudged` is false (the hook's .catch after a failure or a slow judge)
 async function guardStop<R extends { block?: string }>($: EngineInterface, e: StopInput, answer: R, isJudged: boolean): Promise<R> {
   if (answer.block || isNested) return answer
+  // the verification gate first (no model call); a stop it blocks is not judged again
+  const unverified = verifyOn && !e.agent_id && !isWaiting(e) ? verifyBlock('', e) : undefined
+  if (unverified) return { ...answer, block: unverified }
   const mode = finishModeOf(await $.env.get('AGENT_OFFICE_MANAGER'), await $.env.get('AGENT_OFFICE_FINISH'))
   const found = finishCandidate(mode, e)
   if (!found) return answer
@@ -1202,6 +1230,53 @@ async function guardStop<R extends { block?: string }>($: EngineInterface, e: St
     label = await $.model.classify(found.judged, JUDGE_LABELS).catch(() => undefined)
   const verdict = finishVerdict(found, label)
   return verdict ? { ...answer, ...verdict } : answer
+}
+
+// a refused or failed-again call counted in the session file: on the agent's worker, or the boss's stats
+async function countRepeat($: EngineInterface, key: string, field: 'repeats' | 'repeatDenied') {
+  if (key && workers.some(w => w.id === key)) {
+    await setWorkers($, list => list.map(w => (w.id === key ? { ...w, [field]: (w[field] ?? 0) + 1 } : w)))
+  } else if (!key) await setStats($, s => ({ ...s, [field]: (s[field] ?? 0) + 1 }))
+}
+
+// a call's answer after the harness gates looked at it (harness.ts): the verification gate notes the change or the
+// check; a failed call's error is counted (a reminder the 2nd time); a manager's brief with no acceptance check gets
+// a note. Notes ride the result as context (never the system prompt)
+async function withHarness($: EngineInterface, e: { tool: string; agentId?: string }, key: string, signature: string, done: ToolCallResult): Promise<ToolCallResult> {
+  if (isNested || done.deny !== undefined) return done
+  try {
+    const input = e as unknown as Record<string, unknown>
+    if (verifyOn) verifyNote(key, e.tool, input, done.isReadOnly === true)
+    const notes: string[] = []
+    const errorText = errorTextOf(done)
+    if (errorText) {
+      const action = repeatNote(key, errorText, signature, isStepCapped)
+      if (action?.kind === 'remind') {
+        notes.push(action.text)
+        await countRepeat($, key, 'repeats')
+      }
+    }
+    if (!key && isManager && !isBriefReminded && AGENT_TOOLS.includes(e.tool) && briefLacksCheck(input.prompt)) {
+      isBriefReminded = true
+      notes.push(BRIEF_TEXT)
+    }
+    return notes.length ? { ...done, context: [...(done.context ?? []), ...notes] } : done
+  } catch {
+    return done
+  }
+}
+
+// the project's facts file (harness.ts): seeded once from cheap signals when missing; its path goes to the boss
+async function seedFacts($: EngineInterface, root: string) {
+  const file = `${root}/facts/${projectSlug()}.md`
+  const existing = await $.fs.read(file).catch(() => undefined)
+  if (existing === undefined) {
+    const at = (name: string) => $.fs.read(`${sessionRoot}/${name}`).catch(() => undefined)
+    const [packageJson, makefile, cargo, pyproject, goMod] = await Promise.all(['package.json', 'Makefile', 'Cargo.toml', 'pyproject.toml', 'go.mod'].map(at))
+    const seed = factsSeed(project, dayKey(Date.now()), { packageJson, makefile, cargo, pyproject, goMod })
+    await $.fs.write(file, seed)
+  }
+  factsFile = file
 }
 
 export const register: Register = on => {
@@ -1229,6 +1304,8 @@ export const register: Register = on => {
     const budget = Number.parseInt((await $.env.get('AGENT_OFFICE_STEP_BUDGET')) ?? '', 10)
     stepBudget = !isNested && Number.isFinite(budget) && budget >= STEP_BUDGET_MIN ? budget : 0
     isStepCapped = stepBudget > 0 && (await $.env.get('AGENT_OFFICE_STEP_CAP')) === '1'
+    const verify = (await $.env.get('AGENT_OFFICE_VERIFY')) ?? ''
+    verifyOn = !isNested && (verify === '1' || (verify !== '0' && stepBudget > 0))
     await $.command.register(
       isInApp
         ? { name: 'office', description: t.appDescription, argumentHint: t.appArgumentHint }
@@ -1253,6 +1330,7 @@ export const register: Register = on => {
     if (isNested) return next(e)
     await publish($)
     await startJournal($, home).catch(() => undefined)
+    if (isInApp) await seedFacts($, root).catch(() => undefined)
     if (home) await cleanUp($, root, id).catch(() => undefined)
     startTicker($)
 
@@ -1276,6 +1354,10 @@ export const register: Register = on => {
       const text = directoryText(await $.fs.read(directoryFile).catch(() => ''), journal)
       if (text) sections.push({ id: PROJECTS_SECTION_ID, text, scope: 'session' as const })
     }
+    // the facts file's path, one line, for a loop that briefs agents (the path never changes: prompt cache)
+    const isBriefing = !e.traits.includes('teammate') && e.tools.some(tool => AGENT_TOOLS.includes(tool))
+    if (factsFile && isBriefing && !sections.some(section => section.id === FACTS_SECTION_ID))
+      sections.push({ id: FACTS_SECTION_ID, text: factsLine(factsFile), scope: 'session' as const })
     return sections.length === result.sections.length ? result : { ...result, sections }
   })
 
@@ -1367,20 +1449,28 @@ export const register: Register = on => {
       await publishSoon($)
     } else if (!e.agentId) await placeBoss($, placeOf(e, sessionCwd)).catch(() => undefined)
     const isNudging = !e.agentId && countStep(e.tool)
+    // same error 3 times in Strict: the identical call is refused (harness.ts)
+    const key = e.agentId ?? ''
+    const signature = callSignature(e.tool, e as unknown as Record<string, unknown>)
+    if (!isNested && isRefusedCall(key, signature)) {
+      await countRepeat($, key, 'repeatDenied')
+      return { deny: REPEAT_DENY_TEXT }
+    }
+    const run = async (ev: typeof e) => withHarness($, e, key, signature, await next(ev))
     if (step?.kind === 'deny' && e.agentId) {
       if (step.isStop) void stopAgent($, e.agentId)
       return { deny: step.text }
     }
     const reminder = e.agentId ? withStep(e.agentId, step) : undefined
     if (e.tool !== 'Bash' && e.tool !== 'Monitor' && e.tool !== 'TaskStop') {
-      const answered = await next(e)
+      const answered = await run(e)
       // allowed and run, or denied: its permission dialog is closed (a failure here must not rerun the tool)
       await clearWaiting($, e.tool).catch(() => undefined)
       const answer = reminder ? reminder(answered) : isNudging ? withNudge(answered) : answered
       return !e.agentId && AGENT_TOOLS.includes(e.tool) ? withStopNote(answer) : answer
     }
     const startAt = Date.now()
-    const done = await next(e)
+    const done = await run(e)
     // the tool has run: a failure from here on must not reach .catch, which would run it again
     try {
       await clearWaiting($, e.tool)
@@ -1407,6 +1497,10 @@ export const register: Register = on => {
   // the office journal's news ride a prompt as context (not the system prompt: the cached prompt stays as it is)
   on('prompt.submit', async ($, e, next) => {
     finishPrompt(e.origin?.kind, e.text)
+    if (e.origin?.kind !== 'task-notification') {
+      verifyPrompt()
+      isBriefReminded = false
+    }
     if (e.origin?.kind === 'task-notification') await endNotified($, e.text)
     else await clearWaiting($)
     const news = journalOn && isInApp && e.origin?.kind !== 'task-notification' ? await journalNews($).catch(() => '') : ''
@@ -1436,6 +1530,14 @@ export const register: Register = on => {
     // the finish guard (finish.ts): no stopping on a list of work the main loop could still do
     return guardStop($, e as StopInput, await next(e), true)
   }).catch(async ($, e, next) => guardStop($, e as StopInput, await next(e), false))
+
+  // the verification gate for a subagent (harness.ts): one block when it changed files and ran no check since
+  on('classic.SubagentStop', async ($, e, next) => {
+    const answer = await next(e)
+    if (!verifyOn || isNested || ('block' in answer && answer.block) || typeof e.agent_id !== 'string') return answer
+    const block = verifyBlock(e.agent_id, e as VerifyStop)
+    return block ? { ...answer, block } : answer
+  }).catch(($, e, next) => next(e))
 
   // the office journal names the transcript in each entry: the classic envelope has its path
   on('classic.UserPromptSubmit', async ($, e, next) => {

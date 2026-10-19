@@ -798,7 +798,7 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   const shared = SC.sharedArgs(prepared);
   const directory = officeDirectoryFile(project, usageKey(id), prepared.mcpNames);
   const print = mcpFingerprintOf(account, project, cwd);
-  const args = R.claudeArgs([...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
+  const args = R.claudeArgs([...P.bossModelArgs(project), ...(dir ? ['--plugin-dir', dir] : []), ...shared, ...(settingsArg ? ['--settings', settingsArg] : [])], resumeArgs, prompt);
   const startedAt = Date.now();
   // after the rc files: the account's folder, the project's pinned subagent model (contract v3.14), its context
   // cap (v3.15) and its savings' tool output caps (v3.20; accounts.js sessionEnv)
@@ -1457,6 +1457,15 @@ ipcMain.handle('projects:setManager', (_e, id, value) => {
   const p = P.findProject(state, id);
   if (!p || P.managerOf(state, p) === was) return { restarted: [] };
   return { restarted: restartIdle(p) };
+});
+// Per-project boss model (contract v3.27): 'sonnet' | 'opus' | 'haiku' (`--model` on the launch line), null = Auto.
+// Applies like the agent model: next start, idle tabs at once. Returns the restarted pty ids.
+ipcMain.handle('projects:setBossModel', (_e, id, value) => {
+  const next = P.setProjectBossModel(state, id, value);
+  if (next === state) return { restarted: [] };
+  commit(next);
+  const p = P.findProject(state, id);
+  return { restarted: p ? restartIdle(p) : [] };
 });
 // Per-project subagent model (contract v3.14): 'sonnet' | 'haiku' | 'opus' pins every subagent, null = Auto (the
 // boss picks per agent). Applies like the manager setting: next start, idle tabs at once. Returns the restarted pty ids.
