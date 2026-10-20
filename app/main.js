@@ -479,6 +479,7 @@ function startLogin(accountId) {
   const id = A.loginPtyId(accountId);
   const account = accountById(accountId);
   if (!account || !win) return;
+  if ([...relays.values()].some((r) => r.accountId === accountId)) { send('pty:data', id, '\r\n[a remote sign-in for this account is running; try again when it is done]\r\n'); send('pty:exit', id, -1); return; }
   const old = logins.get(id);
   if (old) { logins.delete(id); try { old.kill(); } catch {} }
   const { cols, rows } = sizes.get(id) || lastSize;
@@ -515,8 +516,8 @@ function startLogin(accountId) {
 // v3.34 remote login relay (src/login-relay.js): `claude auth login` for an existing account of this machine, asked
 // for by a paired device with "Allow account sign-in". Its own pty map, wide (the URL is not wrapped), no window
 // needed, no output to the renderer; a running local login for the account is left alone (the relay is refused).
-function spawnRelayLogin(account, relayId) {
-  const id = `relay:${relayId}`;
+function spawnRelayLogin(account, relayId, devicePub) {
+  const id = `relay:${devicePub || ''}:${relayId}`;
   const env = { ...accountEnv(account), BROWSER: 'true' };   // the browser opens on the asking machine, not here
   let t;
   if (IS_WIN) {
@@ -526,9 +527,10 @@ function spawnRelayLogin(account, relayId) {
   } else {
     t = pty.spawn(shell(), ['-l', '-i', '-c', A.claudeCommand('auth login')], { name: 'xterm-256color', cols: 4000, rows: 50, cwd: app.getPath('home'), env });
   }
+  t.accountId = account.id;
   relays.set(id, t);
   t.onExit(() => { if (relays.get(id) === t) relays.delete(id); });
-  return { onData: (f) => t.onData(f), onExit: (f) => t.onExit(f), write: (x) => t.write(x), kill: () => { relays.delete(id); try { t.kill(); } catch {} } };
+  return { onData: (f) => t.onData(f), onExit: (f) => t.onExit(f), write: (x) => t.write(x), kill: () => { if (relays.get(id) === t) relays.delete(id); try { t.kill(); } catch {} } };
 }
 const relayAccounts = () => state.accounts.map((a) => { const s = auths.get(a.id); return { id: a.id, label: a.label || a.id, state: s?.state || 'unknown', ...(s?.state === 'in' && s.email ? { email: s.email } : {}) }; });
 
@@ -1353,7 +1355,8 @@ function projectOp(op, projectId) {
     if (op === 'stop' && asleep.delete(id)) { send('pty:exit', id, 0); broadcast(); }
     return { ok: true };   // already asleep or stopped
   }
-  if (linkTabState(id) === 'busy') return { ok: false, reason: 'busy' };
+  const ts = linkTabState(id);
+  if (ts !== 'ready' && !(ts === 'starting' && !activity.get(id)?.draft)) return { ok: false, reason: 'busy' };
   if (op === 'sleep') {
     const claude = readJson(Z.claudePidFile(A.accountOf(state, p).configDir, app.getPath('home'), t.pid));
     killPty(id);

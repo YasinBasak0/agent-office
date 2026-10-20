@@ -22,7 +22,7 @@ const REPORT_POLL_MS = 5000;
  *   loginOf?: (projectId: string) => 'in' | 'out' | 'unknown', reportsDir?: string,
  *   onReport?: (r: { id: string, machine: string, pub: string, report: any }) => void,
  *   manage?: (op: 'start' | 'wake' | 'sleep' | 'stop', projectId: string) => { ok: boolean, reason?: string } | Promise<{ ok: boolean, reason?: string }>,
- *   loginRelay?: { spawn: (account: any, id: string) => any, accounts: () => any[], checkAuth: (account: any) => Promise<{ ok: boolean, email?: string }>, localBusy?: (accountId: string) => boolean },
+ *   loginRelay?: { spawn: (account: any, id: string, devicePub?: string) => any, accounts: () => any[], checkAuth: (account: any) => Promise<{ ok: boolean, email?: string }>, localBusy?: (accountId: string) => boolean },
  *   openExternal?: (url: string) => void,
  *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
  *     confirmPush: (project: string, url: string) => Promise<boolean>, confirmKeep: (project: string, device: string) => Promise<boolean>,

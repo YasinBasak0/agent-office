@@ -1136,3 +1136,20 @@ test('integration v3.34: login relay times out there; a non-allowlisted URL is n
   assert.equal(a.loginUrl(r3.id), null);
   await until(() => relay.active() === 0);
 });
+
+test('v3.34 relay: authenticated without a typed code is not success; spawn gets the device pub', async (t) => {
+  const { createLoginRelay } = require('../src/login-relay.js');
+  let exit, spawned;
+  const replies = [];
+  const relay = createLoginRelay({
+    spawn: (acc, id, pub) => { spawned = pub; return { onData: () => {}, onExit: (f) => { exit = f; }, write: () => {}, kill: () => {} }; },
+    accounts: () => [{ id: 'work', label: 'Work' }],
+    checkAuth: async () => ({ ok: true, email: 'me@example.com' }),
+  });
+  t.after(() => relay.destroy());
+  relay.start({ device: { pub: 'PUBKEY', name: 'Studio' }, id: 'x1', account: 'work', reply: (m) => replies.push(m) });
+  assert.equal(spawned, 'PUBKEY');
+  exit({ exitCode: 0 });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(replies.map((m) => [m.ok, m.reason]), [[false, 'failed']]);
+});

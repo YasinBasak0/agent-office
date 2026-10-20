@@ -222,6 +222,7 @@ class Link extends EventEmitter {
       this.remotes.delete(device.pub);
       this.forgetPeer(device.pub);
       this.dropLogins(device.pub);
+      for (const [id, o] of [...this.projOps]) if (o.pub === device.pub) this.endProjOp(id, { ok: false, reason: 'offline' });
       // its answers came on this connection: a command still sent or queued will never hear its outcome
       for (const o of this.outgoing) if (o.pub === device.pub && (o.status === 'sent' || o.status === 'queued')) o.status = 'unknown';
       for (const h of this.handoffsOut.values()) if (h.pub === device.pub) h.finish?.({ ok: false, reason: 'offline' });
@@ -740,6 +741,7 @@ class Link extends EventEmitter {
     } else if (m.t === 'login-start') {
       if (!C.mayAccounts(this.devices, this.secrets, d.pub)) return this.write(conn, { t: 'login-result', id: m.id, ok: false, reason: 'not-allowed' });
       const reply = (msg) => { const c = this.conns.get(d.pub); if (c === conn) this.write(c, { ...msg, id: m.id }); };
+      if (!this.limiter.take(d.pub)) return reply({ t: 'login-result', ok: false, reason: 'rate-limited' });
       if (!this.listenerCount('login-start')) return reply({ t: 'login-result', ok: false, reason: 'not-supported' });
       this.emit('login-start', { device: d, id: m.id, account: m.account, reply });
     } else if (m.t === 'login-code' || m.t === 'login-cancel') {

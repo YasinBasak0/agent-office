@@ -951,7 +951,7 @@ reasons: not-allowed, unknown-project, engine, busy, locked, rate-limited, remov
 ## Remote Claude login relay (v3.34, P2P phase 3 step D)
 
 Sign in an account that already exists on machine B from machine A's Machines panel. Only when A's hello has cap
-`accounts` (OUR_CAPS now `['res','catalog','report','accounts']`; a v1 or no-cap peer is sent none of these types) and B
+`accounts` (OUR_CAPS now `['res','catalog','report','manage','accounts']`; a v1 or no-cap peer is sent none of these types) and B
 turned on "Allow account sign-in" (`allowAccounts`) for A. No account creation, assignment or layout mirror.
 
 ```ts

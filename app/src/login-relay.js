@@ -11,7 +11,7 @@ const C = require('./link-core.js');
 const BUF_MAX = 64 * 1024;   // cleaned output kept while looking for the URL
 
 /**
- * @param {{ spawn: (account: any, id: string) => { onData: (f: (d: string) => void) => void, onExit: (f: (e: { exitCode: number }) => void) => void, write: (s: string) => void, kill: () => void },
+ * @param {{ spawn: (account: any, id: string, devicePub?: string) => { onData: (f: (d: string) => void) => void, onExit: (f: (e: { exitCode: number }) => void) => void, write: (s: string) => void, kill: () => void },
  *   accounts: () => { id: string, label: string }[], checkAuth: (account: any) => Promise<{ ok: boolean, email?: string }>,
  *   localBusy?: (accountId: string) => boolean, logFile?: string | null, notice?: (device: string, label: string) => void,
  *   timeoutMs?: number, promptWaitMs?: number, now?: () => number }} o
@@ -58,7 +58,7 @@ function createLoginRelay(o) {
     const r = { id, account: acc.id, deviceName: device.name || '?', pty: null, buf: '', urlSent: false, codeWritten: false, done: false, timer: null, wait: null, reply };
     relays.set(pub, r);
     log('start', r.deviceName);
-    try { r.pty = o.spawn(acc, id); } catch { return finish(pub, r, false, { reason: 'failed' }); }
+    try { r.pty = o.spawn(acc, id, pub); } catch { return finish(pub, r, false, { reason: 'failed' }); }
     o.notice?.(r.deviceName, acc.label);
     r.timer = setTimeout(() => { kill(r); finish(pub, r, false, { reason: 'timeout' }); }, timeoutMs);
     r.timer.unref?.();
@@ -74,7 +74,7 @@ function createLoginRelay(o) {
     r.pty.onExit(() => {
       if (r.done) return;
       Promise.resolve().then(() => o.checkAuth(acc)).then(
-        (a) => finish(pub, r, Boolean(a?.ok), a?.ok ? (a.email ? { email: a.email } : {}) : { reason: 'failed' }),
+        (a) => finish(pub, r, Boolean(a?.ok) && r.codeWritten, a?.ok && r.codeWritten ? (a.email ? { email: a.email } : {}) : { reason: 'failed' }),
         () => finish(pub, r, false, { reason: 'failed' }));
     });
   }
