@@ -34,7 +34,8 @@ const TAIL = 2000; // characters of plain screen text kept to match patterns acr
 
 // --- patterns (see contract v3.23 for which are documented and which are guessed)
 // busy: the spinner frames of a terminal "dots" spinner (Gemini CLI family) or the cancel hint of the busy line
-const BUSY_RE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|\besc (to )?(cancel|interrupt|stop)\b/i; // OpenCode's busy line says "esc interrupt" (v3.40)
+const BUSY_RE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|\besc to (cancel|interrupt|stop)\b/i;
+const OC_BUSY_RE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|\besc (to )?(cancel|interrupt|stop)\b/i; // OpenCode's busy line says "esc interrupt" (v3.40)
 // an approval dialog. agy's documented prompts: "Allow create this file? [y/n/f]" (a `[y/n…]` choice after a
 // question), the sandbox choices "Yes, and run in sandbox" / "Yes, and run without sandbox restrictions" and the
 // sub-agent notice 'Subagent 12 asks to run "npm test"'. The rest are Gemini CLI's dialog labels (guessed for agy).
@@ -83,6 +84,7 @@ const dayKey = (ms) => {
  * @param {number} [startAt] @param {{ engine?: 'agy' | 'commandcode' | 'opencode', label?: string }} [o]
  */
 function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigravity' } = {}) {
+  const busyRe = engine === 'opencode' ? OC_BUSY_RE : BUSY_RE;
   let busy = false;
   let turnOpen = false; // a turn that has not been counted yet
   let turnAt = 0; // when the current turn began
@@ -146,7 +148,7 @@ function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigra
         lastSign = now;
         return;
       }
-      if (BUSY_RE.test(text)) {
+      if (busyRe.test(text)) {
         if (!busy) startTurn(now);
         lastSign = now;
       }
@@ -350,4 +352,4 @@ function readTranscript(file, from, promptRe = /"USER_INPUT"/g) {
   return { file, size: st.size, prompts };
 }
 
-module.exports = { createAgyWatch, dayKey, plainText, agyTranscriptPath, readTranscript, cmdProjectDir, hasCmdSession, cmdTranscriptPath, CMD_PROMPT_RE, BUSY_RE, ASK_RE, QUIET_MS, SUBMIT_GRACE_MS };
+module.exports = { createAgyWatch, dayKey, plainText, agyTranscriptPath, readTranscript, cmdProjectDir, hasCmdSession, cmdTranscriptPath, CMD_PROMPT_RE, BUSY_RE, OC_BUSY_RE, ASK_RE, QUIET_MS, SUBMIT_GRACE_MS };

@@ -12,8 +12,15 @@ const { promptArg } = require('./resume.js');
 // to rebuild the app's Claude variables from; any AGENT_OFFICE_* an rc file still sets is dropped before exec. The
 // user's own rc variables (theirs, whatever their name) are left alone.
 const UNSET_OFFICE_ENV = 'for v in $(env | sed -n \'s/^\\(AGENT_OFFICE_[A-Za-z0-9_]*\\)=.*/\\1/p\'); do unset "$v"; done; ';
-/** A third-party engine's launch line (agy, Command Code, OpenCode): drops any AGENT_OFFICE_* first, then `exec <bin> "$@"`. */
-const launchLine = (/** @type {string} */ bin) => `${UNSET_OFFICE_ENV}exec ${bin} "$@"`;
+// OpenCode (v3.40) also has an Anthropic provider that reads ANTHROPIC_API_KEY itself: its line also drops any
+// ANTHROPIC_* and CLAUDE* an rc file set (sed -E: BSD and GNU).
+const UNSET_OFFICE_CLAUDE_ENV = 'for v in $(env | sed -nE \'s/^((AGENT_OFFICE_|ANTHROPIC_|CLAUDE)[A-Za-z0-9_]*)=.*/\\1/p\'); do unset "$v"; done; ';
+/**
+ * A third-party engine's launch line (agy, Command Code, OpenCode): drops any AGENT_OFFICE_* first (with `claude`,
+ * also ANTHROPIC_* and CLAUDE*), then `exec <bin> "$@"`.
+ * @param {string} bin @param {{ claude?: boolean }} [o]
+ */
+const launchLine = (bin, { claude = false } = {}) => `${claude ? UNSET_OFFICE_CLAUDE_ENV : UNSET_OFFICE_ENV}exec ${bin} "$@"`;
 const AGY_COMMAND = launchLine('agy');
 
 /**
@@ -165,7 +172,7 @@ function ocArgs({ resume = false, prompt = '', model = null } = {}) {
 }
 
 /** OpenCode's launch line: drops any AGENT_OFFICE_* an rc file set (as AGY_COMMAND), then `opencode "$@"`. */
-const OC_COMMAND = launchLine(OC.bin); // built from the binary, never by editing AGY_COMMAND (v3.40)
+const OC_COMMAND = launchLine(OC.bin, { claude: true }); // built from the binary, never by editing AGY_COMMAND (v3.40)
 
 // What OpenCode reads from the environment, passed only when the user has it: its own OPENCODE_* switches and the
 // API keys of the model providers it documents (opencode.ai/docs/providers), by exact name. Any other *_API_KEY in
@@ -206,6 +213,8 @@ function ocEnv(base, platform = process.platform) {
   }
   out.TERM = 'xterm-256color';
   out.COLORTERM = 'truecolor';
+  // Windows names ignore case: a user `Opencode_Disable_Claude_Code=0` must not sit beside the forced value
+  for (const k of Object.keys(out)) if (norm(k) in OC_FORCED_ENV) delete out[k];
   Object.assign(out, OC_FORCED_ENV);
   return out;
 }

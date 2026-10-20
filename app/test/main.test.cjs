@@ -3780,11 +3780,24 @@ test('OpenCode ortamı (v3.40): yalnız belgelenmiş sağlayıcı anahtarları; 
 
 test('OpenCode başlatma satırı ve boss modeli (v3.40, v3.36): launchLine, -m provider/model, eksik tablo çökertmez', () => {
   const EN = require('../src/engine.js');
-  assert.equal(EN.OC_COMMAND, EN.launchLine('opencode'));
+  assert.equal(EN.OC_COMMAND, EN.launchLine('opencode', { claude: true }));
   assert.equal(EN.CMD_COMMAND, EN.launchLine('commandcode'));
   assert.equal(EN.AGY_COMMAND, EN.launchLine('agy'));
   assert.ok(EN.OC_COMMAND.endsWith('exec opencode "$@"')); assert.equal(EN.OC_COMMAND.includes('exec agy'), false);
-  assert.ok(EN.OC_COMMAND.startsWith('for v in $(env | sed -n'));
+  assert.ok(EN.OC_COMMAND.startsWith('for v in $(env | sed -nE'));
+  // the line really drops ANTHROPIC_* / CLAUDE* / AGENT_OFFICE_* an rc file set, and keeps the rest
+  if (process.platform !== 'win32') {
+    const line = EN.OC_COMMAND.replace('exec opencode "$@"', 'env');
+    const out = require('node:child_process').execFileSync('/bin/sh', ['-c', 'export ANTHROPIC_API_KEY=a CLAUDE_CONFIG_DIR=c CLAUDECODE=1 AGENT_OFFICE_X=o OPENAI_API_KEY=k; ' + line], { env: { PATH: '/usr/bin:/bin' } }).toString();
+    assert.equal(/^(ANTHROPIC_|CLAUDE|AGENT_OFFICE_)/m.test(out), false); assert.match(out, /^OPENAI_API_KEY=k$/m);
+  }
+  // Windows: a user's case variant of a forced name is dropped, not kept beside it
+  const wf = EN.ocEnv({ Path: 'C:\\b', Opencode_Disable_Claude_Code: '0' }, 'win32');
+  assert.equal('Opencode_Disable_Claude_Code' in wf, false); assert.equal(wf.OPENCODE_DISABLE_CLAUDE_CODE, '1');
+  // the wider busy pattern is OpenCode's only; agy/Command Code keep "esc to …"
+  const AW = require('../src/agy-watch.js');
+  assert.equal(AW.OC_BUSY_RE.test('esc interrupt'), true); assert.equal(AW.BUSY_RE.test('esc interrupt'), false);
+  assert.equal(AW.BUSY_RE.test('esc to cancel'), true);
   assert.deepEqual(EN.ocArgs({ model: 'opencode/big-pickle' }), ['-m', 'opencode/big-pickle']);
   assert.deepEqual(EN.ocArgs({ model: 'opencode/big-pickle', resume: true, prompt: 'go' }), ['-m', 'opencode/big-pickle', '--continue', '--prompt', 'go']);
   // D1 regression: an OpenCode project's boss model lookup must not throw
