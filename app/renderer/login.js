@@ -83,7 +83,7 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
    */
   function open(account, ext) {
     if (!account) return;
-    if (cur?.id === account.id) return cur.term.focus();
+    if (cur?.id === account.id && cur.term) return cur.term.focus();
     close();
     const root = h('div', 'login-overlay');
     root.id = 'login-overlay';
@@ -127,10 +127,113 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
     cur = null;
     clearTimers(c);
     // Login closed midway: stop the pty (Ctrl+C) so the next "Giriş yap" starts clean.
-    if (!c.exited) { try { window.agentOffice.pty.write(c.ptyId, '\x03'); } catch {} }
-    c.term.destroy();
+    if (c.remote) {
+      // a relay still running on the other machine is cancelled there (its claude auth login is stopped)
+      if (c.remote.loginId && !c.remote.finished) c.remote.api.link?.loginCancel?.(c.remote.loginId);
+    } else {
+      if (!c.exited) { try { window.agentOffice.pty.write(c.ptyId, '\x03'); } catch {} }
+      c.term.destroy();
+    }
     c.root.remove();
     onClose();
+  }
+
+  /**
+   * v3.34 remote mode: an existing account of another machine signs in there (`claude auth login` runs on that
+   * machine). No terminal: Open (the sign-in page opens in this machine's browser), a code field and Send. The URL and
+   * the code never reach this page's state beyond the input box; only the page's host is shown.
+   * @param {{ api: any, device: { id: string, name: string }, account: { id: string, label: string }, view: () => any }} o
+   */
+  function openRemote({ api, device, account, view }) {
+    close();
+    const root = h('div', 'login-overlay');
+    root.id = 'login-overlay';
+    const panel = h('div', 'lo-panel lo-remote');
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    const head = h('div', 'lo-head');
+    const title = h('span', 'lo-title');
+    const x = h('button', 'lo-x', '×');
+    x.title = t('login.close');
+    x.addEventListener('click', () => close());
+    head.append(title, x);
+    const hintEl = h('p', 'lo-hint');
+    const openBtn = h('button', 'lo-retry lo-open', t('login.remoteOpen'));
+    const form = h('form', 'lo-code');
+    const input = /** @type {HTMLInputElement} */ (h('input', 'lo-code-input'));
+    Object.assign(input, { name: 'code', autocomplete: 'off', spellcheck: false, maxLength: 700, placeholder: t('login.remoteCode') });
+    const sendBtn = h('button', 'lo-retry', t('login.remoteSend'));
+    sendBtn.setAttribute('type', 'submit');
+    form.append(input, sendBtn);
+    const foot = h('div', 'lo-foot');
+    const status = h('span', 'lo-status');
+    const retry = h('button', 'lo-retry', t('login.retry'));
+    retry.hidden = true;
+    foot.append(status, retry);
+    panel.append(head, hintEl, openBtn, form, foot);
+    root.append(panel);
+    parent.append(root);
+    const remote = { api, device, account, view, loginId: null, finished: false, openBtn, form, input, sendBtn };
+    const ext = { hint: () => t('login.remoteHint', { device: device.name }), title: () => t('login.remoteTitle', { label: account.label, device: device.name }) };
+    cur = { id: `remote:${device.id}:${account.id}`, ptyId: null, root, title, x, hint: hintEl, status, retry, term: null, timers: [], ext, remote };
+    hintEl.textContent = ext.hint();
+    setLabel(account.label);
+    openBtn.addEventListener('click', () => { if (remote.loginId) api.link?.loginOpen?.(remote.loginId); });
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const code = input.value.trim();
+      if (!remote.loginId || !code) return;
+      api.link?.loginCode?.(remote.loginId, code).then((/** @type {any} */ r) => {
+        if (cur?.remote !== remote) return;
+        if (r?.ok) { input.value = ''; updateRemote(); } else if (r?.reason === 'bad-code') setStatus(() => t('login.remoteBadCode'), 'err');
+      });
+    });
+    const begin = () => {
+      Object.assign(remote, { loginId: null, finished: false });
+      retry.hidden = true;
+      setStatus(() => t('login.remoteStarting', { device: device.name }));
+      api.link?.loginStart?.(device.id, account.id).then((/** @type {any} */ r) => {
+        if (cur?.remote !== remote) { if (r?.ok) api.link?.loginCancel?.(r.id); return; }
+        if (r?.ok) { remote.loginId = r.id; updateRemote(); } else fail(r?.reason || 'failed');
+      });
+    };
+    const fail = (/** @type {string} */ reason) => {
+      remote.finished = true;
+      const why = () => t(`login.reason.${reason}`, { device: device.name });
+      setStatus(() => t('login.remoteFailed', { reason: why() }), 'err');
+      retry.hidden = false;
+      updateButtons();
+    };
+    remote.fail = fail;
+    retry.addEventListener('click', begin);
+    updateButtons();
+    begin();
+    requestAnimationFrame(() => input.focus());
+  }
+  function updateButtons() {
+    const r = cur?.remote;
+    if (!r) return;
+    const rec = r.loginId ? (r.view()?.logins || []).find((/** @type {any} */ l) => l.id === r.loginId) : null;
+    r.openBtn.disabled = rec?.status !== 'waiting';
+    r.sendBtn.disabled = rec?.status !== 'waiting';
+    r.input.disabled = rec?.status !== 'waiting';
+  }
+  /** The LinkView changed: follow the relay's state (starting → waiting → sent → ok | failed). */
+  function updateRemote() {
+    const c = cur;
+    const r = c?.remote;
+    if (!r || !r.loginId || r.finished) return updateButtons();
+    const rec = (r.view()?.logins || []).find((/** @type {any} */ l) => l.id === r.loginId);
+    if (!rec) return;
+    const device = r.device.name;
+    if (rec.status === 'waiting') setStatus(() => t('login.remoteWaiting', { host: rec.host || '' }));
+    else if (rec.status === 'sent') setStatus(() => t('login.remoteSent', { device }));
+    else if (rec.status === 'ok') {
+      r.finished = true;
+      setStatus(() => `${t('login.remoteOk', { device })}${rec.email ? ` · ${rec.email}` : ''}`, 'ok');
+      c.timers.push(setTimeout(() => { if (cur === c) close(); }, CLOSE_AFTER));
+    } else if (rec.status === 'failed') r.fail(rec.reason || 'failed');
+    updateButtons();
   }
 
   window.addEventListener('keydown', (e) => {
@@ -146,15 +249,18 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
     cur.x.title = t('login.close');
     cur.hint.textContent = cur.ext ? cur.ext.hint() : t('login.hint');
     cur.retry.textContent = t('login.retry');
+    if (cur.remote) { cur.remote.openBtn.textContent = t('login.remoteOpen'); cur.remote.sendBtn.textContent = t('login.remoteSend'); cur.remote.input.placeholder = t('login.remoteCode'); }
     cur.title.textContent = cur.ext?.title ? cur.ext.title() : t('login.title', { label: cur.label });
     cur.status.textContent = (cur.statusText && cur.statusText()) || '';
   });
 
   return {
     open,
+    openRemote,
+    updateRemote,
     close,
     isOpen: () => !!cur,
-    focus() { cur?.term.focus(); },
+    focus() { if (cur?.remote) cur.remote.input.focus(); else cur?.term?.focus(); },
     /** pty data: only the open overlay's id gets through, the rest is dropped. */
     write(ptyId, d) { if (cur?.ptyId === ptyId) cur.term.write(d); },
     exit(ptyId, code) {
@@ -176,6 +282,6 @@ export function mountLogin(parent, { getTheme = () => ({}), onClose = () => {} }
       setLabel(a.label);
       if (cur.exited) { cur.updated = true; evaluate(); }
     },
-    setTheme(t) { cur?.term.setTheme(t); },
+    setTheme(t) { cur?.term?.setTheme(t); },
   };
 }

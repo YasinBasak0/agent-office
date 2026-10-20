@@ -317,7 +317,29 @@
     "checking": "giriş denetleniyor…",
     "agyHint": "Açılan tarayıcıda Google ile giriş yap (SSH'te kodu buraya yapıştır). agy'nin istemi gelince giriş tamamdır: /exit yaz.",
     "agyLogoutHint": "Antigravity'den çıkmak için /logout yazıp Enter'a bas, sonra /exit.",
-    "cmdHint": "Açılan tarayıcıda Authorize'a tıklayın, sonra buraya dönün. API anahtarının kaydedildiğini yazınca giriş yapılmıştır ve bu pencere kapanır."
+    "cmdHint": "Açılan tarayıcıda Authorize'a tıklayın, sonra buraya dönün. API anahtarının kaydedildiğini yazınca giriş yapılmıştır ve bu pencere kapanır.",
+    "remoteTitle": "{device} üzerinde {label} hesabına giriş",
+    "remoteHint": "Claude Code {device} üzerinde çalışıyor. Giriş sayfasını burada açın, onaylayın, gösterilen kodu yapıştırıp Gönder'e basın. Yalnızca bu kod gönderilir; giriş ve anahtarları {device} üzerinde kalır.",
+    "remoteOpen": "Giriş sayfasını aç",
+    "remoteCode": "Kodu buraya yapıştırın",
+    "remoteSend": "Gönder",
+    "remoteStarting": "{device} üzerinde giriş başlatılıyor…",
+    "remoteWaiting": "Sayfayı açın ({host}), onaylayın, sonra kodu yapıştırın.",
+    "remoteSent": "Kod gönderildi; {device} üzerinde kontrol ediliyor…",
+    "remoteOk": "{device} üzerinde giriş yapıldı",
+    "remoteBadCode": "Bu bir giriş kodu gibi görünmüyor.",
+    "remoteFailed": "Giriş tamamlanmadı: {reason}",
+    "reason": {
+      "not-allowed": "{device} bu makineden hesap girişine izin vermiyor",
+      "busy": "orada başka bir giriş sürüyor",
+      "unknown-account": "hesap o makinede yok",
+      "timeout": "10 dakikadan uzun sürdü",
+      "cancelled": "iptal edildi",
+      "failed": "giriş yapılmadı",
+      "bad-url": "giriş bağlantısı bir Claude adresi değildi",
+      "offline": "makine çevrimdışı oldu",
+      "not-supported": "oradaki Agent Office'i güncelleyin"
+    }
   },
   "terminal": {
     "exited": "— Claude kapandı — yeniden başlatmak için Enter —",
@@ -516,7 +538,9 @@
     "handoffStillUnknown": "{device}, {project} projesini devralıp almadığını bilmiyor",
     "reportReady": "Rapor hazır: {project} ({machine})",
     "officeUnavailable": "Boss sekmeleri için Agent Office araçları kapalı: ofis soketi açılamadı",
-    "projOpNotice": "{device}: {project} → {op}"
+    "projOpNotice": "{device}: {project} → {op}",
+    "loginRelayTitle": "Uzaktan giriş",
+    "loginRelayBody": "{device}, bu makinede {label} hesabına giriş yapıyor."
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",
@@ -704,6 +728,16 @@
     },
     "opTitle": "{device} üzerinde {project}: {op}",
     "opSent": "{op}…",
-    "opFailed": "{op} reddedildi: {reason}"
+    "opFailed": "{op} reddedildi: {reason}",
+    "accounts": "Hesaplar",
+    "login": "Giriş yap",
+    "loginTitle": "{device} üzerindeki {label} hesabına buradan giriş yap",
+    "acctState": {
+      "in": "giriş yapıldı",
+      "out": "çıkış yapıldı",
+      "checking": "kontrol ediliyor",
+      "error": "hata",
+      "unknown": "bilinmiyor"
+    }
   }
 }

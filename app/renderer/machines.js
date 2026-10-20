@@ -38,9 +38,9 @@ export function machinesOf(view) {
 
 /**
  * @param {HTMLElement} el the #machines-panel aside
- * @param {{ api: any, view: () => any, anchor?: HTMLElement, onClose?: () => void }} o
+ * @param {{ api: any, view: () => any, anchor?: HTMLElement, onClose?: () => void, onLogin?: (device: any, account: any) => void }} o
  */
-export function mountMachines(el, { api, view, anchor, onClose }) {
+export function mountMachines(el, { api, view, anchor, onClose, onLogin }) {
   el.classList.add('agent-panel', 'machines-panel');
   el.tabIndex = -1;
   el.setAttribute('role', 'dialog');
@@ -131,6 +131,20 @@ export function mountMachines(el, { api, view, anchor, onClose }) {
       note ? h('span', { class: `mc-sub${st.state === 'failed' ? ' mc-amber' : ''}` }, note) : null);
   }
 
+  /** v3.34 that machine's accounts (shared with "Allow account sign-in" there) and Log in through the relay. @param {any} m */
+  function accounts(m) {
+    if (m.self || !m.online || !Array.isArray(m.accounts) || !m.caps?.includes('accounts')) return null;
+    return h('div', { class: 'mc-accounts' },
+      h('div', { class: 'mc-row mc-sub' }, t('machines.accounts')),
+      h('ul', { class: 'mc-projects' }, m.accounts.map((/** @type {any} */ a) => h('li', { class: `mc-proj mc-acct acct-${a.state}` },
+        h('div', { class: 'mc-proj-top' },
+          h('span', { class: 'mc-name' }, a.label),
+          h('span', { class: 'mc-sub' }, [t(`machines.acctState.${a.state}`), a.email || ''].filter(Boolean).join(' · ')),
+          a.state !== 'in' && onLogin
+            ? h('button', { class: 'sb-x mc-login', title: t('machines.loginTitle', { label: a.label, device: m.name }), onclick: () => onLogin(m, a) }, t('machines.login'))
+            : null)))));
+  }
+
   function render() {
     if (el.hidden) return;
     const focused = /** @type {HTMLInputElement | null} */ (document.activeElement);
@@ -149,7 +163,8 @@ export function mountMachines(el, { api, view, anchor, onClose }) {
           h('span', { class: 'mc-title' }, m.name || '?'),
           m.self ? h('span', { class: 'mc-sub' }, t('machines.thisMachine')) : null),
         stats(m, selfApp),
-        projects(m, devices)))),
+        projects(m, devices),
+        accounts(m)))),
       ...(devices.length ? [] : [h('div', { class: 'mc-note' }, t('machines.none'))]));   // replaceChildren would print a null
     place();
   }

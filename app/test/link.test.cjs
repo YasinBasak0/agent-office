@@ -725,6 +725,9 @@ test('integration v3.31: a v1 peer gets zero new message types and stays connect
   assert.equal(a.view().devices[0].v, 1);
   assert.deepEqual(a.view().devices[0].caps, []);
   a.setAllowManage(b.pub, true);                    // even with the opt-in on
+  a.setAllowAccounts(b.pub, true);
+  a.publishAccounts([{ id: 'work', label: 'Work', state: 'out' }]);
+  assert.deepEqual(a.startRemoteLogin(b.pub, 'work'), { ok: false, reason: 'not-supported' });   // v3.34: no relay to a v1 peer
   a.publishRes(RES);
   a.publishCatalog(CATALOG);
   a.publish({ projects: [], workers: [], delivered: 0 });
@@ -738,7 +741,7 @@ test('integration v3.31: a v1 peer gets zero new message types and stays connect
 
 test('integration v3.31/v3.32: caps negotiated; res to res peers; catalog only with allowManage; removal revokes', { timeout: 60000 }, async (t) => {
   const { a, b, got, until } = await pairPair(t);
-  assert.deepEqual(b.view().devices[0].caps, ['res', 'catalog', 'report', 'manage']);
+  assert.deepEqual(b.view().devices[0].caps, ['res', 'catalog', 'report', 'manage', 'accounts']);
   assert.equal(b.view().devices[0].app, '0.14.0');
   a.publishRes(RES);
   a.publishCatalog(CATALOG);
@@ -1043,4 +1046,93 @@ test('v3.33 host: ops run in order, logged to manage.log; a removed device\'s qu
   const log = fs.readFileSync(path.join(tmp, 'link', 'manage.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(log.map((e) => [e.device, e.op, e.outcome]), [['Laptop', 'start', 'ok'], ['Old', 'sleep', 'dropped:removed'], ['Laptop', 'stop', 'rejected:busy'], ['Laptop', 'wake', 'rejected:unknown-project']]);
   assert.equal((fs.statSync(path.join(tmp, 'link', 'manage.log')).mode & 0o777), 0o600);
+});
+
+// ---- v3.34 remote Claude login relay (stub `claude auth login`, never a real one)
+
+function stubSpawn(env = {}) {
+  const cp = require('child_process');
+  return () => {
+    const p = cp.spawn(process.execPath, [path.join(__dirname, 'claude-login-stub.cjs')], { env: { ...process.env, ...env } });
+    return { onData: (f) => p.stdout.on('data', (d) => f(d.toString())), onExit: (f) => p.on('exit', (c) => f({ exitCode: c })), write: (x) => p.stdin.write(x.replace(/\r$/, '\n')), kill: () => p.kill() };
+  };
+}
+function relayOn(t, b, o = {}) {
+  const { createLoginRelay } = require('../src/login-relay.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-relay-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  let exitedOk = false;
+  const notices = [];
+  const relay = createLoginRelay({
+    spawn: (acc, id) => { const p = stubSpawn(o.env)(acc, id); p.onExit((e) => { exitedOk = e.exitCode === 0; }); return p; },
+    accounts: () => [{ id: 'work', label: 'Work' }],
+    checkAuth: async () => (exitedOk ? { ok: true, email: 'me@example.com' } : { ok: false }),
+    logFile: path.join(tmp, 'accounts.log'), notice: (device, label) => notices.push([device, label]), timeoutMs: o.timeoutMs,
+  });
+  relay.attach(b);
+  t.after(() => relay.destroy());
+  return { relay, notices, logFile: path.join(tmp, 'accounts.log') };
+}
+const CODE = 'AbCdEf0123456789-_.~#state_ABC123';
+
+test('integration v3.34: login relay end to end; not-allowed without allowAccounts; the code is typed once and never logged', { timeout: 60000 }, async (t) => {
+  const { a, b, got, until } = await pairPair(t);
+  const { relay, notices, logFile } = relayOn(t, b);
+  b.publishAccounts([{ id: 'work', label: 'Work', state: 'out', configDir: '/secret', token: 'x' }]);
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(a.view().devices[0].accounts, null);              // not shared without "Allow account sign-in"
+  assert.equal(got.includes('acct-view'), false);
+  const r0 = a.startRemoteLogin(b.pub, 'work');
+  await until(() => a.loginsOut.get(r0.id).status === 'failed');
+  assert.equal(a.loginsOut.get(r0.id).reason, 'not-allowed');
+  assert.equal(relay.active(), 0);
+  b.setAllowAccounts(a.pub, true);
+  await until(() => a.view().devices[0].accounts);
+  assert.deepEqual(a.view().devices[0].accounts, [{ id: 'work', label: 'Work', state: 'out' }]);
+  const r1 = a.startRemoteLogin(b.pub, 'work');
+  assert.deepEqual(a.startRemoteLogin(b.pub, 'work'), { ok: false, reason: 'busy' });   // one relay per device
+  await until(() => a.loginsOut.get(r1.id).status === 'waiting');
+  const url = a.loginUrl(r1.id);
+  assert.ok(url.startsWith('https://claude.ai/oauth/authorize?'));
+  const v = a.view().logins.find((l) => l.id === r1.id);
+  assert.deepEqual([v.status, v.host, v.prompt, v.url], ['waiting', 'claude.ai', 'Paste code here if prompted >', undefined]);   // no URL to the renderer
+  assert.deepEqual(notices, [['Studio', 'Work']]);
+  assert.deepEqual(a.sendLoginCode(r1.id, 'not a code'), { ok: false, reason: 'bad-code' });
+  assert.deepEqual(a.sendLoginCode(r1.id, CODE), { ok: true });
+  assert.deepEqual(a.sendLoginCode(r1.id, CODE), { ok: false, reason: 'not-waiting' });   // once
+  await until(() => a.loginsOut.get(r1.id).status === 'ok');
+  assert.equal(a.loginsOut.get(r1.id).email, 'me@example.com');
+  assert.equal(a.loginsOut.get(r1.id).url, undefined);
+  const log = fs.readFileSync(logFile, 'utf8');
+  assert.deepEqual(log.trim().split('\n').map((l) => JSON.parse(l)).map((e) => [e.event, e.device, e.ok]), [['start', 'Studio', undefined], ['result', 'Studio', true]]);
+  assert.ok(!log.includes('state_ABC') && !log.includes('oauth') && !log.includes('AbCdEf'));
+  // cancel: the relay there stops
+  const r2 = a.startRemoteLogin(b.pub, 'work');
+  await until(() => a.loginsOut.get(r2.id).status === 'waiting');
+  assert.equal(relay.active(), 1);
+  a.cancelRemoteLogin(r2.id);
+  assert.equal(a.loginsOut.get(r2.id).reason, 'cancelled');
+  await until(() => relay.active() === 0);
+  // turning the opt-in off: the list is withdrawn
+  b.setAllowAccounts(a.pub, false);
+  await until(() => a.view().devices[0].accounts === null);
+});
+
+test('integration v3.34: login relay times out there; a non-allowlisted URL is never sent', { timeout: 60000 }, async (t) => {
+  const { a, b, until } = await pairPair(t);
+  b.setAllowAccounts(a.pub, true);
+  const { relay } = relayOn(t, b, { timeoutMs: 1500, env: { STUB_HOST: 'evil.example' } });
+  const r = a.startRemoteLogin(b.pub, 'work');
+  await until(() => a.loginsOut.get(r.id).status === 'failed');
+  assert.equal(a.loginsOut.get(r.id).reason, 'timeout');           // no allowlisted URL: nothing was sent, then the timeout
+  assert.equal(relay.active(), 0);
+  assert.deepEqual(a.startRemoteLogin(b.pub, 'nope').ok, true);    // an unknown account is refused there
+  await until(() => [...a.loginsOut.values()].some((x) => x.reason === 'unknown-account'));
+  // the asking side checks the host too: a login-url from elsewhere fails the relay and cancels it there
+  const r3 = a.startRemoteLogin(b.pub, 'work');
+  await until(() => relay.active() === 1);
+  a.handle(a.conns.get(b.pub), { pub: b.pub }, { t: 'login-url', id: r3.id, url: 'https://evil.example/oauth/authorize?redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback', prompt: '' });
+  assert.equal(a.loginsOut.get(r3.id).reason, 'bad-url');
+  assert.equal(a.loginUrl(r3.id), null);
+  await until(() => relay.active() === 0);
 });

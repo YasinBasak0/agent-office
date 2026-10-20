@@ -7,6 +7,7 @@ const path = require('path');
 const os = require('os');
 const C = require('./link-core.js');
 const H = require('./handoff.js');
+const { createLoginRelay } = require('./login-relay.js');
 
 const QUEUE_MAX = 5;                    // waiting commands per project
 const QUEUE_TTL_MS = 30 * 60 * 1000;    // a command that waited this long is dropped ('expired')
@@ -21,6 +22,8 @@ const REPORT_POLL_MS = 5000;
  *   loginOf?: (projectId: string) => 'in' | 'out' | 'unknown', reportsDir?: string,
  *   onReport?: (r: { id: string, machine: string, pub: string, report: any }) => void,
  *   manage?: (op: 'start' | 'wake' | 'sleep' | 'stop', projectId: string) => { ok: boolean, reason?: string } | Promise<{ ok: boolean, reason?: string }>,
+ *   loginRelay?: { spawn: (account: any, id: string) => any, accounts: () => any[], checkAuth: (account: any) => Promise<{ ok: boolean, email?: string }>, localBusy?: (accountId: string) => boolean },
+ *   openExternal?: (url: string) => void,
  *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
  *     confirmPush: (project: string, url: string) => Promise<boolean>, confirmKeep: (project: string, device: string) => Promise<boolean>,
  *     target: (dir: string) => { root: string, memoryDir: string, factsFile: string, accountId?: string },
@@ -39,6 +42,7 @@ function setupLink(d) {
   const defaults = new Map();            // incoming handoff id → the folder used without asking ('' = the person picks)
   const answered = new Set();            // incoming handoff ids already answered (a second click does nothing)
   let link = null;
+  let relay = null;                      // v3.34 login relay host (src/login-relay.js)
   let error = null;
   const queue = new Map();               // projectId → [{ id, device, text, at, reply }]
 
@@ -84,6 +88,12 @@ function setupLink(d) {
       link.on('handoff-data', (x) => { applyHandoff(x).catch(() => {}); });
       link.on('handoff-late-result', onLateResult);
       link.on('handoff-status', onStatus);
+      // v3.34 remote Claude login relay (host side): only when main gave a way to run `claude auth login`
+      if (d.loginRelay) {
+        relay = createLoginRelay({ ...d.loginRelay, logFile: path.join(dir, 'accounts.log'),
+          notice: (device, label) => d.notify(d.T('main.loginRelayTitle'), d.T('main.loginRelayBody', { device, label })) });
+        relay.attach(link);
+      }
       // a handoff whose outcome is still unknown keeps its project locked across restarts
       for (const v of Object.values(readOwners())) if (v?.owner === 'unknown' && v.projectId) d.handoff?.lock(v.projectId, true);
       if (link.devices.length) link.ensureSwarm();
@@ -439,6 +449,16 @@ function setupLink(d) {
   ipc('link:handoffAsk', (_l, folder) => askAgain(String(folder)));
   ipc('link:handoffKeep', (_l, folder) => keepHere(String(folder)));
   ipc('link:send', (l, id, project, text) => l.sendCommand(String(id), String(project), String(text ?? '')));
+  // v3.34 login relay (asking side): start, open the sign-in page here, send the pasted code, cancel
+  d.ipcMain.handle('link:loginStart', (_e, id, account) => { const l = start(); return l ? l.startRemoteLogin(String(id), String(account)) : { ok: false, reason: 'offline' }; });
+  d.ipcMain.handle('link:loginCode', (_e, id, code) => { const l = start(); return l ? l.sendLoginCode(String(id), String(code ?? '')) : { ok: false, reason: 'offline' }; });
+  ipc('link:loginCancel', (l, id) => l.cancelRemoteLogin(String(id)));
+  d.ipcMain.handle('link:loginOpen', (_e, id) => {
+    const url = start()?.loginUrl(String(id));
+    if (!url || !C.loginUrlOk(url)) return false;   // checked again right before it is opened
+    d.openExternal?.(url);
+    return true;
+  });
 
   // Start at launch only when something is paired: a user who never pairs never touches the DHT.
   if (fs.existsSync(devicesFile)) start();
@@ -446,14 +466,14 @@ function setupLink(d) {
   return {
     publish(projects, office, attention) { if (link) link.publish(C.snapshotOf(projects, office, attention)); },
     /** v3.32: this machine's resources (C.resOf) and project catalog; the link sends them by capability and opt-in. */
-    publishMachine(res, catalog) { if (link) { link.publishRes(res); link.publishCatalog(catalog); } },
+    publishMachine(res, catalog, accounts) { if (link) { link.publishRes(res); link.publishCatalog(catalog); if (accounts) link.publishAccounts(accounts); } },
     pump, dispatchLocal, dispatchRemote, scanReports, projOp,
     /** The Link (tests; null while off). */
     link: () => link,
     /** Paired devices a project can be handed to (online ones first). */
     devices() { const l = start(); return l ? l.devices.map((x) => ({ id: x.pub, name: x.name, online: l.conns.has(x.pub) })) : []; },
     handOff, unknownFor, askAgain, keepHere,
-    destroy() { clearInterval(pumpTimer); clearInterval(reportTimer); return link?.destroy(); },
+    destroy() { clearInterval(pumpTimer); clearInterval(reportTimer); relay?.destroy(); return link?.destroy(); },
   };
 }
 

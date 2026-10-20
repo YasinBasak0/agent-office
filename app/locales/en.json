@@ -327,7 +327,29 @@
     "checking": "checking login…",
     "agyHint": "Sign in with Google in the browser that opens (over SSH, paste the code here). When agy's prompt appears you are logged in: type /exit.",
     "agyLogoutHint": "Type /logout and press Enter to sign out of Antigravity, then /exit.",
-    "cmdHint": "Click Authorize in the browser that opens, then come back here. When it says the API key is stored, you are logged in and this window closes."
+    "cmdHint": "Click Authorize in the browser that opens, then come back here. When it says the API key is stored, you are logged in and this window closes.",
+    "remoteTitle": "Log in to {label} on {device}",
+    "remoteHint": "Claude Code runs on {device}. Open the sign-in page here, approve, then paste the code it shows and press Send. Only that code is sent; the login and its keys stay on {device}.",
+    "remoteOpen": "Open sign-in page",
+    "remoteCode": "Paste the code here",
+    "remoteSend": "Send",
+    "remoteStarting": "Starting login on {device}…",
+    "remoteWaiting": "Open the page ({host}), approve, then paste the code.",
+    "remoteSent": "Code sent; checking on {device}…",
+    "remoteOk": "Logged in on {device}",
+    "remoteBadCode": "That does not look like a sign-in code.",
+    "remoteFailed": "Login did not finish: {reason}",
+    "reason": {
+      "not-allowed": "{device} does not allow account sign-in from this machine",
+      "busy": "another login is running there",
+      "unknown-account": "the account is not on that machine",
+      "timeout": "it took longer than 10 minutes",
+      "cancelled": "cancelled",
+      "failed": "not logged in",
+      "bad-url": "the sign-in link was not a Claude address",
+      "offline": "the machine went offline",
+      "not-supported": "update Agent Office there"
+    }
   },
   "terminal": {
     "exited": "— Claude exited — press Enter to restart —",
@@ -535,7 +557,9 @@
     "handoffStillUnknown": "{device} does not know whether it took over {project}",
     "reportReady": "Report ready: {project} on {machine}",
     "officeUnavailable": "Agent Office tools are off for boss tabs: the office socket could not be opened",
-    "projOpNotice": "{device}: {op} {project}"
+    "projOpNotice": "{device}: {op} {project}",
+    "loginRelayTitle": "Remote login",
+    "loginRelayBody": "{device} is logging in account {label} on this machine."
   },
   "auth": {
     "unreadable": "could not read the login status",
@@ -732,6 +756,16 @@
     },
     "opTitle": "{op} {project} on {device}",
     "opSent": "{op}…",
-    "opFailed": "{op} refused: {reason}"
+    "opFailed": "{op} refused: {reason}",
+    "accounts": "Accounts",
+    "login": "Log in",
+    "loginTitle": "Log {label} in on {device} from here",
+    "acctState": {
+      "in": "logged in",
+      "out": "logged out",
+      "checking": "checking",
+      "error": "error",
+      "unknown": "unknown"
+    }
   }
 }

@@ -11,7 +11,7 @@ class Link extends EventEmitter {
   /**
    * @param {{ keyPair: { publicKey: Buffer, secretKey: Buffer }, name: string, devices?: C.Device[], secrets?: Record<string, string>,
    *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number,
-   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null, reportsFile?: string | null, app?: string, projOpMs?: number }} o
+   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null, reportsFile?: string | null, app?: string, projOpMs?: number, loginTimeoutMs?: number }} o
    */
   constructor(o) {
     super();
@@ -54,6 +54,12 @@ class Link extends EventEmitter {
     this.sentCatalog = new Map(); // pub → json of the catalog last sent ('off' after a "not shared any more")
     this.peerRes = new Map();     // pub → res received
     this.peerCatalog = new Map(); // pub → catalog received
+    // v3.34 login relay (cap 'accounts'): this machine's account list, what peers allowed us to see, our relays there
+    this.accounts = null;         // [{ id, label, state, email? }] (publishAccounts)
+    this.sentAccounts = new Map(); // pub → json last sent ('off' after a "not shared any more")
+    this.peerAccounts = new Map(); // pub → accounts received
+    this.loginsOut = new Map();   // id → { id, pub, account, status: starting|waiting|sent|ok|failed, url?, prompt?, reason?, email?, at, timer }
+    this.loginTimeoutMs = o.loginTimeoutMs || C.LOGIN_TIMEOUT_MS + 30000;   // the host side times out first
     // v3.35 reports of dispatched tasks this device ran: id → { pub, report: null (still running) | Report, sent, at }.
     // Kept in reportsFile (userData/link/reports-out.json, 0600, newest 50) so one not yet delivered is sent on reconnect.
     this.reportsFile = o.reportsFile || null;
@@ -101,7 +107,7 @@ class Link extends EventEmitter {
   }
   write(conn, m) {
     const line = C.encode(m);
-    if (line && !conn.destroyed) conn.write(line);
+    if (line && conn && !conn.destroyed) conn.write(line);
   }
 
   // --- pairing
@@ -199,6 +205,7 @@ class Link extends EventEmitter {
     this.conns.set(device.pub, conn);
     this.sentJson.delete(device.pub);
     this.forgetPeer(device.pub);   // a new connection: no capability is known until its hello
+    this.dropLogins(device.pub);   // a relay does not survive its connection (either side)
     let invalid = 0;
     if (_why !== 'paired') this.reader(conn, (raw) => this.handle(conn, device, raw, () => { if (++invalid > 20) conn.destroy(); }));
     // heartbeat: ping every heartbeatMs; no data at all for HEARTBEAT_MISSES of them = the peer is gone
@@ -214,6 +221,7 @@ class Link extends EventEmitter {
       this.conns.delete(device.pub);
       this.remotes.delete(device.pub);
       this.forgetPeer(device.pub);
+      this.dropLogins(device.pub);
       // its answers came on this connection: a command still sent or queued will never hear its outcome
       for (const o of this.outgoing) if (o.pub === device.pub && (o.status === 'sent' || o.status === 'queued')) o.status = 'unknown';
       for (const h of this.handoffsOut.values()) if (h.pub === device.pub) h.finish?.({ ok: false, reason: 'offline' });
@@ -243,6 +251,7 @@ class Link extends EventEmitter {
       this.flushRes(d.pub, conn);
       this.flushCatalog(d.pub, conn);
       this.flushReports(d.pub, conn);
+      this.flushAccounts(d.pub, conn);
       this.emit('change');
     } else if (m.t === 'res') {
       this.peerRes.set(d.pub, m.res);
@@ -278,6 +287,8 @@ class Link extends EventEmitter {
       // v3.35 the dispatcher has the report: it is no longer resent
       const r = this.reportsOut.get(m.id);
       if (r && r.pub === d.pub && r.report && !r.sent) { r.sent = true; this.saveReports(); }
+    } else if (m.t.startsWith('acct-') || m.t.startsWith('login-')) {
+      this.handleLogin(conn, d, m);
     } else if (m.t === 'ho-offer') {
       this.receiveOffer(conn, d, m);
     } else if (m.t === 'ho-chunk') {
@@ -609,7 +620,7 @@ class Link extends EventEmitter {
   /** Did this peer's hello (on the current connection) name the capability? A v1 peer names none. */
   peerHas(pub, cap) { return Boolean(this.peers.get(pub)?.caps.includes(cap)); }
   forgetPeer(pub) {
-    for (const m of [this.peers, this.sentRes, this.sentCatalog, this.peerRes, this.peerCatalog]) m.delete(pub);
+    for (const m of [this.peers, this.sentRes, this.sentCatalog, this.peerRes, this.peerCatalog, this.sentAccounts, this.peerAccounts]) m.delete(pub);
   }
   /** This machine's resources: sent to peers with 'res' when it changed enough (C.resChanged). */
   publishRes(res) {
@@ -645,6 +656,107 @@ class Link extends EventEmitter {
     this.write(conn, { t: 'catalog', catalog: { projects: this.catalog } });
   }
 
+  // --- v3.34 remote Claude login relay (cap 'accounts'; the host side needs allowAccounts for the asking device)
+
+  /** This machine's accounts (labels, state, email only): sent to 'accounts' peers we allow account sign-in. */
+  publishAccounts(list) {
+    const clean = C.cleanAccounts(list);
+    if (!clean) return;
+    this.accounts = clean;
+    for (const [pub, conn] of this.conns) this.flushAccounts(pub, conn);
+  }
+  flushAccounts(pub, conn) {
+    if (!this.peerHas(pub, 'accounts')) return;
+    if (!C.mayAccounts(this.devices, this.secrets, pub)) {
+      if (this.sentAccounts.has(pub) && this.sentAccounts.get(pub) !== 'off') { this.sentAccounts.set(pub, 'off'); this.write(conn, { t: 'acct-view', accounts: [], shared: false }); }
+      return;
+    }
+    if (!this.accounts) return;
+    const json = JSON.stringify(this.accounts);
+    if (this.sentAccounts.get(pub) === json) return;
+    this.sentAccounts.set(pub, json);
+    this.write(conn, { t: 'acct-view', accounts: this.accounts });
+  }
+  /** A: ask that machine to run `claude auth login` for one of its accounts. One relay per device. */
+  startRemoteLogin(pub, account) {
+    const conn = this.conns.get(pub);
+    if (!conn) return { ok: false, reason: 'offline' };
+    if (!this.peerHas(pub, 'accounts')) return { ok: false, reason: 'not-supported' };
+    if (typeof account !== 'string' || !/^[A-Za-z0-9_.:-]{1,64}$/.test(account)) return { ok: false, reason: 'unknown-account' };
+    for (const r of this.loginsOut.values()) if (r.pub === pub && !['ok', 'failed'].includes(r.status)) return { ok: false, reason: 'busy' };
+    const id = crypto.randomBytes(8).toString('hex');
+    const rec = { id, pub, account, status: 'starting', at: this.now(), timer: null };
+    rec.timer = setTimeout(() => { this.write(this.conns.get(pub), { t: 'login-cancel', id }); this.endLogin(rec, false, { reason: 'timeout' }); }, this.loginTimeoutMs);
+    rec.timer.unref?.();
+    this.loginsOut.set(id, rec);
+    for (const [k, r] of [...this.loginsOut]) if (this.loginsOut.size > 10 && ['ok', 'failed'].includes(r.status)) this.loginsOut.delete(k);
+    this.write(conn, { t: 'login-start', id, account });
+    this.emit('change');
+    return { ok: true, id };
+  }
+  /** A: the sign-in URL to open in this machine's browser (checked again here). */
+  loginUrl(id) {
+    const r = this.loginsOut.get(id);
+    return r && r.status === 'waiting' && C.loginUrlOk(r.url) ? r.url : null;
+  }
+  /** A: the code the person pasted goes to the host once; it is not kept. */
+  sendLoginCode(id, code) {
+    const r = this.loginsOut.get(id);
+    const c = String(code ?? '').trim();
+    if (!r || r.status !== 'waiting') return { ok: false, reason: 'not-waiting' };
+    if (!C.loginCodeOk(c)) return { ok: false, reason: 'bad-code' };
+    const conn = this.conns.get(r.pub);
+    if (!conn) return { ok: false, reason: 'offline' };
+    this.write(conn, { t: 'login-code', id, code: c });
+    r.status = 'sent';
+    this.emit('change');
+    return { ok: true };
+  }
+  cancelRemoteLogin(id) {
+    const r = this.loginsOut.get(id);
+    if (!r || ['ok', 'failed'].includes(r.status)) return;
+    this.write(this.conns.get(r.pub), { t: 'login-cancel', id });
+    this.endLogin(r, false, { reason: 'cancelled' });
+  }
+  endLogin(r, ok, extra = {}) {
+    if (['ok', 'failed'].includes(r.status)) return;
+    clearTimeout(r.timer);
+    r.status = ok ? 'ok' : 'failed';
+    delete r.url;   // the URL is not needed any more
+    Object.assign(r, extra);
+    this.emit('login-result', { id: r.id, pub: r.pub, ok, ...extra });
+    this.emit('change');
+  }
+  /** The connection to that device ended or was replaced, or it was removed: relays both ways end. */
+  dropLogins(pub) {
+    for (const r of this.loginsOut.values()) if (r.pub === pub) this.endLogin(r, false, { reason: 'offline' });
+    this.emit('login-cancel', { device: { pub }, id: null });
+  }
+  handleLogin(conn, d, m) {
+    if (!this.peerHas(d.pub, 'accounts')) return;   // never expected from a peer without the capability
+    if (m.t === 'acct-view') {
+      if (m.shared) this.peerAccounts.set(d.pub, m.accounts); else this.peerAccounts.delete(d.pub);
+      this.emit('change');
+    } else if (m.t === 'login-start') {
+      if (!C.mayAccounts(this.devices, this.secrets, d.pub)) return this.write(conn, { t: 'login-result', id: m.id, ok: false, reason: 'not-allowed' });
+      const reply = (msg) => { const c = this.conns.get(d.pub); if (c === conn) this.write(c, { ...msg, id: m.id }); };
+      if (!this.listenerCount('login-start')) return reply({ t: 'login-result', ok: false, reason: 'not-supported' });
+      this.emit('login-start', { device: d, id: m.id, account: m.account, reply });
+    } else if (m.t === 'login-code' || m.t === 'login-cancel') {
+      if (!C.mayAccounts(this.devices, this.secrets, d.pub)) return;
+      this.emit(m.t, { device: d, id: m.id, ...(m.t === 'login-code' ? { code: m.code } : {}) });
+    } else if (m.t === 'login-url') {
+      const r = this.loginsOut.get(m.id);
+      if (!r || r.pub !== d.pub || r.status !== 'starting') return;
+      if (!C.loginUrlOk(m.url)) { this.write(conn, { t: 'login-cancel', id: m.id }); return this.endLogin(r, false, { reason: 'bad-url' }); }
+      Object.assign(r, { status: 'waiting', url: m.url, prompt: m.prompt });
+      this.emit('change');
+    } else if (m.t === 'login-result') {
+      const r = this.loginsOut.get(m.id);
+      if (r && r.pub === d.pub) this.endLogin(r, m.ok, { ...(m.email ? { email: m.email } : {}), ...(m.reason ? { reason: m.reason } : {}) });
+    }
+  }
+
   // --- the trust list
 
   rename(pub, name) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, name: C.deviceName(name, d.name) } : d)); this.persist(); this.emit('change'); }
@@ -658,8 +770,15 @@ class Link extends EventEmitter {
     if (conn) this.flushCatalog(pub, conn);
     this.emit('change');
   }
-  /** v3.31 "Allow account sign-in" (used by later phases; nothing is sent for it yet). */
-  setAllowAccounts(pub, on) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowAccounts: on === true } : d)); this.persist(); this.emit('change'); }
+  /** v3.31 "Allow account sign-in": v3.34 the account list goes to that device and it may start a login relay here. */
+  setAllowAccounts(pub, on) {
+    this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowAccounts: on === true } : d));
+    this.persist();
+    const conn = this.conns.get(pub);
+    if (conn) this.flushAccounts(pub, conn);
+    if (on !== true) this.emit('login-cancel', { device: { pub }, id: null });   // a relay it started here stops
+    this.emit('change');
+  }
   setName(name) {
     this.name = C.deviceName(name, this.name);
     for (const conn of this.conns.values()) this.write(conn, this.helloMsg());
@@ -673,6 +792,7 @@ class Link extends EventEmitter {
     this.conns.delete(pub);
     this.remotes.delete(pub);
     this.forgetPeer(pub);
+    this.dropLogins(pub);
     for (const [id, r] of this.reportsOut) if (r.pub === pub) this.reportsOut.delete(id);   // its reports go with it
     for (const [id, o] of this.projOps) if (o.pub === pub) this.endProjOp(id, { ok: false, reason: 'removed' });   // v3.33
     this.saveReports();
@@ -693,9 +813,12 @@ class Link extends EventEmitter {
         const peer = this.peers.get(d.pub);
         return { id: d.pub, name: d.name, addedAt: d.addedAt, allowCommands: d.allowCommands, allowHandoff: d.allowHandoff, allowManage: d.allowManage, allowAccounts: d.allowAccounts, online: this.conns.has(d.pub),
           // v3.31/v3.32: null = no hello yet; v 1 = an older Agent Office there (no caps)
-          v: peer ? peer.v : null, app: peer?.app || '', caps: peer?.caps || [], res: this.peerRes.get(d.pub) || null, catalog: this.peerCatalog.get(d.pub) || null };
+          v: peer ? peer.v : null, app: peer?.app || '', caps: peer?.caps || [], res: this.peerRes.get(d.pub) || null, catalog: this.peerCatalog.get(d.pub) || null, accounts: this.peerAccounts.get(d.pub) || null };
       }),
       self: { app: this.appVersion, res: this.res, catalog: this.catalog || [] },
+      // v3.34 our login relays on other machines: no URL or code, only the sign-in page's host
+      logins: [...this.loginsOut.values()].slice(-5).map((r) => ({ id: r.id, device: r.pub, deviceName: this.devices.find((d) => d.pub === r.pub)?.name || '?', account: r.account,
+        status: r.status, ...(r.url ? { host: new URL(r.url).hostname } : {}), ...(r.prompt ? { prompt: r.prompt } : {}), ...(r.reason ? { reason: r.reason } : {}), ...(r.email ? { email: r.email } : {}), at: r.at })),
       remotes: [...this.remotes].map(([pub, r]) => ({ device: pub, name: this.devices.find((d) => d.pub === pub)?.name || '?', at: r.at, ...r.snap })),
       outgoing: this.outgoing.map((o) => ({ ...o, deviceName: this.devices.find((d) => d.pub === o.pub)?.name || '?' })),
       handoffs: {

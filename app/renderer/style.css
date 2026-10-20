@@ -987,3 +987,11 @@ label.sb-langrow { cursor: pointer; }
 .mc-move { opacity: .7; }
 .sb-machines { margin: 4px 6px; }
 .machines-panel { overflow-y: auto; }
+
+/* v3.34 remote login relay: Machines → accounts, and the overlay without a terminal */
+.mc-accounts { margin-top: 6px; }
+.mc-login { margin-left: auto; }
+.lo-remote { height: auto; }
+.lo-remote .lo-open { align-self: flex-start; margin: 4px 16px; }
+.lo-code { display: flex; gap: 8px; margin: 8px 16px; }
+.lo-code-input { flex: 1; min-width: 0; font: inherit; font-family: var(--mono, monospace); padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #8884); background: var(--bg, transparent); color: inherit; }

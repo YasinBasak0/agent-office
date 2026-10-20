@@ -948,6 +948,28 @@ reasons: not-allowed, unknown-project, engine, busy, locked, rate-limited, remov
 - **One boss.** The `agent-office` MCP server gains `office_project({ machine?, project, op }) → { ok, reason? }` (this machine, or a paired device by name; project by name, folder name or id; `self` for sleep/stop of the boss's own tab). Never auto-allowed: Claude Code's permission prompt is the per-call consent. `office_machines` adds `manage` per device.
 - **Not done here.** Opening or cloning a project on another machine (Move = v3.29 handoff), two-owner flags, extra tabs.
 
+## Remote Claude login relay (v3.34, P2P phase 3 step D)
+
+Sign in an account that already exists on machine B from machine A's Machines panel. Only when A's hello has cap
+`accounts` (OUR_CAPS now `['res','catalog','report','accounts']`; a v1 or no-cap peer is sent none of these types) and B
+turned on "Allow account sign-in" (`allowAccounts`) for A. No account creation, assignment or layout mirror.
+
+```ts
+// B → A (cap 'accounts', allowAccounts for A): sent on hello and when it changes; off again → { accounts: [], shared: false }
+{ t: 'acct-view', accounts: [{ id, label /* ≤40 */, state: 'in'|'out'|'checking'|'error'|'unknown', email? }] /* ≤20 */ }
+{ t: 'login-start', id, account }            // A → B
+{ t: 'login-url', id, url, prompt }          // B → A: the first allowlisted URL Claude Code printed, the code prompt line (≤200)
+{ t: 'login-code', id, code }                // A → B: ^[A-Za-z0-9._~-]{10,400}#[A-Za-z0-9._~-]{8,200}$
+{ t: 'login-result', id, ok, email?, reason? }   // B → A; reason not-allowed|busy|unknown-account|timeout|cancelled|failed|bad-url|offline|not-supported
+{ t: 'login-cancel', id }                    // A → B (also sent by A when it rejects the URL)
+```
+
+- **B (src/login-relay.js, main `spawnRelayLogin`).** `claude auth login` with the account's config folder in its own `relay:<id>` pty map (amendment 8): cols 4000, `BROWSER=true`, output never sent to the renderer, no window needed. A local login of that account running → `busy` (never killed). One relay per device; 10 min timeout; a notice on B ("<device> is logging in account <label> on this machine"). Output is stripped of escapes; the first `https` URL whose host is `claude.ai`, `platform.claude.com` or `console.anthropic.com` and whose `redirect_uri` is exactly `https://platform.claude.com/oauth/code/callback` is sent with the `Paste code` line (or after 2 s without it). The code is typed once (`code\r`) and kept nowhere. On exit B runs its auth check: `login-result` ok = logged in (+ email). Connection lost, device removed or opt-in turned off → the relay is killed.
+- **accounts.log** (`userData/link/accounts.log`, 0600): `{ at, event: 'start'|'result', device, ok?, reason? }` only, never the URL, code or pty output.
+- **A.** Checks the URL again (same allowlist and redirect) on `login-url` and again right before `shell.openExternal`; a bad one fails the relay (`bad-url`) and cancels it on B. The LinkView carries `devices[].accounts` and `logins: [{ id, device, deviceName, account, status: starting|waiting|sent|ok|failed, host?, prompt?, reason?, email?, at }]` (no URL, no code). Local timeout 10 min 30 s. IPC `link:loginStart(deviceId, account)`, `link:loginOpen(loginId)`, `link:loginCode(loginId, code)`, `link:loginCancel(loginId)`.
+- **UI.** Machines → a remote card lists its accounts with state/email and "Log in" for any not logged in; the login overlay opens in remote mode: Open sign-in page, a code field and Send, status by relay state; closing it cancels the relay. Strings `machines.accounts|login|loginTitle|acctState.*`, `login.remote*`, `login.reason.*`, `main.loginRelay*` (en, tr).
+- **Credentials and tokens never cross the link.** Untested here: a real OAuth sign-in across two machines; Claude Code's strings may change (the allowlist parser fails closed, then the relay times out).
+
 ## One boss: dispatch and reports (v3.35, P2P phase 3 step B)
 
 ```ts

@@ -51,6 +51,7 @@ const logins = new Map();    // 'login:<accountId>' → `claude auth login` pty 
 const sizes = new Map();     // pty id → { cols, rows } (last pty:resize)
 const auths = new Map();     // accountId → AccountAuth (in memory only)
 const usages = new Map();    // accountId → AccountUsage (also kept in usage/<accountId>/last.json)
+const relays = new Map();    // 'relay:<id>' → v3.34 remote login relay pty (amendment 8: own map, output never sent to the renderer)
 const ptyOf = (id) => terms.get(id) || logins.get(id);
 // An Antigravity project (contract v3.22): its tabs run `agy`, so nothing that reads Claude Code's files applies to it.
 const isAgy = (project) => P.engineOf(project) === 'agy';
@@ -284,6 +285,8 @@ function killAll() {
   if (!quitting && state) checkTurns();
   quitting = true;
   for (const id of [...terms.keys(), ...logins.keys()]) killPty(id);
+  for (const t of relays.values()) { try { t.kill(); } catch {} }
+  relays.clear();
 }
 
 // --- interrupted work (see src/resume.js): state.interrupted = { ptyId: sessionId | '' } for tabs mid-turn
@@ -508,6 +511,26 @@ function startLogin(accountId) {
     checkAuth(accountId, { showChecking: true });
   });
 }
+
+// v3.34 remote login relay (src/login-relay.js): `claude auth login` for an existing account of this machine, asked
+// for by a paired device with "Allow account sign-in". Its own pty map, wide (the URL is not wrapped), no window
+// needed, no output to the renderer; a running local login for the account is left alone (the relay is refused).
+function spawnRelayLogin(account, relayId) {
+  const id = `relay:${relayId}`;
+  const env = { ...accountEnv(account), BROWSER: 'true' };   // the browser opens on the asking machine, not here
+  let t;
+  if (IS_WIN) {
+    const cmd = windowsClaude(['auth', 'login'], env);
+    if (!cmd) throw new Error('no claude');
+    t = pty.spawn(cmd.file, ptyArgs(cmd), { name: 'xterm-256color', cols: 4000, rows: 50, cwd: app.getPath('home'), env });
+  } else {
+    t = pty.spawn(shell(), ['-l', '-i', '-c', A.claudeCommand('auth login')], { name: 'xterm-256color', cols: 4000, rows: 50, cwd: app.getPath('home'), env });
+  }
+  relays.set(id, t);
+  t.onExit(() => { if (relays.get(id) === t) relays.delete(id); });
+  return { onData: (f) => t.onData(f), onExit: (f) => t.onExit(f), write: (x) => t.write(x), kill: () => { relays.delete(id); try { t.kill(); } catch {} } };
+}
+const relayAccounts = () => state.accounts.map((a) => { const s = auths.get(a.id); return { id: a.id, label: a.label || a.id, state: s?.state || 'unknown', ...(s?.state === 'in' && s.email ? { email: s.email } : {}) }; });
 
 // --- Antigravity login (contract v3.24, src/agy-auth.js): one login per user (agy has no config-folder variable).
 // The check and the login pty get only agyEnv's allowlist: nothing of Claude Code or the office reaches agy.
@@ -1380,7 +1403,7 @@ function machineData() {
 let machineTimer = null;
 function startLink() {
   clearInterval(machineTimer);
-  machineTimer = setInterval(() => { try { const m = machineData(); linkHost?.publishMachine(m.res, m.catalog); } catch (e) { console.error('link res:', e.message); } }, 10000);
+  machineTimer = setInterval(() => { try { const m = machineData(); linkHost?.publishMachine(m.res, m.catalog, relayAccounts()); } catch (e) { console.error('link res:', e.message); } }, 10000);
   machineTimer.unref?.();
   linkHost = LH.setupLink({
     app, safeStorage, ipcMain, send, T,
@@ -1393,6 +1416,13 @@ function startLink() {
     onReport: onOfficeReport,
     manage: projectOp,   // v3.33 proj-op from a device allowed to manage
     handoff: handoffDeps(),
+    loginRelay: {
+      spawn: spawnRelayLogin,
+      accounts: () => state.accounts,
+      localBusy: (accountId) => logins.has(A.loginPtyId(accountId)),
+      checkAuth: async (account) => { await checkAuth(account.id); const s = auths.get(account.id); return { ok: s?.state === 'in', ...(s?.email ? { email: s.email } : {}) }; },
+    },
+    openExternal: (url) => { eShell.openExternal(url).catch(() => {}); },
   });
 }
 // --- project handoff (v3.29, src/handoff.js + src/link-host.js): what main knows about a project's tabs and files
