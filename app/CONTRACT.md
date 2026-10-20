@@ -994,3 +994,40 @@ inbox row (dispatcher): { at, kind: 'report-ready', id, machine /* ≤64 */, pro
 - **The dispatcher.** Reports are kept in `userData/link/dispatches.json` (0600, newest 50) for `office_reports`, only for ids it dispatched and from the machine it sent them to. A local dispatch's record follows every status (`queued` → `delivered` or `rejected` with its reason); a remote one's status is the link's `outgoing` record. The boss's inbox gets only the fixed row above; the plugin submits it with its own wrapper ("Remote task #id on <project>@<machine> finished; read it with office_reports."), not the task wrapper. No session: a notification (`main.reportReady`).
 - **Prompt.** Section `agent-office:machines` (fixed text) for the manager loop only with `AGENT_OFFICE_REMOTE=1`, set at pty start when the boss tab has the server and at least one device is paired. `MANAGER_TEMPLATE` is unchanged.
 - **Not done here.** Reports shown in the Machines view; auto-allowing office_machines/office_reports; a local task's report after an app restart (its id is in memory only; the file is deleted after a day).
+
+## Every control for every engine (v3.36, engine parity steps 1-3)
+
+```ts
+// app/src/engine-caps.mjs (pure ESM, used by the sidebar; tested in app/test/engine-caps.test.mjs)
+type Engine = 'claude' | 'agy' | 'commandcode';
+type Feature = 'account' | 'login' | 'manager' | 'bossModel' | 'agentModel' | 'contextCap' | 'savings' | 'backup' | 'workers' | 'approvals' | 'cost';
+caps(engine): Record<Feature, { ok: true } | { ok: false, reason: string /* locale key sidebar.na.<reason> */ }>;
+BOSS_MODEL_CHOICES: Record<Engine, { value: string, label: string }[]>; // = projects.js BOSS_MODELS_BY_ENGINE
+```
+
+- **Never hidden.** `renderProjects` renders Account, Boss, Boss model, Agent model, Context cap, Savings and Backup for every engine.
+  A feature with `ok: false` is a disabled select; its one-line reason is the title and a small line shown on hover or focus
+  (`.sb-na`, the label gets `tabindex=0`). Claude Code: everything on. Antigravity: off with a reason for manager mode, agent
+  model, context cap, savings, backup, workers and cost (the opt-in project files of a later step may turn some on).
+  Command Code: off for agent model and backup; manager mode, context cap, savings, workers and approvals are `ok: true` and
+  their launch config and mod arrive with v3.37 (until then the stored values are kept and take effect from v3.37 on).
+- **Account = engine.** The Account dropdown lists the Claude accounts, then "Antigravity · <email>" (value `__engine:agy`, when
+  the Antigravity row is shown or the project runs it) and "Command Code" (`__engine:commandcode`, same rule), then "New account…",
+  which opens the Add account type menu (v3.30); its Claude item assigns the new account to that project. An engine entry calls
+  `projects:setEngine(id, engine)`; a Claude account on another engine calls `projects:setEngine(id, null)` first and then
+  `projects:setAccount` if it differs. Refused or cancelled: the select goes back. `p.accountId` stays the Claude account
+  (switching back restores it); `engine` stays the source of truth (no state change). The Engine select is gone; a read-only tag
+  names the engine ("Claude Code", "Antigravity — observed", "Command Code — observed").
+- **Login badge** per engine: Claude accounts as before; Antigravity `agyAuth.state === 'out'` → `on.agyLogin()`, Command Code
+  `cmdAuth.state === 'out'` → `on.cmdLogin()`. The rows re-render when either login changes.
+- **Boss model per engine.** `Project.bossModel` is validated against the project's engine (`setProjectBossModel`,
+  `normalizeState`, `bossModelOf`): Claude `sonnet|opus|haiku`; Antigravity `flash|pro` (its documented tiers); Command Code
+  `claude-sonnet-5-5|claude-opus-5-5|claude-haiku-5-5|deepseek/deepseek-v4-flash` (commandcode.ai/docs/reference/cli/models). A
+  value that doesn't fit the engine counts as Auto. `bossModelArgs`: Claude and agy `['--model', v]`, Command Code `['-m', v]`.
+  `engine.agyArgs({ model })` / `cmdArgs({ model })` put it first, before `--continue` and the prompt. No model discovery command
+  is run. It applies when the tab starts next (idle restart stays Claude-only). Unverified here: agy's interactive `--model`
+  with the tier names.
+- **No leak** unchanged: the model value is the only addition to the agy / Command Code launch line; nothing of Claude's or the
+  office's env, files or data reaches them.
+- Strings: `sidebar.na.*` (en, tr); `sidebar.accountTitle` and `sidebar.engineTitle` reworded. Dev mock: `?cmdProject` makes the
+  third project run Command Code.

@@ -15,12 +15,13 @@ const AGY_COMMAND = 'for v in $(env | sed -n \'s/^\\(AGENT_OFFICE_[A-Za-z0-9_]*\
 /**
  * agy's arguments for a start: `--continue` (the most recent conversation of the folder agy starts in: agy keeps one
  * per workspace path) when resuming, then, only when resuming and a prompt is given, `-i <prompt>` (agy's initial
- * prompt, then interactive). A fresh start has no arguments.
- * @param {{ resume?: boolean, prompt?: string }} [o]
+ * prompt, then interactive). model (the project's boss model, contract v3.36): `--model <slug>` first. A fresh start
+ * with no model has no arguments.
+ * @param {{ resume?: boolean, prompt?: string, model?: string | null }} [o]
  */
-function agyArgs({ resume = false, prompt = '' } = {}) {
+function agyArgs({ resume = false, prompt = '', model = null } = {}) {
   const p = resume && prompt ? promptArg(prompt) : '';
-  return [...(resume ? ['--continue'] : []), ...(p ? ['-i', p] : [])];
+  return [...(model ? ['--model', model] : []), ...(resume ? ['--continue'] : []), ...(p ? ['-i', p] : [])];
 }
 
 // --- agy's environment: an allowlist (contract v3.22). Nothing else of the app's env reaches agy.
@@ -78,11 +79,12 @@ const CMD = {
 /**
  * Command Code's arguments for a start: `--continue` (the most recent session in the folder, commandcode.ai/docs/
  * sessions) when resuming, then (only when resuming and a prompt is given) the prompt as the positional argument.
- * @param {{ resume?: boolean, prompt?: string }} [o]
+ * model (the project's boss model, contract v3.36): `-m <id>` first.
+ * @param {{ resume?: boolean, prompt?: string, model?: string | null }} [o]
  */
-function cmdArgs({ resume = false, prompt = '' } = {}) {
+function cmdArgs({ resume = false, prompt = '', model = null } = {}) {
   const p = resume && prompt ? promptArg(prompt) : '';
-  return [...(resume ? ['--continue'] : []), ...(p ? [p] : [])];
+  return [...(model ? ['-m', model] : []), ...(resume ? ['--continue'] : []), ...(p ? [p] : [])];
 }
 
 /** Command Code's launch line: drops any AGENT_OFFICE_* an rc file set (as AGY_COMMAND), then `commandcode "$@"`. */
