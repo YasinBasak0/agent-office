@@ -524,6 +524,12 @@ sidebar = mountSidebar($('sidebar'), {
   agyLogin: () => openAgy('login'),
   agyLogout: () => openAgy('logout'),
   agyRefresh: () => api.agy?.auth(true).then(setAgyAuth, (e) => console.error(e)),
+  cmdLogin: () => openCmd(),
+  cmdRefresh: () => api.cmd?.auth(true).then(setCmdAuth, (e) => console.error(e)),
+  addAgy: () => addEngineAccount('agy'),
+  addCmd: () => addEngineAccount('cmd'),
+  hideAgy: () => setEngineRow('showAgyAccount', false),
+  hideCmd: () => setEngineRow('showCmdAccount', false),
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
   setResume: (on) => api.prefs?.set({ resume: on }).then((p) => sidebar.setResume(p?.resume)).catch((e) => console.error(e)),
   resumeUnfinished,
@@ -554,6 +560,35 @@ function openAgy(mode) {
 }
 api.agy?.onAuth(setAgyAuth);
 api.agy?.auth().then(setAgyAuth, (e) => console.error(e));
+
+// Command Code's login (contract v3.30): one per user, `commandcode login` in the 'login:cmd' pty.
+function setCmdAuth(a) { if (a) sidebar.setCmdAuth(a); }
+function openCmd() {
+  if (!api.cmd) return;
+  login.open({ id: 'cmd', label: 'Command Code' }, {
+    start: () => api.cmd.login(),
+    hint: () => t('login.cmdHint'),
+    title: () => t('login.title', { label: 'Command Code' }),
+  });
+}
+api.cmd?.onAuth(setCmdAuth);
+api.cmd?.auth().then(setCmdAuth, (e) => console.error(e));
+
+// Add account → Google Antigravity / Command Code (contract v3.30): the row stays in Accounts (showAgyAccount /
+// showCmdAccount); installed and not logged in → its login starts; not installed → the row shows the install line.
+async function setEngineRow(key, on) {
+  try { sidebar.setEngineRows(await api.prefs?.set({ [key]: on })); } catch (e) { console.error(e); }
+}
+async function addEngineAccount(kind) {
+  const engine = kind === 'agy' ? api.agy : api.cmd;
+  if (!engine) return;
+  await setEngineRow(kind === 'agy' ? 'showAgyAccount' : 'showCmdAccount', true);
+  let a = null;
+  try { a = await engine.auth(true); } catch (e) { console.error(e); }
+  if (kind === 'agy') setAgyAuth(a); else setCmdAuth(a);
+  if (!a?.installed || a.state === 'in') return;
+  if (kind === 'agy') openAgy('login'); else openCmd();
+}
 
 function setCollapsed(c) {
   document.body.classList.toggle('sidebar-collapsed', c);
@@ -630,6 +665,7 @@ api.prefs?.get().then((p) => {
   sidebar.setReloadMcp(p?.reloadMcp);
   sidebar.setFallback(p?.fallback);
   sidebar.setSleep(p?.sleepMinutes);
+  sidebar.setEngineRows(p);
   if (typeof p?.theme === 'string') themeSetting = p.theme;
   applyThemeChoice();
 }).catch((e) => console.error(e));

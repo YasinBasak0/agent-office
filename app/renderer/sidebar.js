@@ -55,6 +55,11 @@ export function mountSidebar(el, on) {
   let projects = [];
   let accounts = [];
   let agyAuth = null; // Antigravity's login (v3.24, main's AgyAuth); null until main answers
+  let cmdAuth = null; // Command Code's login (v3.30, main's CmdAuth); null until main answers
+  // The Antigravity / Command Code rows (v3.30): true = added via Add account, false = removed, null = the old rule
+  let showAgy = null;
+  let showCmd = null;
+  let addMenu = false; // the Add account type menu is open (v3.30)
   let activeId = null;
   let status = new Map();
   let asleep = new Set(); // projects whose main claude sleeps (src/sleep.js)
@@ -515,8 +520,16 @@ export function mountSidebar(el, on) {
 
   // The official install lines (src/agy-auth.js AGY_INSTALL): shown, never run.
   const AGY_INSTALL = platform === 'win32' ? 'irm https://antigravity.google/cli/install.ps1 | iex' : 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
-  /** Antigravity is listed when agy is installed or a project runs it (contract v3.24). */
-  const agyShown = () => Boolean(agyAuth?.installed) || projects.some((p) => p.engine === 'agy');
+  /** Antigravity is listed when agy is installed or a project runs it (contract v3.24), or added via Add account; removed hides it unless a project runs it (v3.30). */
+  const agyUsed = () => projects.some((p) => p.engine === 'agy');
+  const agyShown = () => agyUsed() || showAgy === true || (showAgy !== false && Boolean(agyAuth?.installed));
+  // Command Code (contract v3.30): the same rule with commandcode and engine 'commandcode'.
+  const CMD_INSTALL = 'npm i -g command-code';
+  const cmdUsed = () => projects.some((p) => p.engine === 'commandcode');
+  const cmdShown = () => cmdUsed() || showCmd === true || (showCmd !== false && Boolean(cmdAuth?.installed));
+  const rowBtn = (cls, text, title, fn) => h('button', { class: 'sb-btn ' + cls, title, onclick: (e) => { e.stopPropagation(); fn(); } }, text);
+  /** × on an engine row: hides it (no log out); not while a project runs that engine. */
+  const hideBtn = (used, fn) => (used ? null : h('button', { class: 'sb-x', title: t('sidebar.hideEngineRow'), onclick: () => fn() }, '×'));
 
   /** Antigravity's single login (contract v3.24): its state with Giriş yap / Çıkış yap, or how to install agy. */
   function agyRow() {
@@ -529,6 +542,7 @@ export function mountSidebar(el, on) {
     let auth;
     if (state === 'missing') {
       auth = h('div', { class: 'sb-auth sb-agy-missing' }, text(t('sidebar.agyMissing'), t('sidebar.agyMissingTitle')),
+        rowBtn('', t('sidebar.checkAgain'), t('sidebar.checkAgainTitle'), () => on.agyRefresh?.()),
         h('code', { class: 'sb-agy-install', title: t('sidebar.agyInstallTitle') }, AGY_INSTALL));
     } else if (state === 'in') {
       const key = agyAuth.method === 'apikey' || agyAuth.method === 'adc';
@@ -550,8 +564,50 @@ export function mountSidebar(el, on) {
         h('span', { class: 'sb-name' }, 'Antigravity'),
         h('span', { class: 'sb-tag' }, 'agy'),
         h('button', { class: 'sb-x', title: t('sidebar.refreshAuth'), disabled: state === 'checking', onclick: () => on.agyRefresh?.() }, '↻'),
+        hideBtn(agyUsed(), () => on.hideAgy?.()),
       ),
       auth);
+  }
+
+  /** Command Code's single login (contract v3.30): logged in = ~/.commandcode/auth.json exists; Giriş yap runs `commandcode login`. */
+  function cmdRow() {
+    if (!cmdShown()) return null;
+    const state = cmdAuth?.state || 'checking';
+    const text = (s, title = '') => h('span', { class: 'sb-auth-text', title }, s);
+    let auth;
+    if (state === 'missing') {
+      auth = h('div', { class: 'sb-auth sb-agy-missing' }, text(t('sidebar.cmdMissing'), t('sidebar.cmdMissingTitle')),
+        rowBtn('', t('sidebar.checkAgain'), t('sidebar.checkAgainTitle'), () => on.cmdRefresh?.()),
+        h('code', { class: 'sb-agy-install', title: t('sidebar.cmdInstallTitle') }, CMD_INSTALL));
+    } else if (state === 'in') {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.loggedIn'), t('sidebar.cmdInTitle')));
+    } else if (state === 'out') {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.notLoggedIn')),
+        rowBtn('primary', t('sidebar.login'), t('sidebar.cmdLoginTitle'), () => on.cmdLogin?.()));
+    } else {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.checking')));
+    }
+    return h('li', { class: `sb-acc sb-agy sb-cmd auth-${state}`, 'data-id': 'cmd' },
+      h('div', { class: 'sb-acc-top', title: t('sidebar.cmdTitle') },
+        h('span', { class: 'sb-adot', title: hasText(`sidebar.authDot.${state}`) ? t(`sidebar.authDot.${state}`) : '' }),
+        h('span', { class: 'sb-name' }, 'Command Code'),
+        h('span', { class: 'sb-tag' }, 'cmd'),
+        h('button', { class: 'sb-x', title: t('sidebar.refreshAuth'), disabled: state === 'checking', onclick: () => on.cmdRefresh?.() }, '↻'),
+        hideBtn(cmdUsed(), () => on.hideCmd?.()),
+      ),
+      auth);
+  }
+
+  /** The Add account type menu (contract v3.30): Claude (the name field, as before), Google Antigravity, Command Code. */
+  function addMenuRow() {
+    const item = (text, title, fn) => h('button', {
+      class: 'sb-add-item', title,
+      onclick: (e) => { e.stopPropagation(); addMenu = false; fn(); },
+    }, text);
+    return h('li', { class: 'sb-add-menu', role: 'menu' },
+      item(t('sidebar.addClaude'), t('sidebar.newAccountTitle'), () => { editing = { id: null }; renderAccounts(); }),
+      item(t('sidebar.addAgy'), t('sidebar.addAgyTitle'), () => { renderAccounts(); on.addAgy?.(); }),
+      item(t('sidebar.addCmd'), t('sidebar.addCmdTitle'), () => { renderAccounts(); on.addCmd?.(); }));
   }
 
   function renderAccounts() {
@@ -589,12 +645,19 @@ export function mountSidebar(el, on) {
       })));
     }
     const agy = agyRow();
-    acctList.replaceChildren(...rows, ...(agy ? [agy] : []),
+    const cmd = cmdRow();
+    acctList.replaceChildren(...rows, ...(agy ? [agy] : []), ...(cmd ? [cmd] : []),
       h('li', {}, h('button', {
-        class: 'sb-add', title: t('sidebar.newAccountTitle'),
-        onclick: () => { editing = { id: null }; renderAccounts(); },
-      }, t('sidebar.addAccount'))));
+        class: 'sb-add', title: t('sidebar.addAccountTitle'), 'aria-haspopup': 'menu', 'aria-expanded': String(addMenu),
+        onclick: (e) => { e.stopPropagation(); addMenu = !addMenu; renderAccounts(); acctList.querySelector('.sb-add-menu')?.scrollIntoView?.({ block: 'nearest' }); },
+      }, t('sidebar.addAccount'))),
+      ...(addMenu ? [addMenuRow()] : []));
   }
+  // the type menu closes on a click elsewhere or Escape
+  document.addEventListener('click', (e) => {
+    if (addMenu && !(e.target instanceof Node && acctList.querySelector('.sb-add-menu')?.contains(e.target))) { addMenu = false; renderAccounts(); }
+  });
+  document.addEventListener('keydown', (e) => { if (addMenu && e.key === 'Escape') { addMenu = false; renderAccounts(); } });
 
   // reset times and "x dk önce" go stale on their own: redraw once a minute
   setInterval(() => { if (!editing && accounts.some((a) => a.usage)) renderAccounts(); }, 60000);
@@ -713,12 +776,23 @@ export function mountSidebar(el, on) {
       attn = new Map((s.status || []).filter((x) => x.attention).map((x) => [x.id, x.attention]));
       const pk = JSON.stringify([projects, activeId, [...status], [...asleep], [...attn], accounts.map((a) => [a.id, a.label, a.auth?.state])]);
       if (pk !== projKey) { projKey = pk; renderProjects(); }
-      const ak = JSON.stringify([accounts, agyShown()]);
+      const ak = JSON.stringify([accounts, agyShown(), cmdShown()]);
       if (ak !== acctKey && !editing) { acctKey = ak; renderAccounts(); }
     },
     /** Antigravity's login state (contract v3.24, main's AgyAuth). */
     setAgyAuth(a) {
       agyAuth = a || null;
+      if (!editing) renderAccounts();
+    },
+    /** Command Code's login state (contract v3.30, main's CmdAuth). */
+    setCmdAuth(a) {
+      cmdAuth = a || null;
+      if (!editing) renderAccounts();
+    },
+    /** The Antigravity / Command Code rows' setting (contract v3.30, prefs showAgyAccount / showCmdAccount). */
+    setEngineRows(p) {
+      showAgy = typeof p?.showAgyAccount === 'boolean' ? p.showAgyAccount : null;
+      showCmd = typeof p?.showCmdAccount === 'boolean' ? p.showCmdAccount : null;
       if (!editing) renderAccounts();
     },
     /** Today's token usage per project: [{ id, usd, total, pct }] (contract v3.13); the line opens the usage panel. */

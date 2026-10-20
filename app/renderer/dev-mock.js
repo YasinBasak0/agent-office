@@ -142,7 +142,8 @@ let sleepSetting = 30;
 // "Resume unfinished work" (v3.8): the first click finds two projects with unfinished work (?unfinished=0: none);
 // a stopped one starts, as main starts a lazy tab with --resume
 let mockUnfinished = q.get('unfinished') !== '0';
-const prefsNow = () => ({ resume: resumeSetting, resumeWork: resumeWorkSetting, theme: themeSetting, manager: managerSetting, shareMcp: shareMcpSetting, reloadMcp: reloadMcpSetting, fallback: fallbackSetting, sleepMinutes: sleepSetting });
+const prefsNow = () => ({ resume: resumeSetting, resumeWork: resumeWorkSetting, theme: themeSetting, manager: managerSetting, shareMcp: shareMcpSetting, reloadMcp: reloadMcpSetting, fallback: fallbackSetting, sleepMinutes: sleepSetting, ...engineRows });
+const engineRows = { showAgyAccount: null, showCmdAccount: null }; // v3.30
 
 window.agentOffice = {
   platform: q.get('platform') || 'darwin',
@@ -274,6 +275,17 @@ window.agentOffice = {
       onAuth: (cb) => lis.add(cb),
     };
   })(),
+  // v3.30: Command Code's login (?cmd=in|out|missing; default: not installed)
+  cmd: (() => {
+    const kind = q.get('cmd') || 'missing';
+    const auth = kind === 'missing' ? { installed: false, state: 'missing' } : { installed: true, state: kind };
+    const lis = listeners();
+    return {
+      auth: async () => ({ ...auth }),
+      login: async () => { setTimeout(() => { ev.data.emit('login:cmd', 'commandcode (mock): authorize in the browser…\r\n'); ev.exit.emit('login:cmd', 0); lis.emit({ ...auth, state: 'in' }); }, 600); },
+      onAuth: (cb) => lis.add(cb),
+    };
+  })(),
   pty: {
     write: (id, d) => {
       if (id.startsWith('login:')) return; // fake login does not wait for input
@@ -306,6 +318,7 @@ window.agentOffice = {
       if (typeof p?.fallback === 'boolean') fallbackSetting = p.fallback;
       if (typeof p?.theme === 'string') themeSetting = p.theme.trim() || 'auto';
       if ([0, 15, 30, 60].includes(p?.sleepMinutes)) sleepSetting = p.sleepMinutes;
+      for (const k of ['showAgyAccount', 'showCmdAccount']) if (typeof p?.[k] === 'boolean') engineRows[k] = p[k];
       return prefsNow();
     },
   },
