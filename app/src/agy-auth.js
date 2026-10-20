@@ -8,10 +8,15 @@
 // agy's data. Only that one field and settings.json's modelProvider are read; tokens (keyring) never are.
 const path = require('node:path');
 
-// macOS (v3.40): agy's saved login is a keychain item, service `gemini`, account `antigravity`. Its mere existence is asked
+// macOS (v3.39): agy's saved login is a keychain item, service `gemini`, account `antigravity`. Its mere existence is asked
 // with `security find-generic-password -s gemini -a antigravity` (no -w / -g: the attributes only, the token is never read,
 // no prompt). Exit 0 = there; 44 (errSecItemNotFound) = not there; anything else = cannot tell.
 const AGY_KEYCHAIN = { service: 'gemini', account: 'antigravity' };
+/** The exact argv of the keychain query: attributes only, never -w / -g (the secret is not asked for). */
+const AGY_KEYCHAIN_ARGS = ['find-generic-password', '-s', AGY_KEYCHAIN.service, '-a', AGY_KEYCHAIN.account];
+/** At most this many bytes of a log are read (the OAuth line is written at the start), and at most this many logs. */
+const LOG_HEAD_BYTES = 64 * 1024;
+const LOG_FILES = 3;
 const KEYCHAIN_NOT_FOUND = 44;
 /** @param {number | string | null | undefined} code the exit code of the keychain query (0 on success) @returns {true | false | null} */
 const keychainResult = (code) => (code === 0 ? true : code === KEYCHAIN_NOT_FOUND ? false : null);
@@ -45,7 +50,7 @@ const accountFiles = (home) => [path.join(agyDir(home), 'google_accounts.json'),
 const EMAIL = /^[^\s@]{1,200}@[^\s@]{1,200}$/;
 
 // agy's own log (undocumented, so only a hint): each start writes "OAuth: authenticated successfully as <email>"
-const LOG_EMAIL = /OAuth: authenticated successfully as (\S+@\S+)/g;
+const LOG_EMAIL = /OAuth: authenticated successfully as ([^\s@]+@[^\s@,;.:)]+(?:\.[^\s@,;.:)]+)+)/g;
 /** The e-mail agy last logged in with, from a log's text, or null. @param {string} text */
 function parseAgyLogEmail(text) {
   let found = null;
@@ -57,9 +62,10 @@ function parseAgyLogEmail(text) {
  * The non-secret files agy's state is read from, reduced to the fields used.
  * With `readDir` (names in a folder), the newest log in agy's log folder also gives `logEmail` (a hint for the keychain login).
  * @param {string} home @param {(f: string) => string} readFile throws if missing @param {(d: string) => string[]} [readDir]
+ * @param {(f: string) => string} [readHead] reads at most LOG_HEAD_BYTES of a log (default: readFile)
  * @returns {{ modelProvider: string | null, account: { active: string | null } | null, logEmail: string | null }}
  */
-function readAgyFiles(home, readFile, readDir) {
+function readAgyFiles(home, readFile, readDir, readHead = readFile) {
   const json = (f) => { try { const v = JSON.parse(readFile(f)); return v && typeof v === 'object' ? v : null; } catch { return null; } };
   const settings = json(path.join(agyDir(home), 'settings.json'));
   const modelProvider = typeof settings?.modelProvider === 'string' ? settings.modelProvider : null;
@@ -75,8 +81,8 @@ function readAgyFiles(home, readFile, readDir) {
     try {
       const dir = path.join(agyDir(home), 'log');
       // names carry the start time (cli-YYYYMMDD_HHMMSS.log): the newest log that names an account wins
-      for (const name of readDir(dir).filter((n) => /^cli-\d{8}_\d{6}\.log$/.test(n)).sort().reverse().slice(0, 5)) {
-        logEmail = parseAgyLogEmail(readFile(path.join(dir, name)));
+      for (const name of readDir(dir).filter((n) => /^cli-\d{8}_\d{6}\.log$/.test(n)).sort().reverse().slice(0, LOG_FILES)) {
+        logEmail = parseAgyLogEmail(String(readHead(path.join(dir, name))).slice(0, LOG_HEAD_BYTES));
         if (logEmail) break;
       }
     } catch { /* no logs: no hint */ }
@@ -87,7 +93,7 @@ function readAgyFiles(home, readFile, readDir) {
 /**
  * @typedef {{ installed: boolean, state: 'in' | 'out' | 'unknown' | 'missing', email?: string, method?: 'google' | 'apikey' | 'adc' }} AgyAuth
  * Antigravity's login state. 'unknown': installed, and neither an account file nor (macOS) the keychain says anything.
- * `status.keychain` (v3.40): true / false when the keychain was asked, null / absent when it could not be.
+ * `status.keychain` (v3.39): true / false when the keychain was asked (false changes nothing), null / absent when it could not be.
  * @param {{ path: string | null, apiKey: boolean, adc: boolean, keychain?: boolean | null }} status
  * @param {{ modelProvider: string | null, account: { active: string | null } | null, logEmail?: string | null }} files
  * @returns {AgyAuth}
@@ -99,9 +105,9 @@ function agyAuthState(status, files) {
   if (files.account?.active) return { installed: true, state: 'in', email: files.account.active, method: 'google' };
   // the keychain holds a login only while it is logged in (/logout removes it): its answer beats a stale log
   if (status.keychain === true) return { installed: true, state: 'in', method: 'google', ...(files.logEmail ? { email: files.logEmail } : {}) };
-  if (status.keychain === false) return { installed: true, state: 'out' };
+  // keychain === false (item absent) is NOT 'out': the item name is a guess, so a logged-in user must never be shown logged out for it
   if (files.account) return { installed: true, state: 'out' };
   return { installed: true, state: 'unknown' };
 }
 
-module.exports = { AGY_KEYCHAIN, keychainResult, parseAgyLogEmail, AGY_INSTALL, AGY_STATUS_COMMAND, parseAgyStatus, agyDir, readAgyFiles, agyAuthState };
+module.exports = { AGY_KEYCHAIN, AGY_KEYCHAIN_ARGS, LOG_HEAD_BYTES, keychainResult, parseAgyLogEmail, AGY_INSTALL, AGY_STATUS_COMMAND, parseAgyStatus, agyDir, readAgyFiles, agyAuthState };

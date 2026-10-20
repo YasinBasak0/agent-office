@@ -553,12 +553,12 @@ function agyStatus(env) {
     try { child.stdin?.end(); } catch {}
   });
 }
-// macOS: is agy's login in the keychain (v3.40)? Attributes only, never the token; true / false / null (cannot tell)
+// macOS: is agy's login in the keychain (v3.39)? Attributes only, never the token; true / false / null (cannot tell)
 function agyKeychain() {
   if (process.platform !== 'darwin') return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile('/usr/bin/security', ['find-generic-password', '-s', AG.AGY_KEYCHAIN.service, '-a', AG.AGY_KEYCHAIN.account],
-      { timeout: 5000 }, (err) => resolve(AG.keychainResult(err ? (typeof err.code === 'number' ? err.code : -1) : 0)));
+    execFile('/usr/bin/security', AG.AGY_KEYCHAIN_ARGS,
+      { timeout: 5000, env: { PATH: '/usr/bin:/bin' }, maxBuffer: 64 * 1024 }, (err) => resolve(AG.keychainResult(err ? (typeof err.code === 'number' ? err.code : -1) : 0)));
   });
 }
 function checkAgyAuth() {
@@ -567,7 +567,10 @@ function checkAgyAuth() {
     const env = EN.agyEnv(process.env);
     const status = await agyStatus(env);
     if (status.path) status.keychain = await agyKeychain();
-    const files = AG.readAgyFiles(env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.readFileSync(f, 'utf8'), (d) => fs.readdirSync(d));
+    // logs (v3.39) only where they can be used: macOS with the keychain saying the item is there; the first 64 KB of each
+    const head = (f) => { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(AG.LOG_HEAD_BYTES); return b.toString('utf8', 0, fs.readSync(fd, b, 0, b.length, 0)); } finally { fs.closeSync(fd); } };
+    const files = AG.readAgyFiles(env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.readFileSync(f, 'utf8'),
+      status.keychain === true ? (d) => fs.readdirSync(d) : undefined, head);
     agyAuth = AG.agyAuthState(status, files);
     sendAgyAuth();
   })().catch((e) => console.error('agy auth:', e.message)).finally(() => { agyChecking = null; });

@@ -3513,7 +3513,7 @@ test('agy durumu: komut çıktısı; rc gürültüsü, yol, API anahtarı ve ADC
   assert.doesNotMatch(AG.AGY_STATUS_COMMAND, /echo "?\$GEMINI_API_KEY/);
 });
 
-test('agy durumu: macOS anahtar zinciri ve log e-postası (v3.40)', () => {
+test('agy durumu: macOS anahtar zinciri ve log e-postası (v3.39)', () => {
   const AG = require('../src/agy-auth.js');
   const path = require('node:path');
   const home = '/h';
@@ -3536,7 +3536,16 @@ test('agy durumu: macOS anahtar zinciri ve log e-postası (v3.40)', () => {
   const f = AG.readAgyFiles(home, read, dir);
   assert.deepEqual(AG.agyAuthState({ ...inst, keychain: true }, f), { installed: true, state: 'in', method: 'google', email: 'me@gmail.com' });
   assert.deepEqual(AG.agyAuthState({ ...inst, keychain: true }, AG.readAgyFiles(home, read)), { installed: true, state: 'in', method: 'google' });
-  assert.deepEqual(AG.agyAuthState({ ...inst, keychain: false }, f), { installed: true, state: 'out' });   // a stale log does not make it logged in
+  assert.equal(AG.agyAuthState({ ...inst, keychain: false }, f).state, 'unknown');   // a guessed item name never shows "logged out"
+  assert.equal(AG.agyAuthState({ ...inst, keychain: false }, { modelProvider: null, account: { active: null } }).state, 'out'); // an account file without an active one: as before
+  assert.deepEqual(AG.AGY_KEYCHAIN_ARGS, ['find-generic-password', '-s', 'gemini', '-a', 'antigravity']);
+  for (const a of AG.AGY_KEYCHAIN_ARGS) assert.doesNotMatch(a, /^-[A-Za-z]*[wg]/, 'no -w / -g (the secret is never asked for)');
+  assert.equal(AG.parseAgyLogEmail('OAuth: authenticated successfully as me@gmail.com.'), 'me@gmail.com');
+  assert.equal(AG.parseAgyLogEmail('OAuth: authenticated successfully as me@gmail.com,'), 'me@gmail.com');
+  const seen = [];
+  AG.readAgyFiles(home, read, () => ['cli-20261020_000001.log', 'cli-20261020_000002.log', 'cli-20261020_000003.log', 'cli-20261020_000004.log'], (p) => { seen.push(p); return ''; });
+  assert.equal(seen.length, 3);   // at most 3 logs
+  assert.equal(AG.readAgyFiles(home, read, dir, () => 'OAuth: authenticated successfully as '.padEnd(AG.LOG_HEAD_BYTES + 10, ' ') + 'x@y.co').logEmail, null);   // nothing past the first 64 KB
   assert.equal(AG.agyAuthState({ ...inst, keychain: null }, f).state, 'unknown');
   assert.equal(AG.agyAuthState(inst, f).state, 'unknown');
 });
