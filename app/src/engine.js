@@ -3,7 +3,8 @@
 // (~/.gemini/antigravity-cli), so nothing of Claude Code's setup (account folder, plugin, status line, memory, MCP
 // config) nor of the office (directory, journal, savings, tokens) is passed to it.
 // Command Code (`commandcode`, contract v3.25) is handled the same way: its own login and data (~/.commandcode), an
-// env allowlist (cmdEnv) and no file, flag or variable of the office.
+// env allowlist (cmdEnv) and no file, flag or variable of the office, except the documented items of v3.37 (the
+// compact mode, the permission mode, MAX_MCP_OUTPUT_TOKENS from Savings, and the app's own mod with its spool path).
 const { promptArg } = require('./resume.js');
 
 // macOS/Linux launch line, run by the login shell like claude's (PATH and rc files apply); the arguments come via "$@".
@@ -15,12 +16,13 @@ const AGY_COMMAND = 'for v in $(env | sed -n \'s/^\\(AGENT_OFFICE_[A-Za-z0-9_]*\
 /**
  * agy's arguments for a start: `--continue` (the most recent conversation of the folder agy starts in: agy keeps one
  * per workspace path) when resuming, then, only when resuming and a prompt is given, `-i <prompt>` (agy's initial
- * prompt, then interactive). A fresh start has no arguments.
- * @param {{ resume?: boolean, prompt?: string }} [o]
+ * prompt, then interactive). model (the project's boss model, contract v3.36): `--model <slug>` first. A fresh start
+ * with no model has no arguments.
+ * @param {{ resume?: boolean, prompt?: string, model?: string | null }} [o]
  */
-function agyArgs({ resume = false, prompt = '' } = {}) {
+function agyArgs({ resume = false, prompt = '', model = null } = {}) {
   const p = resume && prompt ? promptArg(prompt) : '';
-  return [...(resume ? ['--continue'] : []), ...(p ? ['-i', p] : [])];
+  return [...(model ? ['--model', model] : []), ...(resume ? ['--continue'] : []), ...(p ? ['-i', p] : [])];
 }
 
 // --- agy's environment: an allowlist (contract v3.22). Nothing else of the app's env reaches agy.
@@ -75,14 +77,27 @@ const CMD = {
   home: '.commandcode',
 };
 
+// Command Code's documented permission modes (commandcode.ai/docs/reference/cli `--permission-mode`), contract v3.37.
+
 /**
- * Command Code's arguments for a start: `--continue` (the most recent session in the folder, commandcode.ai/docs/
- * sessions) when resuming, then (only when resuming and a prompt is given) the prompt as the positional argument.
- * @param {{ resume?: boolean, prompt?: string }} [o]
+ * Command Code's arguments for a start (contract v3.25, v3.36, v3.37), in this order:
+ * - model (the project's boss model, v3.36): `-m <id>` first;
+ * - `--config compactMode=fast` when the project's context cap is set (compact: commandcode.ai/docs/settings
+ *   `compactMode: default | fast`, set per run with `--config key=value`; Command Code has no token window value);
+ * - `--permission-mode <mode>` when the project has one of CMD_PERMISSION_MODES;
+ * - mod: the app's own mod and its options (cmdModArgs in src/cmd-spool.js), passed through as given;
+ * - `--continue` (the most recent session in the folder, commandcode.ai/docs/sessions) when resuming, then (only
+ *   when resuming and a prompt is given) the prompt as the positional argument.
+ * @param {{ resume?: boolean, prompt?: string, model?: string | null, compact?: boolean, mod?: string[] }} [o]
  */
-function cmdArgs({ resume = false, prompt = '' } = {}) {
+function cmdArgs({ resume = false, prompt = '', model = null, compact = false, mod = [] } = {}) {
   const p = resume && prompt ? promptArg(prompt) : '';
-  return [...(resume ? ['--continue'] : []), ...(p ? [p] : [])];
+  return [
+    ...(model ? ['-m', model] : []),
+    ...(compact ? ['--config', 'compactMode=fast'] : []),
+    ...(Array.isArray(mod) ? mod.filter((a) => typeof a === 'string') : []),
+    ...(resume ? ['--continue'] : []), ...(p ? [p] : []),
+  ];
 }
 
 /** Command Code's launch line: drops any AGENT_OFFICE_* an rc file set (as AGY_COMMAND), then `commandcode "$@"`. */
@@ -90,18 +105,27 @@ const CMD_COMMAND = AGY_COMMAND.replace(/exec agy "\$@"$/, `exec ${CMD.bin} "$@"
 
 // Command Code's own documented variables (commandcode.ai/docs/settings, /docs/sessions), passed only when the user
 // has them: its API key, zero-data-retention and model-catalog switches, updater, scratchpad and the telemetry
-// opt-out. MCP_TOOL_TIMEOUT / MAX_MCP_OUTPUT_TOKENS are documented too but stay out (the MCP deny rule).
+// opt-out. MCP_TOOL_TIMEOUT / MAX_MCP_OUTPUT_TOKENS are documented too but the user's own values stay out (the MCP
+// deny rule). The one narrow exception (v3.37): MAX_MCP_OUTPUT_TOKENS written by the app from the project's own
+// Savings level (accounts.js SAVINGS mcpOutput), never a value passed through from the user's env.
 const CMD_ENV_NAMES = ['COMMAND_CODE_API_KEY', 'CMD_ZDR', 'CMD_DISABLE_REMOTE_MODEL_CATALOG', 'DO_NOT_TRACK'];
 const CMD_ENV_PREFIXES = ['COMMANDCODE_'];
 
+// The largest MAX_MCP_OUTPUT_TOKENS the app writes (Command Code's default is 25000).
+const CMD_MCP_OUTPUT_MAX = 100000;
+
 /**
  * The env Command Code starts with: agyEnv's base allowlist (without agy's own names and families) plus Command
- * Code's documented variables; the same deny rule (Claude, Anthropic, the office, MCP).
- * @param {Record<string, string | undefined>} base @param {string} [platform]
+ * Code's documented variables; the same deny rule (Claude, Anthropic, the office, MCP). opts.mcpOutput (v3.37): the
+ * app's own Savings value (a whole number of tokens, 1..CMD_MCP_OUTPUT_MAX) is then set as MAX_MCP_OUTPUT_TOKENS,
+ * after the filter, so only the app's value is there. opts may also be the platform string (the v3.25 signature).
+ * @param {Record<string, string | undefined>} base
+ * @param {{ mcpOutput?: number | null, platform?: string } | string} [opts] @param {string} [platform]
  * @returns {Record<string, string>}
  */
-function cmdEnv(base, platform = process.platform) {
-  const win = platform === 'win32';
+function cmdEnv(base, opts = {}, platform = process.platform) {
+  const o = typeof opts === 'string' ? { platform: opts } : (opts || {});
+  const win = (o.platform || platform) === 'win32';
   const norm = (/** @type {string} */ n) => (win ? n.toUpperCase() : n);
   const names = new Set([...AGY_ENV_NAMES.filter((n) => n !== 'AGY_ADC_AUTH'), ...CMD_ENV_NAMES, ...(win ? AGY_ENV_WINDOWS : [])].map(norm));
   const prefixes = ['LC_', ...CMD_ENV_PREFIXES];
@@ -114,10 +138,12 @@ function cmdEnv(base, platform = process.platform) {
   }
   out.TERM = 'xterm-256color';
   out.COLORTERM = 'truecolor';
+  const n = o.mcpOutput;
+  if (typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= CMD_MCP_OUTPUT_MAX) out.MAX_MCP_OUTPUT_TOKENS = String(n);
   return out;
 }
 
 module.exports = {
   AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES,
-  CMD, cmdArgs, CMD_COMMAND, cmdEnv, CMD_ENV_NAMES, CMD_ENV_PREFIXES,
+  CMD, cmdArgs, CMD_COMMAND, cmdEnv, CMD_ENV_NAMES, CMD_ENV_PREFIXES, CMD_MCP_OUTPUT_MAX,
 };

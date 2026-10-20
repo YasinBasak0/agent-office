@@ -103,7 +103,7 @@
     "addProjectTitle": "Proje ekle ({mod}O)",
     "accounts": "HESAPLAR",
     "account": "Hesap",
-    "accountTitle": "Bu projede kullanılacak Claude hesabı (değiştirince Claude yeniden başlar)",
+    "accountTitle": "Bu projenin çalıştığı hesap: bir Claude hesabı (Claude Code), Antigravity (Google Antigravity CLI, kendi Google girişi) ya da Command Code (kendi girişi). Antigravity ya da Command Code seçmek projenin motorunu değiştirir ve sekmelerini baştan başlatır; bir Claude hesabı seçmek geri döndürür. Claude hesabını değiştirmek Claude'u yeniden başlatır.",
     "newAccount": "+ Yeni hesap…",
     "projectManager": "Müdür",
     "projectManagerTitle": "Bu projede müdür nasıl çalışır: Genel ayar Müdür modu ayarını izler; Dağıtır işi ajanlara böler; Kendisi yapar ajansız çalışır. Her iki durumda da iş bitene kadar devam eder. Projenin Claude'u bir sonraki başlayışında geçerli olur (boştaki sekmeler hemen yeniden başlar).",
@@ -122,6 +122,8 @@
     "agentModelSonnet": "Sonnet",
     "agentModelHaiku": "Haiku",
     "agentModelOpus": "Opus",
+    "projectFiles": "Agent Office dosyaları",
+    "projectFilesTitle": "Agent Office kendi dosyalarını bu projeye eklesin: yönetici notu, ajan modelinde bir işçi ajan, bitirmeden önce kontrol kapısı ve projenin kendi onaylı MCP sunucuları (Antigravity: .agents/, Command Code: .commandcode/agents/). .git/info/exclude ile git dışında tutulur; kapatınca tam olarak bu dosyalar silinir.",
     "contextCap": "Bağlam sınırı",
     "contextCapTitle": "Bu projedeki konuşmaların (müdür ve ajanları için) Claude onları özetlemeden (otomatik sıkıştırma) önce ne kadar büyüyebileceği. Her adım bütün konuşmayı yeniden okur; sınır düşükse Claude daha erken özetler, her adım daha az okur ve iş daha ucuza gelir. Bedeli: önceki işin ayrıntıları yalnızca özet olarak kalır. Otomatik, Claude Code'un kendi sınırını kullanır (1M modelde 1M token'a kadar). Projenin Claude'u bir sonraki açılışında geçerli olur (boştaki sekmeler hemen yeniden başlar).",
     "contextCapAuto": "Otomatik",
@@ -131,7 +133,7 @@
     "savingsNormal": "Normal",
     "savingsStrict": "Sıkı",
     "engine": "Motor",
-    "engineTitle": "Bu projenin terminallerinde çalışan program: Claude Code, Google Antigravity CLI (agy; kendi Google girişi) ya da Command Code (commandcode; kendi girişi). Hesap, müdür, ajan modeli, bağlam sınırı, tasarruf ve yedek hesap yalnızca Claude Code için geçerlidir; token kullanımı Claude Code ve Command Code için gösterilir. Ofis Antigravity'yi ve Command Code'u tek yönlü, terminallerinden ve kendi kayıtlarından (yalnız okuyarak) izler. Değiştirmek projenin her sekmesini sıfırdan yeniden başlatır.",
+    "engineTitle": "Bu proje Claude Code çalıştırıyor. Motoru Hesap menüsü seçer: bir Claude hesabı, Antigravity ya da Command Code.",
     "engineClaude": "Claude Code",
     "engineAgy": "Antigravity",
     "agyHint": "Antigravity — izleniyor",
@@ -219,7 +221,17 @@
     "cmdMissingTitle": "Command Code projesi için Command Code CLI gerekir (Node.js 22 veya üstü). Bir terminalde kurun, sonra Tekrar kontrol et'e basın.",
     "cmdInstallTitle": "commandcode.ai/docs kurulum komutu (bir terminalde kendiniz çalıştırın)",
     "cmdInTitle": "Command Code'un kayıtlı bir girişi var (~/.commandcode/auth.json). Uygulama yalnızca dosyanın var olduğuna bakar.",
-    "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)"
+    "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)",
+    "na": {
+      "agyContextCap": "Antigravity konuşmasını kendisi özetler; boyut ayarı yok.",
+      "agySavings": "Antigravity'nin belgelenmiş bir çıktı sınırı ya da adım bütçesi yok.",
+      "agyBackup": "Antigravity'de kullanıcı başına tek giriş var; geçilecek ikinci hesap yok.",
+      "agyWorkers": "Antigravity alt ajan olaylarını başka programlara bildirmez.",
+      "agyCost": "Antigravity, Agent Office'in okuyabileceği token sayısı yazmaz.",
+      "cmdBackup": "Command Code'da tek giriş var; geçilecek ikinci hesap yok.",
+      "filesOff": "Projenin dosyalarını gerektirir: bu proje için Agent Office dosyalarını açın.",
+      "claudeProjectFiles": "Claude Code, Agent Office ayarlarını başlarken alır; projeye hiçbir şey yazılmaz."
+    }
   },
   "panel": {
     "types": {
@@ -540,7 +552,8 @@
     "officeUnavailable": "Boss sekmeleri için Agent Office araçları kapalı: ofis soketi açılamadı",
     "projOpNotice": "{device}: {project} → {op}",
     "loginRelayTitle": "Uzaktan giriş",
-    "loginRelayBody": "{device}, bu makinede {label} hesabına giriş yapıyor."
+    "loginRelayBody": "{device}, bu makinede {label} hesabına giriş yapıyor.",
+    "projectFilesRefused": "Agent Office, “{name}” içindeki bazı dosyalara dokunmadı: kendisinin yazmadığı (ya da yazdıktan sonra değiştirilmiş) aynı adlı bir dosyanın üzerine asla yazılmaz, silinmez."
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",

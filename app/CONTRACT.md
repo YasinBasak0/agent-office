@@ -995,3 +995,82 @@ inbox row (dispatcher): { at, kind: 'report-ready', id, machine /* ≤64 */, pro
 - **The dispatcher.** Reports are kept in `userData/link/dispatches.json` (0600, newest 50) for `office_reports`, only for ids it dispatched and from the machine it sent them to. A local dispatch's record follows every status (`queued` → `delivered` or `rejected` with its reason); a remote one's status is the link's `outgoing` record. The boss's inbox gets only the fixed row above; the plugin submits it with its own wrapper ("Remote task #id on <project>@<machine> finished; read it with office_reports."), not the task wrapper. No session: a notification (`main.reportReady`).
 - **Prompt.** Section `agent-office:machines` (fixed text) for the manager loop only with `AGENT_OFFICE_REMOTE=1`, set at pty start when the boss tab has the server and at least one device is paired. `MANAGER_TEMPLATE` is unchanged.
 - **Not done here.** Reports shown in the Machines view; auto-allowing office_machines/office_reports; a local task's report after an app restart (its id is in memory only; the file is deleted after a day).
+
+## Every control for every engine (v3.36, engine parity steps 1-3)
+
+```ts
+// app/src/engine-caps.mjs (pure ESM, used by the sidebar; tested in app/test/engine-caps.test.mjs)
+type Engine = 'claude' | 'agy' | 'commandcode';
+type Feature = 'account' | 'login' | 'manager' | 'bossModel' | 'agentModel' | 'contextCap' | 'savings' | 'backup' | 'workers' | 'approvals' | 'cost';
+caps(engine): Record<Feature, { ok: true } | { ok: false, reason: string /* locale key sidebar.na.<reason> */ }>;
+BOSS_MODEL_CHOICES: Record<Engine, { value: string, label: string }[]>; // = projects.js BOSS_MODELS_BY_ENGINE
+```
+
+- **Never hidden.** `renderProjects` renders Account, Boss, Boss model, Agent model, Context cap, Savings and Backup for every engine.
+  A feature with `ok: false` is a disabled select; its one-line reason is the title and a small line shown on hover or focus
+  (`.sb-na`, the label gets `tabindex=0`). Claude Code: everything on. Antigravity: off with a reason for manager mode, agent
+  model, context cap, savings, backup, workers and cost (the opt-in project files of a later step may turn some on).
+  Command Code: off for agent model and backup; manager mode, context cap, savings, workers and approvals are `ok: true` and
+  their launch config and mod arrive with v3.37 (until then the stored values are kept and take effect from v3.37 on).
+- **Account = engine.** The Account dropdown lists the Claude accounts, then "Antigravity · <email>" (value `__engine:agy`, when
+  the Antigravity row is shown or the project runs it) and "Command Code" (`__engine:commandcode`, same rule), then "New account…",
+  which opens the Add account type menu (v3.30); its Claude item assigns the new account to that project. An engine entry calls
+  `projects:setEngine(id, engine)`; a Claude account on another engine calls `projects:setEngine(id, null)` first and then
+  `projects:setAccount` if it differs. Refused or cancelled: the select goes back. `p.accountId` stays the Claude account
+  (switching back restores it); `engine` stays the source of truth (no state change). The Engine select is gone; a read-only tag
+  names the engine ("Claude Code", "Antigravity — observed", "Command Code — observed").
+- **Login badge** per engine: Claude accounts as before; Antigravity `agyAuth.state === 'out'` → `on.agyLogin()`, Command Code
+  `cmdAuth.state === 'out'` → `on.cmdLogin()`. The rows re-render when either login changes.
+- **Boss model per engine.** `Project.bossModel` is validated against the project's engine (`setProjectBossModel`,
+  `normalizeState`, `bossModelOf`): Claude `sonnet|opus|haiku`; Antigravity `flash|pro` (its documented tiers); Command Code
+  `claude-sonnet-5-5|claude-opus-5-5|claude-haiku-5-5|deepseek/deepseek-v4-flash` (commandcode.ai/docs/reference/cli/models). A
+  value that doesn't fit the engine counts as Auto. `bossModelArgs`: Claude and agy `['--model', v]`, Command Code `['-m', v]`.
+  `engine.agyArgs({ model })` / `cmdArgs({ model })` put it first, before `--continue` and the prompt. No model discovery command
+  is run. It applies when the tab starts next (idle restart stays Claude-only). Unverified here: agy's interactive `--model`
+  with the tier names.
+- **No leak** unchanged: the model value is the only addition to the agy / Command Code launch line; nothing of Claude's or the
+  office's env, files or data reaches them.
+- Strings: `sidebar.na.*` (en, tr); `sidebar.accountTitle` and `sidebar.engineTitle` reworded. Dev mock: `?cmdProject` makes the
+  third project run Command Code.
+
+## Command Code: context cap, Savings, permission mode and the app's mod (v3.37, engine parity steps 4 and 5)
+
+```ts
+commandcode [--config compactMode=fast] [--permission-mode <default|plan|accept-edits|yolo|dont-ask>]
+            [--mod <app>/src/cmd-mod/agent-office.ts --mod-option ao-spool=<userData>/cmd-spool/<tab>
+             [--mod-option ao-manager=true] [--mod-option ao-step-budget=<n>] [--mod-option ao-step-cap=true]]
+            [--continue [<prompt>]]                                   // engine.js cmdArgs, cmd-spool.js cmdModArgs
+cmdEnv(base, { mcpOutput?: number | null, platform? } | platform)    // + MAX_MCP_OUTPUT_TOKENS=<app's Savings value>
+<userData>/cmd-spool/<tab>/events.jsonl  (0700 folder, 0600 file, append-only, written by the mod only):
+{ t: 'subagent_start', id, type, at } | { t: 'subagent_progress', id, tool, tokens?, at } | { t: 'subagent_stop', id, type, tokens?, at }
+{ t: 'turn_end', turn, usage: { <numeric fields only> }, at } | { t: 'permission', tool, at } | { t: 'cap', calls, at }
+session (agy-watch.js, engine 'commandcode'): workers[{ id, type, description, spawnAt, doneAt?, isOk?, tool?, toolCount, tokens? }],
+  stats.waiting.tool from 'permission', stats.tokens?: { total }
+```
+
+- **Documented mechanisms used** (commandcode.ai/docs, fetched 2026-10-20). `/docs/settings`: `compactMode: default | fast`, set per run with `--config key=value`; `MAX_MCP_OUTPUT_TOKENS` (default 25000). `/docs/reference/cli`: `--permission-mode`. `/docs/mods` (marked experimental): `--mod <path>` loads a mod for one session (repeatable, compiled with jiti, no build step); `--mod-option name=value` sets a flag declared with `cmd.addFlag(name, {type})` and read with `cmd.getFlag(name)`; `export default function (cmd: ModApi)`; `cmd.appendSystemPrompt(({state}) => string | undefined)` (byte-stable per round); `cmd.beforeToolCall(...) => {block?, additionalContext?} | undefined`; `cmd.onPermissionRequest(...) => 'allow' | 'deny' | undefined`; `cmd.on('subagent_start' {toolCallId, subagentType} | 'subagent_progress' {…, toolName, toolInput, tokensUsed} | 'subagent_stop' {…, tokensUsed} | 'turn_start' {turnNumber} | 'turn_end' {turnNumber, hadToolCalls, usage})`.
+- **Context cap.** Any cap set on the project (200K/400K) gives `--config compactMode=fast`; Command Code has no token window value (the UI wording is the parity-ui branch's).
+- **Savings.** Off: nothing. Normal/Strict (accounts.js `SAVINGS`): `MAX_MCP_OUTPUT_TOKENS` = `mcpOutput` (15000/8000), set by `cmdEnv` after the allowlist filter. **Narrow exception to the MCP deny rule:** this one name, only with the app's own integer value (1..100000); the user's own `MAX_MCP_OUTPUT_TOKENS`, `MCP_TOOL_TIMEOUT` and every other `*MCP*` variable are still dropped. The mod gets `ao-step-budget` (40/25): a wrap-up note (`additionalContext`) at the budget and every budget/2 after it, counted per main turn (`turn_start` resets); Strict also `ao-step-cap=true`: calls past 2 × budget are blocked. No Bash output cap (not documented). The ≤15-line report is asked in the manager brief and in the budget notes.
+- **Permission mode.** Not supported: no `--permission-mode` is passed and projects carry no `permissionMode`.
+- **Manager mode.** `ao-manager=true` when the project's manager mode is on: the mod appends its static `MANAGER_BRIEF` (in the mod file; no user data, project name, path or office directory). No file is written into the project.
+- **No-leak.** The mod holds no user data and reads nothing (no file, env or office data); it only appends to its spool file, whose folder the app makes per tab start (cleared first). Spool lines hold ids, subagent types, tool names and token counts, never prompts, tool inputs or permission descriptions. The only app path reaching Command Code is that spool folder (manager decision). The mod never answers a permission request. Everything else of v3.25 stands (allowlist env, no plugin, settings, MCP config, office directory, journal or `AGENT_OFFICE_*`).
+- **Reading.** Main reads new spool bytes (≤256 KB per tick, partial last line kept) in `agySessions` and feeds the tab's watcher (`watch.spool`): workers appear in the office like Claude's (done ones go to the day's log and leave after 60 s), a `permission` names the open dialog's tool (or opens one), `turn_end`/`subagent_stop` add `stats.tokens.total`. Unknown or malformed lines are dropped; strings are clipped. The screen watcher keeps working unchanged.
+- **Fallback.** The mod is passed only when its file exists (`asarUnpack: src/cmd-mod/**`, so the CLI reads a real file) and the spool folder could be made. A start with the mod that exits with an error within `RESUME_GRACE_MS` starts again without `--mod` (`cmdNoMod`, for the rest of the launch); the tab is then watched exactly as in v3.25. A mod that loads but throws only reports `mod_error` (Command Code isolates handlers).
+- **Unverified** (no CLI here): `--mod`/`--mod-option` in interactive mode and the flag-name rules, whether `beforeToolCall` also sees sub-agents' tools, the `usage` field names (summed: a `total*` field, else every `*input*`/`*output*`), and that `compactMode=fast`/`MAX_MCP_OUTPUT_TOKENS` are honoured.
+- **Type check.** `npx tsc -p app/src/cmd-mod` (the `ModApi` subset is declared in the file; `@commandcode/harness` is not a dependency).
+
+## Opt-in project files for Antigravity and Command Code (v3.38, engine parity step 6)
+
+- **Toggle.** `Project.projectFiles: true` ("Let Agent Office add its files to this project", sidebar row control `projectFiles`, label "Agent Office files"); absent = off, the default, never written for off. `projects:setProjectFiles(id, value)` → `{ restarted, written, removed, refused }`; idle tabs of agy/Command Code restart to pick the files up. Shown on every engine (v3.36 never-hide); Claude Code: disabled, `sidebar.na.claudeProjectFiles`.
+- **Capabilities.** `caps(engine, { projectFiles })` (`src/engine-caps.mjs` `WITH_FILES`): agy `manager` and `agentModel`, Command Code `agentModel` are ok with the toggle on, else disabled with reason `filesOff` ("turn on Agent Office files"). Everything else of v3.36/v3.37 stands. The sidebar passes `p.projectFiles` to every `control()`.
+- **Files** (`src/project-files.js` `desiredFiles`, pure; written by `syncProjectFiles(dir, desired)` into `Project.dir` only, not worktree tab folders):
+  - agy, manager mode on: `.agents/rules/agent-office-manager.md`: YAML frontmatter first (`trigger: always_on`, `description`; docs: "Every `.md` file inside `rules/` must start with YAML frontmatter", values `always_on`/`model_decision`/`glob`/`manual`, 24,000-byte file cap), then the marker comment and the static manager brief (the same text as the Command Code mod's `MANAGER_BRIEF`), plus one line naming `ao-worker` when that file exists. https://antigravity.google/docs/rules
+  - agy, manager mode on: `.agents/hooks.json` `{ "agent-office-verify": { "Stop": [{ "type": "command", "command": <POSIX sh>, "timeout": 10 }] } }` (docs: top-level keys are hook names; Stop handlers sit directly under the event; stdin has `conversationId`, `executionNum`; stdout `{ "decision": "continue", "reason" }` keeps the agent running with `reason` injected). The gate sends the agent back once per execution ("run the tests or build, look at the diff; same error twice: stop and report"); a stop right after a gate (same or next `executionNum`) passes. Its only state is `$TMPDIR/agent-office-agy-stop-<conversationId>` ("<num> g|a"). Missing ids: it lets the stop through. https://antigravity.google/docs/hooks
+  - agy, agent model not Auto: `.agents/agents/ao-worker.md` (`name`, `description`, `model` = tier: haiku/sonnet → `flash`, opus → `pro`; docs allow `inherit`/`flash`/`pro`; `tools` omitted, docs default). Body = the worker's system prompt (static). https://antigravity.google/docs/subagents
+  - agy, any approved server: `.agents/mcp_config.json` `{ mcpServers }` translated from the project's own `<dir>/.mcp.json` **only**, and only the servers approved for it in Claude Code (`enabledMcpjsonServers`/`enableAllProjectMcpServers`, minus `disabledMcpjsonServers`, from the folder's `.claude/settings.local.json`, the account's `settings.json` and its `.claude.json` entry for the folder: `shared-config.js approvedProjectServers`). stdio keeps `command`, `args`, `env`, `cwd`; remote `url` (http/https) becomes `serverUrl` (+`headers`; docs: legacy `url`/`httpUrl` unsupported); anything else is dropped. Never account, shared, office or other projects' servers. Refreshed at every agy tab start. https://antigravity.google/docs/mcp
+  - Command Code, agent model not Auto: `.commandcode/agents/ao-worker.md` (`name`, `description`, `model` = `claude-<alias>-5-5`, `tools: "*"`; docs: omitted tools = none, body = system prompt). The built-in General/Explore/Plan stay unpinnable (docs: read-only); the manager brief (v3.37 mod) is told nothing new. https://commandcode.ai/docs/agents
+- **Ownership.** `<root>/.agent-office-files.json` (root `.agents` or `.commandcode`) lists every file we wrote with its sha256; Markdown files also carry `<!-- agent-office:generated: … -->`. A file is replaced or removed only while it is unchanged since we wrote it. A user's file of the same name (or ours the user edited) is never overwritten or removed: it is reported in `refused` and main shows `main.projectFilesRefused` with the paths. Off, a project removed from the list, or a switch to another engine removes exactly our files (and directories left empty by that), nothing else.
+- **git.** Our paths (and the manifest) go in one block of the repository's `info/exclude` between `# >>> Agent Office project files …` and `# <<< Agent Office project files`, anchored to the repository root (a project in a subfolder gets its prefix); a worktree's `.git` file is followed to the common git dir (`commondir`). No git command is run. Off removes the block; the user's lines stay. No exclude without a repository.
+- **When.** Synced on the toggle, a manager-mode or agent-model change of the project, an engine switch, and every agy/Command Code tab start. The global manager setting's change reaches a project on "default" at its next tab start.
+- **No-leak.** The files hold static text and the project's own approved `.mcp.json` entries; no account, env, office directory, journal, other projects or app path (the Stop gate needs none). Nothing is written to `~/.gemini` or `~/.commandcode` (plan step 7 is not done).
+- **Unverified** (no CLI here): whether agy reloads rules/agents/hooks/MCP without a restart (we restart idle tabs), whether `tools` omitted in an agy agent means all tools, whether the hook `command` runs under `sh` (it is POSIX sh), `executionNum` stepping after a `continue`, and `env` variable expansion in agy's `mcp_config.json`.

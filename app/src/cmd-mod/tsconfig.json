@@ -1,0 +1,14 @@
+{
+  // Type check of the Command Code mod (contract v3.37): npx tsc -p app/src/cmd-mod
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": true,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "files": ["agent-office.ts"]
+}

@@ -29,6 +29,7 @@ function normalizeState(raw, { id = newId } = {}) {
       ...withContextCap(p.contextCap),
       ...withSavings(p.savings),
       ...withEngine(p.engine),
+      ...withProjectFiles(p.projectFiles),
       ...withBackup(p.backupAccount, known),
       ...withHome(p.homeAccount, known, known.has(p.accountId) ? p.accountId : DEFAULT_ID),
       ...withTabs(normalizeTabs(p.tabs)),
@@ -221,17 +222,27 @@ function setProjectManager(state, id, value) {
 /** Does this project's boss delegate? Its own setting, else the global one (on by default). */
 const managerOf = (state, project) => (typeof project?.manager === 'boolean' ? project.manager : state.manager !== false);
 
-// --- per-project boss model (contract v3.27)
-// Project.bossModel: 'sonnet' | 'opus' | 'haiku' is the model of the project's MAIN claude session (every tab of the
-// project), passed as `--model <alias>` on the launch line; absent = Auto: claude's own default. Never written for Auto.
+// --- per-project boss model (contract v3.27, per engine v3.36)
+// Project.bossModel is the model of the project's MAIN session (every tab of the project), validated against the
+// project's engine: Claude's aliases 'sonnet' | 'opus' | 'haiku' (`--model <alias>`), Antigravity's tiers 'flash' | 'pro'
+// (`--model <slug>`), Command Code's full model ids (`-m <id>`). Absent = Auto: the program's own default. Never
+// written for Auto; a value that doesn't fit the engine counts as Auto (switching back finds it again).
+// src/engine-caps.mjs BOSS_MODEL_CHOICES holds the same values for the sidebar.
 const BOSS_MODELS = ['sonnet', 'opus', 'haiku'];
-const bossModelValue = (v) => (BOSS_MODELS.includes(v) ? v : null);
-const withBossModel = (v) => (bossModelValue(v) ? { bossModel: v } : {});
+const BOSS_MODELS_BY_ENGINE = {
+  claude: BOSS_MODELS,
+  agy: ['flash', 'pro'],
+  commandcode: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'deepseek/deepseek-v4-flash'],
+};
+const bossModelValue = (v, engine) => ((BOSS_MODELS_BY_ENGINE[engineValue(engine) || 'claude']).includes(v) ? v : null);
+// normalizeState keeps a model valid for ANY engine (switching back finds it again); only the launch args check the active engine
+const anyEngineBossModel = (v) => Object.values(BOSS_MODELS_BY_ENGINE).some((l) => l.includes(v));
+const withBossModel = (v) => (anyEngineBossModel(v) ? { bossModel: v } : {});
 
-/** value: 'sonnet' | 'opus' | 'haiku' | null (Auto). Same state when nothing changes. */
+/** value: one of the project's engine's models, or null (Auto). Same state when nothing changes. */
 function setProjectBossModel(state, id, value) {
   const p = findProject(state, id);
-  const v = bossModelValue(value);
+  const v = bossModelValue(value, p?.engine);
   if (!p || (p.bossModel ?? null) === v) return state;
   return { ...state, projects: state.projects.map((x) => {
     if (x.id !== id) return x;
@@ -240,13 +251,14 @@ function setProjectBossModel(state, id, value) {
   }) };
 }
 
-/** The model the project pins its boss session to, or null (Auto). */
-const bossModelOf = (project) => bossModelValue(project?.bossModel);
+/** The model the project pins its boss session to (for its engine), or null (Auto). */
+const bossModelOf = (project) => bossModelValue(project?.bossModel, project?.engine);
 
-/** claude's launch arguments for the boss model: ['--model', <alias>], or [] for Auto and non-Claude engines. */
+/** The boss model's launch arguments for the project's engine: claude and agy `--model <v>`, Command Code `-m <id>`; [] for Auto. */
 const bossModelArgs = (project) => {
-  const v = (!project?.engine || project.engine === 'claude') ? bossModelOf(project) : null;
-  return v ? ['--model', v] : [];
+  const v = bossModelOf(project);
+  if (!v) return [];
+  return engineValue(project?.engine) === 'commandcode' ? ['-m', v] : ['--model', v];
 };
 
 // --- per-project subagent model (contract v3.14)
@@ -338,6 +350,27 @@ function setProjectEngine(state, id, value) {
 /** The program the project's tabs run: 'claude' | 'agy' | 'commandcode'. */
 const engineOf = (project) => engineValue(project?.engine) || 'claude';
 
+// --- opt-in project files (contract v3.38, src/project-files.js)
+// Project.projectFiles: true lets Agent Office write its files into the project folder for Antigravity / Command Code
+// (manager brief, worker agent, Stop gate, the project's own MCP servers). Absent = off (the default). Never written for off.
+/** @type {(v: unknown) => { projectFiles?: true }} */
+const withProjectFiles = (v) => (v === true ? { projectFiles: true } : {});
+
+/** value: true | false. Same state when nothing changes. */
+function setProjectFiles(state, id, value) {
+  const p = findProject(state, id);
+  const v = value === true;
+  if (!p || (p.projectFiles === true) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { projectFiles: _, ...rest } = x;
+    return v ? { ...rest, projectFiles: true } : rest;
+  }) };
+}
+
+/** Whether the project lets Agent Office add its files. */
+const projectFilesOf = (project) => project?.projectFiles === true;
+
 // --- backup account at the usage limit (contract v3.17, src/fallback.js)
 // Project.backupAccount: 'auto' (any other logged-in account not at its limit) or an account id; absent = none.
 // Project.homeAccount: the account the project was on before an automatic move to a backup; it goes back there once
@@ -394,10 +427,11 @@ module.exports = {
   nextTabNumber, worktreeRoot, worktreeBranch, worktreeDir, addTab, removeTab, sessionAliases, projectPlaces,
   newId, projectName, normalizeState, findProject, findByDir,
   addProject, removeProject, setActive, setProjectAccount, setProjectManager, managerOf,
-  BOSS_MODELS, setProjectBossModel, bossModelOf, bossModelArgs,
+  BOSS_MODELS, BOSS_MODELS_BY_ENGINE, setProjectBossModel, bossModelOf, bossModelArgs,
   AGENT_MODELS, setProjectAgentModel, agentModelOf,
   CONTEXT_CAPS, setProjectContextCap, contextCapOf,
   setProjectSavings, savingsOf,
   ENGINES, setProjectEngine, engineOf,
+  setProjectFiles, projectFilesOf,
   setProjectBackup, backupOf, fallbackTo, returnHome,
 };

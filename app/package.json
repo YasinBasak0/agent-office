@@ -2,7 +2,7 @@
   "name": "agent-office",
   "productName": "Agent Office",
   "desktopName": "agent-office.desktop",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Claude Code in a pixel office: the real claude CLI in a terminal per project, under one live office where the boss oversees every project",
   "main": "main.js",
   "type": "commonjs",
@@ -56,6 +56,7 @@
       "!node_modules/{udx-native,sodium-native}/prebuilds/{android,ios,linux,win32}-*/**"
     ],
     "asarUnpack": [
+      "src/cmd-mod/**",
       "node_modules/node-pty/**",
       "node_modules/sodium-native/**",
       "node_modules/udx-native/**"

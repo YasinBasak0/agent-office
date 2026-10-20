@@ -104,7 +104,7 @@
     "addProjectTitle": "Add project ({mod}O)",
     "accounts": "ACCOUNTS",
     "account": "Account",
-    "accountTitle": "Claude account used in this project (changing it restarts Claude)",
+    "accountTitle": "The account this project runs on: a Claude account (Claude Code), Antigravity (Google Antigravity CLI, its own Google login) or Command Code (its own login). Choosing Antigravity or Command Code switches the project's engine and starts its tabs again, fresh; choosing a Claude account switches back. Changing the Claude account restarts Claude.",
     "newAccount": "+ New account…",
     "projectManager": "Boss",
     "projectManagerTitle": "How this project's boss works: Global follows the Manager mode setting; Delegates splits the work across agents; Does it itself works without agents. Either way it keeps going until the work is done. Applies when the project's Claude starts next (idle tabs restart now).",
@@ -123,6 +123,8 @@
     "agentModelSonnet": "Sonnet",
     "agentModelHaiku": "Haiku",
     "agentModelOpus": "Opus",
+    "projectFiles": "Agent Office files",
+    "projectFilesTitle": "Let Agent Office add its files to this project: the manager brief, a worker agent on the agent model, a check-before-done gate and the project's own approved MCP servers (Antigravity: .agents/, Command Code: .commandcode/agents/). Kept out of git with .git/info/exclude; turning it off removes exactly these files.",
     "contextCap": "Context cap",
     "contextCapTitle": "How large this project's conversations may grow before Claude summarizes them (auto-compact), for the boss and its agents. Every step re-reads the whole conversation, so a lower cap means Claude summarizes earlier, each step re-reads less and the work costs less. The trade-off: details of earlier work are kept only as a summary. Auto uses Claude Code's own limit (up to 1M tokens on a 1M model). Applies when the project's Claude starts next (idle tabs restart now).",
     "contextCapAuto": "Auto",
@@ -132,7 +134,7 @@
     "savingsNormal": "Normal",
     "savingsStrict": "Strict",
     "engine": "Engine",
-    "engineTitle": "The program this project's terminals run: Claude Code, Google Antigravity CLI (agy, its own Google login) or Command Code (commandcode, its own login). Account, boss, agent model, context cap, savings and backup account apply to Claude Code only; token usage is shown for Claude Code and Command Code. The office follows Antigravity and Command Code one way, from their terminals and their own logs (read only). Changing it starts every tab of the project again, fresh.",
+    "engineTitle": "This project runs Claude Code. The Account dropdown picks the engine: a Claude account, Antigravity or Command Code.",
     "engineClaude": "Claude Code",
     "engineAgy": "Antigravity",
     "agyHint": "Antigravity — observed",
@@ -220,7 +222,17 @@
     "cmdMissingTitle": "A Command Code project needs the Command Code CLI (Node.js 22 or newer). Install it in a terminal, then press Check again.",
     "cmdInstallTitle": "Install command from commandcode.ai/docs (run it yourself in a terminal)",
     "cmdInTitle": "Command Code has a saved login (~/.commandcode/auth.json). The app only checks that the file exists.",
-    "cmdLoginTitle": "Run commandcode login here (a browser opens to authorize)"
+    "cmdLoginTitle": "Run commandcode login here (a browser opens to authorize)",
+    "na": {
+      "agyContextCap": "Antigravity compacts its conversation automatically; it has no size setting.",
+      "agySavings": "Antigravity has no documented output caps or step budget.",
+      "agyBackup": "Antigravity has one login per user; there is no second account to switch to.",
+      "agyWorkers": "Antigravity reports no sub-agent events to other programs.",
+      "agyCost": "Antigravity writes no token counts Agent Office can read.",
+      "cmdBackup": "Command Code has one login; there is no second account to switch to.",
+      "filesOff": "Needs the project's files: turn on Agent Office files for this project.",
+      "claudeProjectFiles": "Claude Code gets Agent Office's setup at launch; nothing is written to the project."
+    }
   },
   "panel": {
     "types": {
@@ -559,7 +571,8 @@
     "officeUnavailable": "Agent Office tools are off for boss tabs: the office socket could not be opened",
     "projOpNotice": "{device}: {op} {project}",
     "loginRelayTitle": "Remote login",
-    "loginRelayBody": "{device} is logging in account {label} on this machine."
+    "loginRelayBody": "{device} is logging in account {label} on this machine.",
+    "projectFilesRefused": "Agent Office left some files in “{name}” alone: a file of the same name that it didn't write (or that was changed after it did) is never overwritten or removed."
   },
   "auth": {
     "unreadable": "could not read the login status",

@@ -80,6 +80,8 @@ const projects = q.has('empty') ? [] : [
   { id: rid(), dir: '/Users/me/Projects/notlar', name: 'notlar', accountId: 'default' },
 ];
 if (q.has('agy') && projects[1]) /** @type {any} */ (projects[1]).engine = 'agy';
+// ?cmdProject → the third project runs Command Code (v3.25; its row shows every control, contract v3.36)
+if (q.has('cmdProject') && projects[2]) /** @type {any} */ (projects[2]).engine = 'commandcode';
 if (q.has('longDir') && projects[0]) projects[0].dir = '/Users/me/Documents/Clients/acme-corporation/2026/platform-rewrite/services/agent-office';
 if (q.has('tabs') && projects[0]) {
   /** @type {any} */ (projects[0]).tabs = [

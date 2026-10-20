@@ -336,7 +336,7 @@ test('Command Code motoru (v3.25): engine değerini anar; cmdArgs yalnız --cont
   assert.equal('engine' in P.findProject(s, 'a'), false);
 
   const EN = require('../src/engine.js');
-  assert.deepEqual(EN.cmdArgs(), []); // a fresh start: no arguments, no mod
+  assert.deepEqual(EN.cmdArgs(), []); // a fresh start: no arguments (the mod comes only via mod, v3.37)
   assert.deepEqual(EN.cmdArgs({ resume: true }), ['--continue']);
   assert.deepEqual(EN.cmdArgs({ prompt: 'hi' }), []); // the prompt only with a resume
   // promptArg makes it one line, never starting with '-', without cmd.exe's special characters (quotes included)
@@ -454,21 +454,126 @@ test('Command Code ortamı: izin listesi; Claude, Anthropic, ofis, MCP, Savings 
   assert.equal(JSON.stringify(w).includes('secret'), false);
 });
 
-test('startCommandCode: ortam yalnız cmdEnv; sessionEnv, ptyEnv, ofis dizini, mod, eklenti yok (v3.25)', () => {
+test('startCommandCode: ortam yalnız cmdEnv (+ Savings MCP sınırı); sessionEnv, ptyEnv, ofis dizini, eklenti yok (v3.25, v3.37)', () => {
   const fs = require('node:fs'), path = require('node:path');
   const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const start = src.indexOf('function startCommandCode(');
   assert.ok(start > 0);
   const body = src.slice(start, src.indexOf('\n}\n', start)).replace(/\/\/.*$/gm, '');
-  assert.match(body, /const env = EN\.cmdEnv\(process\.env\);/);
-  for (const banned of ['sessionEnv', 'ptyEnv', 'officeDirectoryFile', 'AGENT_OFFICE_', 'sharedConfig', 'pluginDir', 'usageStatusLine', '--mod', 'managerOf', 'savings', 'CLAUDE_', 'env.', 'env[']) {
+  assert.match(body, /const env = EN\.cmdEnv\(process\.env, \{ mcpOutput: saving \? saving\.mcpOutput : null \}\);/);
+  for (const banned of ['sessionEnv', 'ptyEnv', 'officeDirectoryFile', 'AGENT_OFFICE_', 'sharedConfig', 'pluginDir', 'usageStatusLine', 'CLAUDE_', 'env.', 'env[', 'journal', 'directory']) {
     assert.equal(body.includes(banned), false, `startCommandCode uses ${banned}`);
   }
-  // no mod is shipped or passed any more
-  assert.equal(src.includes('commandCodeMod'), false);
+  // v3.37: the app's own mod only through cmdModArgs, with a fallback without it
+  assert.match(body, /CS\.cmdModArgs\(\{ modPath, spoolDir, manager: P\.managerOf\(state, project\), saving \}\)/);
+  assert.match(body, /cmdNoMod\.add\(id\); return startPty\(id/);
   assert.equal(fs.existsSync(path.join(__dirname, '..', '..', 'plugin', 'mods', 'agent-office.ts')), false);
-  assert.equal(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8').includes('mods/'), false);
+  assert.ok(fs.existsSync(path.join(__dirname, '..', 'src', 'cmd-mod', 'agent-office.ts')));
+  assert.ok(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).build.asarUnpack.includes('src/cmd-mod/**'));
 });
+
+test('Command Code v3.37: cmdArgs bağlam sınırı, izin modu, mod; cmdEnv yalnız uygulamanın MCP sınırı', () => {
+  const EN = require('../src/engine.js');
+  const CS = require('../src/cmd-spool.js');
+  assert.deepEqual(EN.cmdArgs({ compact: true }), ['--config', 'compactMode=fast']);
+  assert.deepEqual(EN.cmdArgs({ permissionMode: 'plan' }), []); // not supported: ignored
+  const mod = CS.cmdModArgs({ modPath: '/app/src/cmd-mod/agent-office.ts', spoolDir: '/ud/cmd-spool/t1', manager: true, saving: { stepBudget: 25, stepCap: true } });
+  assert.deepEqual(mod, ['--mod', '/app/src/cmd-mod/agent-office.ts', '--mod-option', 'ao-spool=/ud/cmd-spool/t1', '--mod-option', 'ao-manager=true',
+    '--mod-option', 'ao-step-budget=25', '--mod-option', 'ao-step-cap=true']);
+  assert.deepEqual(CS.cmdModArgs({ modPath: '/m.ts', spoolDir: '/s', manager: false, saving: null }), ['--mod', '/m.ts', '--mod-option', 'ao-spool=/s']);
+  // order: compact, permission, mod, then --continue and the prompt (positional last)
+  assert.deepEqual(EN.cmdArgs({ resume: true, prompt: 'go on', compact: true, mod: ['--mod', '/m.ts'] }), ['--config', 'compactMode=fast', '--mod', '/m.ts', '--continue', 'go on']);
+  // fallback: no mod → no --mod at all
+  assert.equal(EN.cmdArgs({ resume: true, compact: true, mod: [] }).includes('--mod'), false);
+  assert.equal(CS.cmdModPath('/A/app.asar'), '/A/app.asar.unpacked/src/cmd-mod/agent-office.ts'.replace(/\//g, require('node:path').sep));
+  assert.equal(require('node:path').basename(CS.spoolDirOf('/ud', 'p1:tab/2')), 'p1_tab_2');
+  // env: the user's own MCP vars and Claude/Anthropic/office stay out; MAX_MCP_OUTPUT_TOKENS only from the app's value
+  const base = { ...SECRET_ENV, PATH: '/bin', HOME: '/h', MAX_MCP_OUTPUT_TOKENS: '999999', MCP_TOOL_TIMEOUT: '1', MY_MCP_TOKEN: 'mcp-secret' };
+  const env = EN.cmdEnv(base, { mcpOutput: 8000, platform: 'darwin' });
+  assert.equal(env.MAX_MCP_OUTPUT_TOKENS, '8000');
+  for (const k of Object.keys(env)) if (k !== 'MAX_MCP_OUTPUT_TOKENS') assert.doesNotMatch(k, /ANTHROPIC|CLAUDE|AGENT_OFFICE|MCP/i);
+  for (const v of SECRET_VALUES) assert.equal(JSON.stringify(env).includes(v), false);
+  assert.equal('MCP_TOOL_TIMEOUT' in env || 'MY_MCP_TOKEN' in env, false);
+  assert.equal('MAX_MCP_OUTPUT_TOKENS' in EN.cmdEnv(base, { mcpOutput: null }, 'darwin'), false); // Savings off: the user's own value is still dropped
+  assert.equal('MAX_MCP_OUTPUT_TOKENS' in EN.cmdEnv(base, { mcpOutput: 1e9 }, 'darwin'), false);
+  assert.deepEqual(EN.cmdEnv(base, 'linux'), EN.cmdEnv(base, {}, 'linux')); // the v3.25 signature still works
+});
+
+test('Command Code v3.37: spool ayrıştırıcı → işçiler, onay, token', () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const CS = require('../src/cmd-spool.js');
+  const AW = require('../src/agy-watch.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-spool-'));
+  try {
+    const file = path.join(dir, CS.SPOOL_FILE);
+    const t0 = 1_800_000_000_000;
+    const L = (o) => JSON.stringify(o) + '\n';
+    fs.writeFileSync(file, L({ t: 'subagent_start', id: 'c1', type: 'explore', at: t0 }) + 'not json\n' + L({ t: 'evil', id: 'x', at: t0 })
+      + L({ t: 'subagent_progress', id: 'c1', tool: 'read', tokens: 100, at: t0 + 1 }) + L({ t: 'permission', tool: 'bash', at: t0 + 2 }) + '{"t":"turn_end"');
+    let r = CS.readSpool(file, null);
+    assert.deepEqual(r.events.map((e) => e.t), ['subagent_start', 'subagent_progress', 'permission']);
+    const w = AW.createAgyWatch(t0, { engine: 'commandcode', label: 'Command Code' });
+    w.spool(r.events, t0 + 3);
+    let s = w.session('proj', 'k', t0 + 3);
+    assert.equal(s.workers.length, 1);
+    assert.equal(s.workers[0].type, 'explore');
+    assert.equal(s.workers[0].toolCount, 1);
+    assert.equal(s.workers[0].tool, 'read');
+    assert.deepEqual(s.stats.waiting, { kind: 'permission', tool: 'bash', since: t0 + 2 });
+    assert.equal(s.stats.isBossBusy, true);
+    w.input('1', t0 + 4); // the person answers the dialog
+    fs.appendFileSync(file, ',"turn":1,"usage":{"inputTokens":300,"outputTokens":50,"evil key":5}}\n' + L({ t: 'subagent_stop', id: 'c1', type: 'explore', tokens: 400, at: t0 + 5 }));
+    r = CS.readSpool(file, r.cursor);
+    assert.deepEqual(r.events.map((e) => e.t), ['turn_end', 'subagent_stop']);
+    assert.deepEqual(r.events[0].usage, { inputTokens: 300, outputTokens: 50 });
+    w.spool(r.events, t0 + 6);
+    s = w.session('proj', 'k', t0 + 6);
+    assert.equal(s.stats.waiting, undefined);
+    assert.equal(s.workers[0].doneAt, t0 + 5);
+    assert.equal(s.stats.tokens.total, 750);
+    assert.ok(s.stats.today.log.some((l) => l.id === 'c1' && l.type === 'explore'));
+    assert.equal(w.session('proj', 'k', t0 + 120000).workers.length, 0); // a done worker leaves after a while
+    assert.deepEqual(CS.readSpool(path.join(dir, 'missing.jsonl'), null).events, []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Command Code modu (v3.37): yalnız spool\'a yazar; yönetici özeti statik; adım bütçesi', async () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'cmd-mod', 'agent-office.ts'), 'utf8');
+  // writes only: no read, no env, no other file API
+  for (const banned of ['readFile', 'readdir', 'process.env', 'existsSync', 'createReadStream', 'require(', 'fetch(']) assert.equal(src.includes(banned), false, banned);
+  const modUrl = require('node:url').pathToFileURL(path.join(__dirname, '..', 'src', 'cmd-mod', 'agent-office.ts')).href;
+  let mod;
+  try { mod = await import(modUrl); } catch (e) { if (/Unknown file extension/.test(String(e))) return; throw e; } // node without type stripping: tsc checks it
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-mod-'));
+  try {
+    const flags = { 'ao-spool': dir, 'ao-manager': 'true', 'ao-step-budget': '4', 'ao-step-cap': 'true' };
+    const h = { on: {}, prompt: [], before: null, perm: null };
+    const d = { dispose() {} };
+    mod.default({
+      addFlag: () => d, getFlag: (n) => flags[n],
+      appendSystemPrompt: (f) => { h.prompt.push(f); return d; },
+      beforeToolCall: (f) => { h.before = f; return d; },
+      onPermissionRequest: (f) => { h.perm = f; return d; },
+      on: (ev, f) => { h.on[ev] = f; return d; },
+    });
+    assert.equal(h.prompt[0]({}), mod.MANAGER_BRIEF);
+    assert.doesNotMatch(mod.MANAGER_BRIEF, /\/Users|\\\\|@|directory/i);
+    h.on.turn_start({ turnNumber: 1 });
+    const res = Array.from({ length: 9 }, () => h.before({ toolName: 'read' }));
+    assert.equal(res[2], undefined);
+    assert.match(res[3].additionalContext, /Wrap up/);
+    assert.equal(res[8].block, true);
+    assert.equal(h.perm({ toolName: 'bash', input: { cmd: 'cat secret' }, description: 'secret-desc' }), undefined);
+    h.on.subagent_start({ toolCallId: 'c9', subagentType: 'general' });
+    h.on.turn_end({ turnNumber: 1, usage: { inputTokens: 5 } });
+    const text = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8');
+    assert.equal(text.includes('secret'), false);
+    const evs = text.trim().split('\n').map((l) => CS_parse(l));
+    assert.deepEqual(evs.map((e) => e && e.t), ['cap', 'permission', 'subagent_start', 'turn_end']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+const CS_parse = (l) => require('../src/cmd-spool.js').parseSpoolLine(l);
 
 test('Command Code başlatma satırı: rc dosyasının AGENT_OFFICE_*\'ı gider; argv yalnız Command Code argümanları (v3.25)', { skip: process.platform === 'win32' }, () => {
   const EN = require('../src/engine.js');
@@ -3512,7 +3617,7 @@ test('müdür modeli: her seçim için başlatma argümanları; Otomatik ve diğ
   assert.deepEqual(P.bossModelArgs({}), []); // Otomatik: hiçbir şey değişmez
   assert.deepEqual(P.bossModelArgs({ bossModel: 'x' }), []);
   assert.deepEqual(P.bossModelArgs({ engine: 'claude', bossModel: 'opus' }), ['--model', 'opus']);
-  // diğer motorlar: alan kalsa bile argüman yok
+  // diğer motorlar: Claude takma adı onların modeli değil, argüman yok (v3.36: kendi modelleri engine-caps.test.mjs)
   assert.deepEqual(P.bossModelArgs({ engine: 'agy', bossModel: 'opus' }), []);
   assert.deepEqual(P.bossModelArgs({ engine: 'commandcode', bossModel: 'haiku' }), []);
   // ortam değişkeni değil bayrak: sessionEnv ANTHROPIC_MODEL'e dokunmaz
@@ -3524,13 +3629,14 @@ test('müdür modeli: her seçim için başlatma argümanları; Otomatik ve diğ
     ['--model', 'opus', '--plugin-dir', '/p', '--resume', 'sid']);
 });
 
-test('müdür modeli: kenar çubuğunda yalnız Claude motorunda, Ajan modelinden önce (v3.27)', () => {
+test('müdür modeli: kenar çubuğunda her motorda, Ajan modelinden önce (v3.27, v3.36)', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const sb = fs.readFileSync(path.join(__dirname, '../renderer/sidebar.js'), 'utf8');
-  const boss = sb.indexOf('claude ? bossModelSelect(p) : null');
-  const agent = sb.indexOf('claude ? agentModelSelect(p) : null');
-  assert.ok(boss > 0 && agent > boss, 'Boss model dropdown must be Claude-only and right before Agent model');
+  const boss = sb.indexOf('          bossModelSelect(p),');
+  const agent = sb.indexOf('          agentModelSelect(p),');
+  assert.ok(boss > 0 && agent > boss, 'Boss model dropdown must be shown for every engine, right before Agent model');
+  assert.doesNotMatch(sb, /claude \? (account|manager|bossModel|agentModel|contextCap|savings|backup)Select\(p\) : null/, 'no control is hidden for another engine (v3.36)');
   const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
   assert.match(main, /R\.claudeArgs\(\[\.\.\.P\.bossModelArgs\(project\)/);
   assert.match(main, /projects:setBossModel[\s\S]{0,300}restartIdle\(p\)/);
@@ -3620,4 +3726,173 @@ test('login relay: parser finds the allowlisted URL and the code prompt in a stu
   assert.equal(LC.validateMessage({ t: 'login-result', id: 'r1', ok: false, reason: 'whatever' }), null);
   assert.deepEqual(LC.validateMessage({ t: 'acct-view', accounts: [{ id: 'work', label: 'Work\x1b[31m', state: 'out', email: 'me@example.com', token: 'sk-ant-x', configDir: '/Users/me/.claude-work' }] }),
     { t: 'acct-view', accounts: [{ id: 'work', label: 'Work', state: 'out', email: 'me@example.com' }], shared: true });   // labels, state, email only
+});
+
+// --- opt-in project files (contract v3.38, src/project-files.js)
+{
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { execFileSync } = require('child_process');
+  const PF = require('../src/project-files.js');
+  const repo = () => {
+    const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-pf-')));
+    fs.mkdirSync(path.join(d, '.git', 'info'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.git', 'info', 'exclude'), '# git ls-files --others --exclude-from=.git/info/exclude\n*.log\n');
+    return d;
+  };
+  const list = (d) => {
+    const out = [];
+    const walk = (rel) => {
+      for (const e of fs.readdirSync(path.join(d, rel), { withFileTypes: true })) {
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (r === '.git') continue;
+        if (e.isDirectory()) walk(r); else out.push(r);
+      }
+    };
+    walk('');
+    return out.sort();
+  };
+  const mcp = { mcpServers: {
+    db: { command: 'npx', args: ['db-mcp'], env: { DB: 'x' }, cwd: '.' },
+    web: { type: 'http', url: 'https://example.com/mcp', headers: { A: 'b' } },
+    nope: { command: 'evil' },
+  } };
+  const all = { engine: 'agy', enabled: true, manager: true, agentModel: 'opus', projectMcp: mcp, approved: ['db', 'web'] };
+
+  test('project files: off writes nothing; agy on writes exactly our files, marked, and excludes them', () => {
+    assert.deepEqual(PF.desiredFiles({ ...all, enabled: false }), []);
+    assert.deepEqual(PF.desiredFiles({ engine: 'claude', enabled: true, manager: true, agentModel: 'opus' }), []);
+    const d = repo();
+    const r = PF.syncProjectFiles(d, PF.desiredFiles(all));
+    const ours = ['.agents/agents/ao-worker.md', '.agents/hooks.json', '.agents/mcp_config.json', '.agents/rules/agent-office-manager.md'];
+    assert.deepEqual(r.written.sort(), ours);
+    assert.deepEqual(list(d), [...ours.slice(0, 2), '.agents/.agent-office-files.json', ...ours.slice(2)].sort());
+    const rule = fs.readFileSync(path.join(d, ours[3]), 'utf8');
+    assert.match(rule, /^---\ntrigger: always_on\n/); // docs/rules: the frontmatter comes first
+    assert.match(rule, new RegExp(PF.MARKER));
+    assert.match(fs.readFileSync(path.join(d, ours[0]), 'utf8'), /\nname: ao-worker\n[\s\S]*\nmodel: pro\n/);
+    const hooks = JSON.parse(fs.readFileSync(path.join(d, ours[1]), 'utf8'));
+    assert.deepEqual(Object.keys(hooks), [PF.HOOK_NAME]);
+    assert.equal(hooks[PF.HOOK_NAME].Stop[0].type, 'command');
+    const ex = fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8');
+    assert.match(ex, /^# git ls-files[^\n]*\n\*\.log\n/); // the user's lines stay
+    for (const f of [...ours, '.agents/.agent-office-files.json']) assert.ok(ex.includes(`\n/${f}\n`), f);
+    const out = execFileSync('git', ['-C', d, 'init', '-q'], { encoding: 'utf8' }) + execFileSync('git', ['-C', d, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' });
+    assert.equal(out.trim(), ''); // git sees none of them
+    // the same again changes nothing
+    assert.deepEqual(PF.syncProjectFiles(d, PF.desiredFiles(all)), { written: [], removed: [], refused: [] });
+    // off: exactly our files go, the exclude block too, the user's lines stay
+    const off = PF.syncProjectFiles(d, []);
+    assert.deepEqual(off.removed.sort(), ours);
+    assert.deepEqual(list(d), []);
+    assert.equal(fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8'), '# git ls-files --others --exclude-from=.git/info/exclude\n*.log\n');
+  });
+
+  test('project files: a user file of the same name is never overwritten or removed; nor ours once the user edits it', () => {
+    const d = repo();
+    fs.mkdirSync(path.join(d, '.agents', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.agents', 'rules', 'agent-office-manager.md'), 'mine');
+    fs.writeFileSync(path.join(d, '.agents', 'mcp_config.json'), '{"mcpServers":{}}');
+    fs.writeFileSync(path.join(d, '.agents', 'rules', 'style.md'), 'keep');
+    const r = PF.syncProjectFiles(d, PF.desiredFiles(all));
+    assert.deepEqual(r.refused.sort(), ['.agents/mcp_config.json', '.agents/rules/agent-office-manager.md']);
+    assert.equal(fs.readFileSync(path.join(d, '.agents', 'rules', 'agent-office-manager.md'), 'utf8'), 'mine');
+    assert.equal(fs.readFileSync(path.join(d, '.agents', 'mcp_config.json'), 'utf8'), '{"mcpServers":{}}');
+    assert.ok(!fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8').includes('mcp_config.json')); // not ours: not excluded
+    fs.writeFileSync(path.join(d, '.agents', 'hooks.json'), '{"edited":{}}'); // the user edits ours
+    const off = PF.syncProjectFiles(d, []);
+    assert.deepEqual(off.removed, ['.agents/agents/ao-worker.md']);
+    assert.ok(off.refused.includes('.agents/hooks.json'));
+    assert.deepEqual(list(d), ['.agents/hooks.json', '.agents/mcp_config.json', '.agents/rules/agent-office-manager.md', '.agents/rules/style.md']);
+  });
+
+  test('project files: MCP comes only from the project\'s own approved .mcp.json, translated to agy\'s schema', () => {
+    assert.deepEqual(PF.agyMcpServers(mcp, ['db', 'web']), {
+      db: { command: 'npx', args: ['db-mcp'], env: { DB: 'x' }, cwd: '.' },
+      web: { serverUrl: 'https://example.com/mcp', headers: { A: 'b' } },
+    });
+    assert.deepEqual(PF.agyMcpServers(mcp, []), {}); // nothing approved: nothing goes
+    assert.deepEqual(PF.agyMcpServers(null, ['db']), {});
+    const files = PF.desiredFiles({ ...all, approved: ['db'] });
+    const m = files.find((f) => f.rel === '.agents/mcp_config.json');
+    assert.deepEqual(JSON.parse(m.content), { mcpServers: { db: mcp.mcpServers.db } });
+    assert.ok(!PF.desiredFiles({ ...all, approved: [] }).some((f) => f.rel.endsWith('mcp_config.json')));
+    // no leak: nothing of Claude Code's or the office's setup in any file
+    for (const f of files) assert.doesNotMatch(f.content, /CLAUDE_|AGENT_OFFICE_|office-mcp|office\.json|\.claude|userData|journal/i, f.rel);
+    // manager off: no brief, no Stop gate; Auto agent model: no worker
+    assert.deepEqual(PF.desiredFiles({ ...all, manager: false, agentModel: null, approved: [] }), []);
+  });
+
+  test('project files: Command Code gets only the worker agent; switching engine swaps the files', () => {
+    const cc = PF.desiredFiles({ engine: 'commandcode', enabled: true, manager: true, agentModel: 'haiku', projectMcp: mcp, approved: ['db'] });
+    assert.deepEqual(cc.map((f) => f.rel), ['.commandcode/agents/ao-worker.md']);
+    assert.match(cc[0].content, /\nmodel: claude-haiku-5-5\ntools: "\*"\n/);
+    const d = repo();
+    PF.syncProjectFiles(d, PF.desiredFiles(all));
+    const r = PF.syncProjectFiles(d, cc);
+    assert.deepEqual(r.written, ['.commandcode/agents/ao-worker.md']);
+    assert.equal(r.removed.length, 4);
+    assert.deepEqual(list(d), ['.commandcode/.agent-office-files.json', '.commandcode/agents/ao-worker.md']);
+  });
+
+  test('project files: a project inside a repository or a worktree gets its exclude entries in the common git dir', () => {
+    const d = repo();
+    const sub = path.join(d, 'pkg');
+    fs.mkdirSync(sub);
+    PF.syncProjectFiles(sub, PF.desiredFiles({ engine: 'commandcode', enabled: true, agentModel: 'opus' }));
+    assert.ok(fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8').includes('\n/pkg/.commandcode/agents/ao-worker.md\n'));
+    const wt = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-wt-')));
+    fs.mkdirSync(path.join(d, '.git', 'worktrees', 'w'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.git', 'worktrees', 'w', 'commondir'), '../..\n');
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(d, '.git', 'worktrees', 'w')}\n`);
+    assert.equal(PF.gitExclude(wt).file, path.join(d, '.git', 'info', 'exclude'));
+  });
+
+  test('project files: the Stop gate sends the agent back once per execution (docs/hooks Stop output)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-stop-'));
+    const run = (n) => JSON.parse(execFileSync('sh', ['-c', PF.STOP_COMMAND], {
+      input: JSON.stringify({ executionNum: n, conversationId: 'c-1', fullyIdle: true }, null, 2), env: { PATH: process.env.PATH, TMPDIR: tmp }, encoding: 'utf8',
+    }));
+    assert.deepEqual(run(1), { decision: 'continue', reason: PF.STOP_REASON });
+    assert.equal(run(1).decision, 'stop');
+    assert.equal(run(2).decision, 'continue');
+    assert.equal(run(3).decision, 'stop');
+    assert.equal(JSON.parse(execFileSync('sh', ['-c', PF.STOP_COMMAND], { input: '{}', encoding: 'utf8' })).decision, 'stop');
+  });
+
+  test('project files toggle: off by default, only true is stored', () => {
+    const s = { projects: [{ id: 'a', dir: '/a', engine: 'agy' }], accounts: [] };
+    assert.equal(P.projectFilesOf(P.findProject(s, 'a')), false);
+    assert.equal(P.setProjectFiles(s, 'a', false), s);
+    const on = P.setProjectFiles(s, 'a', true);
+    assert.equal(P.findProject(on, 'a').projectFiles, true);
+    assert.equal('projectFiles' in P.findProject(P.setProjectFiles(on, 'a', false), 'a'), false);
+    assert.deepEqual(P.normalizeState({ projects: [{ dir: '/x', projectFiles: true }, { dir: '/y', projectFiles: 'yes' }] }).projects.map((p) => p.projectFiles ?? null), [true, null]);
+  });
+}
+
+test('review fixes: bossModel survives another engine, exclude merge, secret file mode, symlinked roots', () => {
+  const s = P.normalizeState({ projects: [{ id: 'a', dir: '/a', engine: 'agy', bossModel: 'opus' }, { id: 'b', dir: '/b', bossModel: 'nonsense' }] });
+  assert.equal(s.projects[0].bossModel, 'opus'); // kept while agy is active
+  assert.deepEqual(P.bossModelArgs(s.projects[0]), []); // but no flag for agy
+  assert.equal('bossModel' in s.projects[1], false);
+  const PF = require('../src/project-files.js');
+  const own = [PF.EXCLUDE_BEGIN, '/a/.agents/x', PF.EXCLUDE_END].join('\n') + '\n';
+  const merged = PF.mergeExclude(own, 'b', ['.agents/y']);
+  assert.match(merged, /\/a\/\.agents\/x\n\/b\/\.agents\/y\n/); // other project's line kept
+  assert.equal(PF.mergeExclude(merged, 'b', []).includes('/b/'), false);
+  assert.match(PF.mergeExclude(merged, 'b', []), /\/a\/\.agents\/x/);
+  const noEnd = ['user-line', PF.EXCLUDE_BEGIN, '/.agents/old', 'keep-me'].join('\n') + '\n';
+  const out = PF.mergeExclude(noEnd, '', ['.agents/new']);
+  assert.match(out, /keep-me/); assert.match(out, /user-line/); assert.equal(out.includes('/.agents/old'), false);
+  const os2 = require('os'); const fs2 = require('fs'); const pa = require('path');
+  const d = fs2.mkdtempSync(pa.join(os2.tmpdir(), 'ao-pf-'));
+  const r = PF.syncProjectFiles(d, PF.desiredFiles({ engine: 'agy', enabled: true, projectMcp: { mcpServers: { s: { command: 'x', env: { K: 'v' } } } }, approved: ['s'] }));
+  assert.ok(r.written.includes('.agents/mcp_config.json'));
+  if (process.platform !== 'win32') assert.equal(fs2.statSync(pa.join(d, '.agents/mcp_config.json')).mode & 0o077, 0);
+  const d2 = fs2.mkdtempSync(pa.join(os2.tmpdir(), 'ao-pf-')); const out2 = fs2.mkdtempSync(pa.join(os2.tmpdir(), 'ao-out-'));
+  fs2.symlinkSync(out2, pa.join(d2, '.agents'));
+  const r2 = PF.syncProjectFiles(d2, PF.desiredFiles({ engine: 'agy', enabled: true, manager: true }));
+  assert.deepEqual(fs2.readdirSync(out2), []); assert.ok(r2.warnings.includes('.agents'));
 });
