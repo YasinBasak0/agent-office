@@ -3484,7 +3484,7 @@ test('müdür modeli: her seçim için başlatma argümanları; Otomatik ve diğ
   assert.deepEqual(P.bossModelArgs({}), []); // Otomatik: hiçbir şey değişmez
   assert.deepEqual(P.bossModelArgs({ bossModel: 'x' }), []);
   assert.deepEqual(P.bossModelArgs({ engine: 'claude', bossModel: 'opus' }), ['--model', 'opus']);
-  // diğer motorlar: alan kalsa bile argüman yok
+  // diğer motorlar: Claude takma adı onların modeli değil, argüman yok (v3.36: kendi modelleri engine-caps.test.mjs)
   assert.deepEqual(P.bossModelArgs({ engine: 'agy', bossModel: 'opus' }), []);
   assert.deepEqual(P.bossModelArgs({ engine: 'commandcode', bossModel: 'haiku' }), []);
   // ortam değişkeni değil bayrak: sessionEnv ANTHROPIC_MODEL'e dokunmaz
@@ -3496,13 +3496,14 @@ test('müdür modeli: her seçim için başlatma argümanları; Otomatik ve diğ
     ['--model', 'opus', '--plugin-dir', '/p', '--resume', 'sid']);
 });
 
-test('müdür modeli: kenar çubuğunda yalnız Claude motorunda, Ajan modelinden önce (v3.27)', () => {
+test('müdür modeli: kenar çubuğunda her motorda, Ajan modelinden önce (v3.27, v3.36)', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const sb = fs.readFileSync(path.join(__dirname, '../renderer/sidebar.js'), 'utf8');
-  const boss = sb.indexOf('claude ? bossModelSelect(p) : null');
-  const agent = sb.indexOf('claude ? agentModelSelect(p) : null');
-  assert.ok(boss > 0 && agent > boss, 'Boss model dropdown must be Claude-only and right before Agent model');
+  const boss = sb.indexOf('          bossModelSelect(p),');
+  const agent = sb.indexOf('          agentModelSelect(p),');
+  assert.ok(boss > 0 && agent > boss, 'Boss model dropdown must be shown for every engine, right before Agent model');
+  assert.doesNotMatch(sb, /claude \? (account|manager|bossModel|agentModel|contextCap|savings|backup)Select\(p\) : null/, 'no control is hidden for another engine (v3.36)');
   const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
   assert.match(main, /R\.claudeArgs\(\[\.\.\.P\.bossModelArgs\(project\)/);
   assert.match(main, /projects:setBossModel[\s\S]{0,300}restartIdle\(p\)/);

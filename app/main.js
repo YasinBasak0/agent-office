@@ -968,11 +968,11 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
 // from an allowlist (agy keeps its own Google login and data). resume: --continue, only for a tab
 // that continues (main tab, worktree tab); if it ends with an error within RESUME_GRACE_MS the tab starts fresh.
 // prompt: agy's -i, only when resuming. There is no session id: a sleeping or restarted tab continues the same way.
-function startAgy(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+function startAgy(id, { tab, dir: cwd, project }, { resume = false, prompt = '' } = {}) {
   removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
   const { cols, rows } = sizes.get(id) || lastSize;
   const isResume = resume && (!tab || Boolean(tab.worktree));
-  const args = EN.agyArgs({ resume: isResume, prompt });
+  const args = EN.agyArgs({ resume: isResume, prompt, model: P.bossModelOf(project) });
   const startedAt = Date.now();
   // an allowlist of the user's env (engine.js agyEnv): no Claude, Anthropic, office (AGENT_OFFICE_*) or MCP variable,
   // no sessionEnv; no office directory file is written for it
@@ -1067,11 +1067,11 @@ function agySessions(now = Date.now()) {
 // launch line drops what rc files set), and an env from an allowlist (engine.js cmdEnv). resume: --continue, only for
 // a tab that continues (main tab, worktree tab) and whose folder has a session (hasCmdHistory); prompt only then.
 // The app watches it one way like agy (src/agy-watch.js, engine 'commandcode').
-function startCommandCode(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+function startCommandCode(id, { tab, dir: cwd, project }, { resume = false, prompt = '' } = {}) {
   removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
   const { cols, rows } = sizes.get(id) || lastSize;
   const isResume = resume && (!tab || Boolean(tab.worktree)) && hasCmdHistory(cwd);
-  const args = EN.cmdArgs({ resume: isResume, prompt });
+  const args = EN.cmdArgs({ resume: isResume, prompt, model: P.bossModelOf(project) });
   const startedAt = Date.now();
   // an allowlist of the user's env (engine.js cmdEnv): no Claude, Anthropic, office or MCP variable
   const env = EN.cmdEnv(process.env);

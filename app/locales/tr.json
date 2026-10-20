@@ -103,7 +103,7 @@
     "addProjectTitle": "Proje ekle ({mod}O)",
     "accounts": "HESAPLAR",
     "account": "Hesap",
-    "accountTitle": "Bu projede kullanılacak Claude hesabı (değiştirince Claude yeniden başlar)",
+    "accountTitle": "Bu projenin çalıştığı hesap: bir Claude hesabı (Claude Code), Antigravity (Google Antigravity CLI, kendi Google girişi) ya da Command Code (kendi girişi). Antigravity ya da Command Code seçmek projenin motorunu değiştirir ve sekmelerini baştan başlatır; bir Claude hesabı seçmek geri döndürür. Claude hesabını değiştirmek Claude'u yeniden başlatır.",
     "newAccount": "+ Yeni hesap…",
     "projectManager": "Müdür",
     "projectManagerTitle": "Bu projede müdür nasıl çalışır: Genel ayar Müdür modu ayarını izler; Dağıtır işi ajanlara böler; Kendisi yapar ajansız çalışır. Her iki durumda da iş bitene kadar devam eder. Projenin Claude'u bir sonraki başlayışında geçerli olur (boştaki sekmeler hemen yeniden başlar).",
@@ -131,7 +131,7 @@
     "savingsNormal": "Normal",
     "savingsStrict": "Sıkı",
     "engine": "Motor",
-    "engineTitle": "Bu projenin terminallerinde çalışan program: Claude Code, Google Antigravity CLI (agy; kendi Google girişi) ya da Command Code (commandcode; kendi girişi). Hesap, müdür, ajan modeli, bağlam sınırı, tasarruf ve yedek hesap yalnızca Claude Code için geçerlidir; token kullanımı Claude Code ve Command Code için gösterilir. Ofis Antigravity'yi ve Command Code'u tek yönlü, terminallerinden ve kendi kayıtlarından (yalnız okuyarak) izler. Değiştirmek projenin her sekmesini sıfırdan yeniden başlatır.",
+    "engineTitle": "Bu proje Claude Code çalıştırıyor. Motoru Hesap menüsü seçer: bir Claude hesabı, Antigravity ya da Command Code.",
     "engineClaude": "Claude Code",
     "engineAgy": "Antigravity",
     "agyHint": "Antigravity — izleniyor",
@@ -219,7 +219,18 @@
     "cmdMissingTitle": "Command Code projesi için Command Code CLI gerekir (Node.js 22 veya üstü). Bir terminalde kurun, sonra Tekrar kontrol et'e basın.",
     "cmdInstallTitle": "commandcode.ai/docs kurulum komutu (bir terminalde kendiniz çalıştırın)",
     "cmdInTitle": "Command Code'un kayıtlı bir girişi var (~/.commandcode/auth.json). Uygulama yalnızca dosyanın var olduğuna bakar.",
-    "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)"
+    "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)",
+    "na": {
+      "agyManager": "Antigravity talimatı yalnız projedeki ya da ~/.gemini'deki dosyalardan alır; Agent Office bunları yazmaz.",
+      "agyAgentModel": "Antigravity alt ajan modelini yalnız kendi ajan dosyalarında sabitler; Agent Office bunları yazmaz.",
+      "agyContextCap": "Antigravity konuşmasını kendisi özetler; boyut ayarı yok.",
+      "agySavings": "Antigravity'nin belgelenmiş bir çıktı sınırı ya da adım bütçesi yok.",
+      "agyBackup": "Antigravity'de kullanıcı başına tek giriş var; geçilecek ikinci hesap yok.",
+      "agyWorkers": "Antigravity alt ajan olaylarını başka programlara bildirmez.",
+      "agyCost": "Antigravity, Agent Office'in okuyabileceği token sayısı yazmaz.",
+      "cmdAgentModel": "Command Code'un yerleşik alt ajanları dışarıdan bir modele sabitlenemez.",
+      "cmdBackup": "Command Code'da tek giriş var; geçilecek ikinci hesap yok."
+    }
   },
   "panel": {
     "types": {
