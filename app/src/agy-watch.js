@@ -26,6 +26,8 @@ const path = require('node:path');
 const { draftAfter } = require('./sleep.js');
 const { ccSlugOf } = require('./token-usage.js');
 
+const { usageTokens } = require('./cmd-spool.js');
+const WORKER_FORGET_MS = 60000; // a done worker (Command Code mod spool, v3.37) stays this long in the office
 const QUIET_MS = 3000; // no output and no busy sign this long after the last one: the turn is over
 const SUBMIT_GRACE_MS = 8000; // after Enter, agy may take a while before its first busy line (model start)
 const TAIL = 2000; // characters of plain screen text kept to match patterns across chunk borders
@@ -98,6 +100,10 @@ function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigra
   /** @type {{ size: number, prompts: number } | null} */
   let seen = null; // the transcript as last read
   let muteUntil = 0; // right after a dialog is answered its last frame may still be drawn: not a new dialog
+  // Command Code's mod spool (v3.37, src/cmd-spool.js): its sub-agents as workers, and the token counts it reports.
+  /** @type {{ id: string, type: string, description: string, spawnAt: number, doneAt?: number, isOk?: boolean, tool?: string, toolCount: number, tokens?: number }[]} */
+  let workers = [];
+  let tokens = 0;
 
   const startTurn = (now) => {
     busy = true;
@@ -184,6 +190,48 @@ function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigra
       }
       seen = { ...t };
     },
+    /**
+     * Events of the tab's Command Code mod spool (contract v3.37, cmd-spool.js parseSpoolLine): subagent_start/
+     * progress/stop make workers (done ones go to the day's log and leave after WORKER_FORGET_MS); permission names
+     * the tool of an open dialog (or opens one); turn_end and subagent_stop add tokens.
+     * @param {{ t: string, at: number, id?: string, type?: string, tool?: string, tokens?: number, usage?: Record<string, number> }[]} events
+     */
+    spool(events, now = Date.now()) {
+      if (endedAt) return;
+      for (const e of events || []) {
+        const at = e.at || now;
+        if (e.t === 'subagent_start' && e.id && !workers.some((w) => w.id === e.id)) {
+          workers.push({ id: e.id, type: e.type || 'subagent', description: e.type || 'subagent', spawnAt: at, toolCount: 0 });
+          if (workers.length > 50) workers.splice(0, workers.length - 50);
+          if (!busy) startTurn(now);
+          lastSign = now;
+        } else if (e.t === 'subagent_progress' && e.id) {
+          const w = workers.find((x) => x.id === e.id && x.doneAt === undefined);
+          if (w) { w.toolCount++; if (e.tool) w.tool = e.tool; if (e.tokens !== undefined) w.tokens = e.tokens; }
+          lastSign = now;
+        } else if (e.t === 'subagent_stop' && e.id) {
+          const w = workers.find((x) => x.id === e.id && x.doneAt === undefined);
+          if (!w) continue;
+          w.doneAt = at;
+          w.isOk = true;
+          if (e.tokens !== undefined) { w.tokens = e.tokens; tokens += e.tokens; }
+          const date = dayKey(at);
+          if (today.date !== date) today = { date, ids: [], log: [] };
+          today.ids.push(w.id);
+          today.log.push({ id: w.id, type: w.type, description: w.description, spawnAt: w.spawnAt, doneAt: at, isOk: true, toolCount: w.toolCount });
+          if (today.log.length > 200) today.log.splice(0, today.log.length - 200);
+        } else if (e.t === 'permission') {
+          if (waiting) { if (!waiting.tool && e.tool) waiting.tool = e.tool; } else if (now >= muteUntil) {
+            waiting = { kind: 'permission', tool: e.tool || '', since: at };
+            if (!busy) startTurn(now);
+            lastSign = now;
+          }
+        } else if (e.t === 'turn_end') {
+          tokens += usageTokens(e.usage);
+        }
+        updatedAt = Math.max(updatedAt, now);
+      }
+    },
     /** agy ended (the pty exited or was killed). */
     exit(now = Date.now()) {
       if (endedAt) return;
@@ -215,9 +263,10 @@ function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigra
     session(project, id, now = Date.now()) {
       return {
         id, project, engine, format: 2, updatedAt: endedAt || Math.max(updatedAt, now), ...(endedAt ? { endedAt } : {}),
-        workers: [],
+        workers: workers.filter((w) => w.doneAt === undefined || now - w.doneAt < WORKER_FORGET_MS).map((w) => ({ ...w })),
         stats: {
           isBossBusy: busy, turns,
+          ...(tokens ? { tokens: { total: tokens } } : {}),
           ...(waiting ? { waiting: { ...waiting } } : {}),
           today: { date: today.date, ids: [...today.ids], log: today.log.map((l) => ({ ...l })) },
         },

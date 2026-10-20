@@ -395,6 +395,15 @@ async function setAgentModel(projectId, value) {
   } catch (e) { console.error(e); }
 }
 
+/** Opt-in project files (v3.38): true | false; main writes or removes its files and restarts the idle tabs. */
+async function setProjectFiles(projectId, value) {
+  try {
+    const r = await api.projects.setProjectFiles?.(projectId, value);
+    for (const id of r?.restarted || []) panes.get(id)?.term.reset({ restarting: true });
+    applyProjects(await api.projects.list());
+  } catch (e) { console.error(e); }
+}
+
 /** Per-project context cap (v3.15): 200000 | 400000 | null (Auto); main restarts the idle tabs. */
 async function setContextCap(projectId, value) {
   try {
@@ -510,6 +519,7 @@ sidebar = mountSidebar($('sidebar'), {
   setProjectManager,
   setBossModel,
   setAgentModel,
+  setProjectFiles,
   setContextCap,
   setSavings,
   setEngine,

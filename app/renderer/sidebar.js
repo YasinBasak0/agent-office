@@ -5,6 +5,7 @@ import { hasText, locale, onLang, t } from './i18n.js';
 import { modLabel, platform } from './platform.js';
 import { isBossHere, projectStatus } from '../src/project-status.mjs';
 import { clampSplit } from '../src/layout.mjs';
+import { bossModelChoices, cap } from '../src/engine-caps.mjs';
 
 function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -62,6 +63,7 @@ export function mountSidebar(el, on) {
   let ocAuth = null; // OpenCode's logins (v3.40, main's OcAuth); null until main answers
   let showOc = null;
   let addMenu = false; // the Add account type menu is open (v3.30)
+  let addFor = null; // the project whose Account dropdown opened the type menu (v3.36): a new Claude account goes to it
   let activeId = null;
   let status = new Map();
   let asleep = new Set(); // projects whose main claude sleeps (src/sleep.js)
@@ -228,26 +230,70 @@ export function mountSidebar(el, on) {
   }
   renderChrome();
 
-  // The project's account: a dropdown explicitly labeled "Hesap"; the last option creates a new account and assigns it here.
+  const engineOfRow = (p) => (p.engine === 'agy' || p.engine === 'commandcode' ? p.engine : 'claude');
+  /**
+   * A row control with its label (contract v3.36): every engine shows it; one the engine can't honour (src/engine-caps.mjs)
+   * is disabled, its reason in the title and in a small line shown on hover or focus.
+   */
+  function control(p, feature, label, sel, extraClass = '') {
+    const c = cap(engineOfRow(p), feature, { projectFiles: p.projectFiles === true }); // v3.38: some need the toggle
+    const reason = c.ok ? '' : t(`sidebar.na.${c.reason}`);
+    if (reason) { sel.disabled = true; sel.title = reason; }
+    return h('label', {
+      class: 'sb-acct-wrap' + (reason ? ' sb-na-wrap' : '') + extraClass, title: reason || null, tabindex: reason ? '0' : null,
+      onclick: (e) => e.stopPropagation(),
+    }, h('span', { class: 'sb-acct-label' }, label), sel, reason ? h('span', { class: 'sb-na', role: 'note' }, reason) : null);
+  }
+
+  // The project's account (contract v2.1, v3.36): the Claude accounts, then Antigravity and Command Code (each one
+  // login), then "New account…" (the Add account type menu). Choosing Antigravity or Command Code sets the project's
+  // engine (main's projects:setEngine: refused or cancelled, the select goes back); choosing a Claude account sets the
+  // engine back to Claude Code and the account. p.accountId stays the Claude account while another engine runs.
   const NEW_ACCOUNT = '__new__';
+  const ENGINE_OPT = { agy: '__engine:agy', commandcode: '__engine:commandcode' };
   function accountSelect(p) {
+    const engine = engineOfRow(p);
+    const now = engine === 'claude' ? p.accountId : ENGINE_OPT[engine];
     const sel = h('select', {
       class: 'sb-acct',
       title: t('sidebar.accountTitle'),
       onclick: (e) => e.stopPropagation(),
-      onchange: (e) => {
-        if (e.target.value !== NEW_ACCOUNT) return on.setAccount(p.id, e.target.value);
-        e.target.value = p.accountId;
-        editing = { id: null, forProject: p.id };
-        renderAccounts();
+      onchange: async (e) => {
+        const v = e.target.value;
+        if (v === NEW_ACCOUNT) {
+          e.target.value = now;
+          addMenu = true; addFor = p.id;
+          renderAccounts();
+          acctList.querySelector('.sb-add-menu')?.scrollIntoView?.({ block: 'nearest' });
+          return;
+        }
+        const eng = v === ENGINE_OPT.agy ? 'agy' : v === ENGINE_OPT.commandcode ? 'commandcode' : null;
+        // leaving agy/cmd for another Claude account: the account first, so the restarted tabs use it
+        const leaving = !eng && engine !== 'claude';
+        if (leaving && v !== p.accountId) await on.setAccount(p.id, v);
+        if (eng || engine !== 'claude') {
+          const r = await on.setEngine?.(p.id, eng);
+          if (!r || r.refused) { // failed: put the select back (and the old account, if it was already moved)
+            e.target.value = now;
+            if (leaving && v !== p.accountId) await on.setAccount(p.id, p.accountId);
+            return;
+          }
+        }
+        if (!eng && !leaving && v !== p.accountId) on.setAccount(p.id, v);
       },
-    }, accounts.map((a) => h('option', { value: a.id, selected: a.id === p.accountId }, labelOf(a))));
+    }, accounts.map((a) => h('option', { value: a.id, selected: now === a.id }, labelOf(a))));
     if (!accounts.some((a) => a.id === p.accountId)) {
-      sel.append(h('option', { value: p.accountId, selected: true }, '?'));
+      sel.append(h('option', { value: p.accountId, selected: now === p.accountId }, '?'));
+    }
+    if (agyShown() || engine === 'agy') {
+      sel.append(h('option', { value: ENGINE_OPT.agy, selected: engine === 'agy' },
+        t('sidebar.engineAgy') + (agyAuth?.email ? ` · ${agyAuth.email}` : '')));
+    }
+    if (cmdShown() || engine === 'commandcode') {
+      sel.append(h('option', { value: ENGINE_OPT.commandcode, selected: engine === 'commandcode' }, t('sidebar.engineCommandcode')));
     }
     sel.append(h('option', { value: NEW_ACCOUNT }, t('sidebar.newAccount')));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.account')), sel);
+    return control(p, 'account', t('sidebar.account'), sel);
   }
 
   // How the project's boss works (contract v3.10): the global setting, delegates (manager mode) or does it itself.
@@ -264,13 +310,15 @@ export function mountSidebar(el, on) {
     h('option', { value: 'default', selected: now === 'default' }, t('sidebar.projectManagerDefault')),
     h('option', { value: 'on', selected: now === 'on' }, t('sidebar.projectManagerOn')),
     h('option', { value: 'off', selected: now === 'off' }, t('sidebar.projectManagerOff')));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.projectManager')), sel);
+    return control(p, 'manager', t('sidebar.projectManager'), sel);
   }
 
   // The model of the project's boss session (contract v3.27): Auto (claude's default) or one model, `--model`.
+  const claudeModelLabel = (v) => (v === 'sonnet' ? t('sidebar.bossModelSonnet') : v === 'opus' ? t('sidebar.bossModelOpus')
+    : v === 'haiku' ? t('sidebar.bossModelHaiku') : '');
   function bossModelSelect(p) {
-    const now = ['sonnet', 'opus', 'haiku'].includes(p.bossModel) ? p.bossModel : 'auto';
+    const choices = bossModelChoices(engineOfRow(p)); // per engine (contract v3.36)
+    const now = choices.some((c) => c.value === p.bossModel) ? p.bossModel : 'auto';
     const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
     const sel = h('select', {
       class: 'sb-acct sb-mode',
@@ -278,10 +326,18 @@ export function mountSidebar(el, on) {
       onclick: (e) => e.stopPropagation(),
       onchange: (e) => on.setBossModel?.(p.id, e.target.value === 'auto' ? null : e.target.value),
     },
-    opt('auto', t('sidebar.bossModelAuto')), opt('sonnet', t('sidebar.bossModelSonnet')),
-    opt('opus', t('sidebar.bossModelOpus')), opt('haiku', t('sidebar.bossModelHaiku')));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.bossModel')), sel);
+    opt('auto', t('sidebar.bossModelAuto')), ...choices.map((c) => opt(c.value, claudeModelLabel(c.value) || c.label)));
+    return control(p, 'bossModel', t('sidebar.bossModel'), sel);
+  }
+
+  // "Let Agent Office add its files to this project" (contract v3.38): off by default; Antigravity and Command Code only.
+  function projectFilesToggle(p) {
+    const box = h('input', {
+      type: 'checkbox', class: 'sb-files', checked: p.projectFiles === true, title: t('sidebar.projectFilesTitle'),
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => on.setProjectFiles?.(p.id, e.target.checked),
+    });
+    return control(p, 'projectFiles', t('sidebar.projectFiles'), box);
   }
 
   // The model the project's agents run on (contract v3.14): Auto (the boss picks per agent) or one pinned model.
@@ -297,8 +353,7 @@ export function mountSidebar(el, on) {
     },
     opt('auto', t('sidebar.agentModelAuto')), opt('sonnet', t('sidebar.agentModelSonnet')),
     opt('haiku', t('sidebar.agentModelHaiku')), opt('opus', t('sidebar.agentModelOpus')));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.agentModel')), sel);
+    return control(p, 'agentModel', t('sidebar.agentModel'), sel);
   }
 
   // When the project's Claude summarizes its conversation (contract v3.15): Auto (Claude Code's own window) or a cap
@@ -313,8 +368,7 @@ export function mountSidebar(el, on) {
       onchange: (e) => on.setContextCap?.(p.id, e.target.value === 'auto' ? null : Number(e.target.value)),
     },
     opt('auto', t('sidebar.contextCapAuto')), opt('200000', '200K'), opt('400000', '400K'));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.contextCap')), sel);
+    return control(p, 'contextCap', t('sidebar.contextCap'), sel);
   }
 
   // Token savings (contract v3.20): Off, Normal (the default: no field) or Strict; the subagents' step budget and the
@@ -329,30 +383,17 @@ export function mountSidebar(el, on) {
       onchange: (e) => on.setSavings?.(p.id, e.target.value),
     },
     opt('off', t('sidebar.savingsOff')), opt('normal', t('sidebar.savingsNormal')), opt('strict', t('sidebar.savingsStrict')));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.savings')), sel);
+    return control(p, 'savings', t('sidebar.savings'), sel);
   }
 
-  // The program the project's tabs run (contract v3.22): Claude Code, Google Antigravity CLI, Command Code
-  // (contract v3.25) or OpenCode (contract v3.40). Changing it starts every tab of the project again, fresh; the other engines hide the
-  // Claude-only settings (account, boss, agent model, context cap, savings, backup) and show an "observed" tag.
-  function engineSelect(p) {
-    const now = p.engine === 'agy' || p.engine === 'commandcode' || p.engine === 'opencode' ? p.engine : 'claude';
-    const opt = (v, label) => h('option', { value: v, selected: now === v }, label);
-    const sel = h('select', {
-      class: 'sb-acct sb-mode',
-      title: t('sidebar.engineTitle'),
-      onclick: (e) => e.stopPropagation(),
-      // refused (a tab is working) or cancelled: the select shows the engine that stays
-      onchange: async (e) => {
-        const v = now === 'claude' ? e.target.value : e.target.value === 'claude' ? null : e.target.value;
-        const r = await on.setEngine?.(p.id, v);
-        if (r?.refused) e.target.value = now;
-      },
-    },
-    opt('claude', t('sidebar.engineClaude')), opt('agy', t('sidebar.engineAgy')), opt('commandcode', t('sidebar.engineCommandcode')), opt('opencode', t('sidebar.engineOpencode')));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.engine')), sel);
+  // The program the project's tabs run (contract v3.22, v3.25): a read-only tag since v3.36; the Account dropdown
+  // picks it (Claude accounts, Antigravity, Command Code).
+  function engineTag(p) {
+    const engine = engineOfRow(p);
+    if (engine === 'claude') return h('span', { class: 'sb-tag sb-engine', title: t('sidebar.engineTitle'), 'aria-label': t('sidebar.engine') }, t('sidebar.engineClaude'));
+    return engine === 'commandcode'
+      ? h('span', { class: 'sb-tag sb-agy', title: t('sidebar.cmdHintTitle') }, t('sidebar.cmdHint'))
+      : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint'));
   }
 
   // The account the project continues on when its own reaches the usage limit (contract v3.17): none, any other
@@ -368,8 +409,7 @@ export function mountSidebar(el, on) {
     },
     opt('none', t('sidebar.backupNone')), opt('auto', t('sidebar.backupAuto')),
     ...accounts.filter((a) => a.id !== p.accountId || a.id === now).map((a) => opt(a.id, labelOf(a))));
-    return h('label', { class: 'sb-acct-wrap', onclick: (e) => e.stopPropagation() },
-      h('span', { class: 'sb-acct-label' }, t('sidebar.backup')), sel);
+    return control(p, 'backup', t('sidebar.backup'), sel);
   }
 
   /** On a backup after its own account's usage limit: a tag naming the account it goes back to. */
@@ -381,6 +421,17 @@ export function mountSidebar(el, on) {
 
   /** Warning in the project row if its account is not logged in; clicking opens the login overlay. */
   function loginBadge(p) {
+    const engine = engineOfRow(p);
+    if (engine !== 'claude') { // Antigravity's / Command Code's own login (v3.24, v3.30; contract v3.36)
+      const auth = engine === 'agy' ? agyAuth : cmdAuth;
+      if (auth?.state !== 'out') return null;
+      const label = engine === 'agy' ? t('sidebar.engineAgy') : t('sidebar.engineCommandcode');
+      return h('button', {
+        class: 'sb-warn',
+        title: t('sidebar.noLoginTitle', { label }),
+        onclick: (e) => { e.stopPropagation(); if (engine === 'agy') on.agyLogin?.(); else on.cmdLogin?.(); },
+      }, t('sidebar.noLogin'));
+    }
     const a = accounts.find((x) => x.id === p.accountId);
     if (a?.auth?.state !== 'out') return null;
     return h('button', {
@@ -395,7 +446,7 @@ export function mountSidebar(el, on) {
       const s = stats.get(p.name);
       const live = status.get(p.id);
       const sleeping = !live && asleep.has(p.id);
-      const claude = !p.engine || p.engine === 'claude'; // the other engines (v3.22, v3.25) hide the Claude-only settings
+      const claude = engineOfRow(p) === 'claude'; // every engine shows every control; some disabled (contract v3.36)
       const dotTitle = !claude ? (p.engine === 'commandcode'
         ? (live ? t('sidebar.cmdRunning') : sleeping ? t('sidebar.cmdAsleep') : t('sidebar.cmdStopped'))
         : p.engine === 'opencode'
@@ -420,25 +471,21 @@ export function mountSidebar(el, on) {
           onclick: (e) => { e.stopPropagation(); on.removeProject(p); },
         }, '×'),
         h('div', { class: 'sb-meta' },
-          engineSelect(p),
-          claude ? accountSelect(p) : null,
-          claude ? managerSelect(p) : null,
-          claude ? bossModelSelect(p) : null,
-          claude ? agentModelSelect(p) : null,
-          claude ? contextCapSelect(p) : null,
-          claude ? savingsSelect(p) : null,
-          claude ? backupSelect(p) : null,
+          accountSelect(p),
+          managerSelect(p),
+          bossModelSelect(p),
+          agentModelSelect(p),
+          projectFilesToggle(p),
+          contextCapSelect(p),
+          savingsSelect(p),
+          backupSelect(p),
           claude ? onBackupTag(p) : null,
-          claude ? loginBadge(p) : null,
-          claude ? null : p.engine === 'commandcode'
-            ? h('span', { class: 'sb-tag sb-agy', title: t('sidebar.cmdHintTitle') }, t('sidebar.cmdHint'))
-            : p.engine === 'opencode'
-              ? h('span', { class: 'sb-tag sb-agy', title: t('sidebar.ocHintTitle') }, t('sidebar.ocHint'))
-              : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint')),
+          loginBadge(p),
+          engineTag(p),
           h('span', { class: 'sb-stats', title: statsText(s) }, statsText(s)),
         ),
         h('button', {
-          class: 'sb-cost', hidden: !(claude || p.engine === 'commandcode') || !briefs.has(p.id), title: t('sidebar.costTitle'),
+          class: 'sb-cost', hidden: !cap(engineOfRow(p), 'cost').ok || !briefs.has(p.id), title: t('sidebar.costTitle'),
           onclick: (e) => { e.stopPropagation(); on.openUsage?.(p); },
         }, costText(briefs.get(p.id))),
       );
@@ -645,10 +692,10 @@ export function mountSidebar(el, on) {
   function addMenuRow() {
     const item = (text, title, fn) => h('button', {
       class: 'sb-add-item', title,
-      onclick: (e) => { e.stopPropagation(); addMenu = false; fn(); },
+      onclick: (e) => { e.stopPropagation(); addMenu = false; fn(); addFor = null; },
     }, text);
     return h('li', { class: 'sb-add-menu', role: 'menu' },
-      item(t('sidebar.addClaude'), t('sidebar.newAccountTitle'), () => { editing = { id: null }; renderAccounts(); }),
+      item(t('sidebar.addClaude'), t('sidebar.newAccountTitle'), () => { editing = { id: null, ...(addFor ? { forProject: addFor } : {}) }; renderAccounts(); }),
       item(t('sidebar.addAgy'), t('sidebar.addAgyTitle'), () => { renderAccounts(); on.addAgy?.(); }),
       item(t('sidebar.addCmd'), t('sidebar.addCmdTitle'), () => { renderAccounts(); on.addCmd?.(); }),
       item(t('sidebar.addOc'), t('sidebar.addOcTitle'), () => { renderAccounts(); on.addOc?.(); }));
@@ -694,15 +741,15 @@ export function mountSidebar(el, on) {
     acctList.replaceChildren(...rows, ...(agy ? [agy] : []), ...(cmd ? [cmd] : []), ...(oc ? [oc] : []),
       h('li', {}, h('button', {
         class: 'sb-add', title: t('sidebar.addAccountTitle'), 'aria-haspopup': 'menu', 'aria-expanded': String(addMenu),
-        onclick: (e) => { e.stopPropagation(); addMenu = !addMenu; renderAccounts(); acctList.querySelector('.sb-add-menu')?.scrollIntoView?.({ block: 'nearest' }); },
+        onclick: (e) => { e.stopPropagation(); addMenu = !addMenu; addFor = null; renderAccounts(); acctList.querySelector('.sb-add-menu')?.scrollIntoView?.({ block: 'nearest' }); },
       }, t('sidebar.addAccount'))),
       ...(addMenu ? [addMenuRow()] : []));
   }
   // the type menu closes on a click elsewhere or Escape
   document.addEventListener('click', (e) => {
-    if (addMenu && !(e.target instanceof Node && acctList.querySelector('.sb-add-menu')?.contains(e.target))) { addMenu = false; renderAccounts(); }
+    if (addMenu && !(e.target instanceof Node && acctList.querySelector('.sb-add-menu')?.contains(e.target))) { addMenu = false; addFor = null; renderAccounts(); }
   });
-  document.addEventListener('keydown', (e) => { if (addMenu && e.key === 'Escape') { addMenu = false; renderAccounts(); } });
+  document.addEventListener('keydown', (e) => { if (addMenu && e.key === 'Escape') { addMenu = false; addFor = null; renderAccounts(); } });
 
   // reset times and "x dk önce" go stale on their own: redraw once a minute
   setInterval(() => { if (!editing && accounts.some((a) => a.usage)) renderAccounts(); }, 60000);
@@ -826,12 +873,16 @@ export function mountSidebar(el, on) {
     },
     /** Antigravity's login state (contract v3.24, main's AgyAuth). */
     setAgyAuth(a) {
+      const before = JSON.stringify([agyAuth?.state, agyAuth?.email]);
       agyAuth = a || null;
+      if (before !== JSON.stringify([agyAuth?.state, agyAuth?.email])) renderProjects();
       if (!editing) renderAccounts();
     },
     /** Command Code's login state (contract v3.30, main's CmdAuth). */
     setCmdAuth(a) {
+      const before = cmdAuth?.state;
       cmdAuth = a || null;
+      if (before !== cmdAuth?.state) renderProjects();
       if (!editing) renderAccounts();
     },
     /** OpenCode's login state (contract v3.40, main's OcAuth). */
@@ -853,7 +904,8 @@ export function mountSidebar(el, on) {
         const btn = li.querySelector('.sb-cost');
         if (!btn) continue;
         const b = briefs.get(li.dataset.id);
-        btn.hidden = !b;
+        const p = projects.find((x) => x.id === li.dataset.id);
+        btn.hidden = !b || !p || !cap(engineOfRow(p), 'cost').ok; // Antigravity: no token counts (contract v3.36)
         btn.textContent = costText(b);
       }
     },
