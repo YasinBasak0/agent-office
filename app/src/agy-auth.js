@@ -8,6 +8,14 @@
 // agy's data. Only that one field and settings.json's modelProvider are read; tokens (keyring) never are.
 const path = require('node:path');
 
+// macOS (v3.40): agy's saved login is a keychain item, service `gemini`, account `antigravity`. Its mere existence is asked
+// with `security find-generic-password -s gemini -a antigravity` (no -w / -g: the attributes only, the token is never read,
+// no prompt). Exit 0 = there; 44 (errSecItemNotFound) = not there; anything else = cannot tell.
+const AGY_KEYCHAIN = { service: 'gemini', account: 'antigravity' };
+const KEYCHAIN_NOT_FOUND = 44;
+/** @param {number | string | null | undefined} code the exit code of the keychain query (0 on success) @returns {true | false | null} */
+const keychainResult = (code) => (code === 0 ? true : code === KEYCHAIN_NOT_FOUND ? false : null);
+
 // The official install lines (antigravity.google, CLI quickstart); shown as a hint, never run by the app.
 const AGY_INSTALL = {
   unix: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
@@ -36,12 +44,22 @@ const accountFiles = (home) => [path.join(agyDir(home), 'google_accounts.json'),
 
 const EMAIL = /^[^\s@]{1,200}@[^\s@]{1,200}$/;
 
+// agy's own log (undocumented, so only a hint): each start writes "OAuth: authenticated successfully as <email>"
+const LOG_EMAIL = /OAuth: authenticated successfully as (\S+@\S+)/g;
+/** The e-mail agy last logged in with, from a log's text, or null. @param {string} text */
+function parseAgyLogEmail(text) {
+  let found = null;
+  for (const m of String(text || '').matchAll(LOG_EMAIL)) if (EMAIL.test(m[1])) found = m[1];
+  return found;
+}
+
 /**
  * The non-secret files agy's state is read from, reduced to the fields used.
- * @param {string} home @param {(f: string) => string} readFile throws if missing
- * @returns {{ modelProvider: string | null, account: { active: string | null } | null }}
+ * With `readDir` (names in a folder), the newest log in agy's log folder also gives `logEmail` (a hint for the keychain login).
+ * @param {string} home @param {(f: string) => string} readFile throws if missing @param {(d: string) => string[]} [readDir]
+ * @returns {{ modelProvider: string | null, account: { active: string | null } | null, logEmail: string | null }}
  */
-function readAgyFiles(home, readFile) {
+function readAgyFiles(home, readFile, readDir) {
   const json = (f) => { try { const v = JSON.parse(readFile(f)); return v && typeof v === 'object' ? v : null; } catch { return null; } };
   const settings = json(path.join(agyDir(home), 'settings.json'));
   const modelProvider = typeof settings?.modelProvider === 'string' ? settings.modelProvider : null;
@@ -52,15 +70,26 @@ function readAgyFiles(home, readFile) {
     account = { active: typeof v.active === 'string' && EMAIL.test(v.active) ? v.active : null };
     break;
   }
-  return { modelProvider, account };
+  let logEmail = null;
+  if (readDir) {
+    try {
+      const dir = path.join(agyDir(home), 'log');
+      // names carry the start time (cli-YYYYMMDD_HHMMSS.log): the newest log that names an account wins
+      for (const name of readDir(dir).filter((n) => /^cli-\d{8}_\d{6}\.log$/.test(n)).sort().reverse().slice(0, 5)) {
+        logEmail = parseAgyLogEmail(readFile(path.join(dir, name)));
+        if (logEmail) break;
+      }
+    } catch { /* no logs: no hint */ }
+  }
+  return { modelProvider, account, logEmail };
 }
 
 /**
  * @typedef {{ installed: boolean, state: 'in' | 'out' | 'unknown' | 'missing', email?: string, method?: 'google' | 'apikey' | 'adc' }} AgyAuth
- * Antigravity's login state. 'unknown': installed, no account file to read (a keyring login cannot be seen without
- * touching the keyring, which the app does not do).
- * @param {{ path: string | null, apiKey: boolean, adc: boolean }} status
- * @param {{ modelProvider: string | null, account: { active: string | null } | null }} files
+ * Antigravity's login state. 'unknown': installed, and neither an account file nor (macOS) the keychain says anything.
+ * `status.keychain` (v3.40): true / false when the keychain was asked, null / absent when it could not be.
+ * @param {{ path: string | null, apiKey: boolean, adc: boolean, keychain?: boolean | null }} status
+ * @param {{ modelProvider: string | null, account: { active: string | null } | null, logEmail?: string | null }} files
  * @returns {AgyAuth}
  */
 function agyAuthState(status, files) {
@@ -68,8 +97,11 @@ function agyAuthState(status, files) {
   if (status.adc) return { installed: true, state: 'in', method: 'adc' };
   if (files.modelProvider === 'gemini' && status.apiKey) return { installed: true, state: 'in', method: 'apikey' };
   if (files.account?.active) return { installed: true, state: 'in', email: files.account.active, method: 'google' };
+  // the keychain holds a login only while it is logged in (/logout removes it): its answer beats a stale log
+  if (status.keychain === true) return { installed: true, state: 'in', method: 'google', ...(files.logEmail ? { email: files.logEmail } : {}) };
+  if (status.keychain === false) return { installed: true, state: 'out' };
   if (files.account) return { installed: true, state: 'out' };
   return { installed: true, state: 'unknown' };
 }
 
-module.exports = { AGY_INSTALL, AGY_STATUS_COMMAND, parseAgyStatus, agyDir, readAgyFiles, agyAuthState };
+module.exports = { AGY_KEYCHAIN, keychainResult, parseAgyLogEmail, AGY_INSTALL, AGY_STATUS_COMMAND, parseAgyStatus, agyDir, readAgyFiles, agyAuthState };

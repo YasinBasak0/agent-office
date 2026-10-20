@@ -551,12 +551,21 @@ function agyStatus(env) {
     try { child.stdin?.end(); } catch {}
   });
 }
+// macOS: is agy's login in the keychain (v3.40)? Attributes only, never the token; true / false / null (cannot tell)
+function agyKeychain() {
+  if (process.platform !== 'darwin') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile('/usr/bin/security', ['find-generic-password', '-s', AG.AGY_KEYCHAIN.service, '-a', AG.AGY_KEYCHAIN.account],
+      { timeout: 5000 }, (err) => resolve(AG.keychainResult(err ? (typeof err.code === 'number' ? err.code : -1) : 0)));
+  });
+}
 function checkAgyAuth() {
   if (agyChecking) return agyChecking;
   agyChecking = (async () => {
     const env = EN.agyEnv(process.env);
     const status = await agyStatus(env);
-    const files = AG.readAgyFiles(env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.readFileSync(f, 'utf8'));
+    if (status.path) status.keychain = await agyKeychain();
+    const files = AG.readAgyFiles(env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.readFileSync(f, 'utf8'), (d) => fs.readdirSync(d));
     agyAuth = AG.agyAuthState(status, files);
     sendAgyAuth();
   })().catch((e) => console.error('agy auth:', e.message)).finally(() => { agyChecking = null; });

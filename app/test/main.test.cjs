@@ -3408,6 +3408,34 @@ test('agy durumu: komut çıktısı; rc gürültüsü, yol, API anahtarı ve ADC
   assert.doesNotMatch(AG.AGY_STATUS_COMMAND, /echo "?\$GEMINI_API_KEY/);
 });
 
+test('agy durumu: macOS anahtar zinciri ve log e-postası (v3.40)', () => {
+  const AG = require('../src/agy-auth.js');
+  const path = require('node:path');
+  const home = '/h';
+  const logDir = path.join(home, '.gemini', 'antigravity-cli', 'log');
+  const files = { [path.join(logDir, 'cli-20261020_162341.log')]: 'x\nOAuth: authenticated successfully as old@gmail.com\n',
+    [path.join(logDir, 'cli-20261020_163340.log')]: 'I OAuth: authenticated successfully as me@gmail.com\nmore',
+    [path.join(logDir, 'notes.txt')]: 'OAuth: authenticated successfully as no@gmail.com' };
+  const read = (f) => { if (f in files) return files[f]; throw new Error('ENOENT'); };
+  const dir = () => Object.keys(files).map((f) => path.basename(f));
+  const inst = { path: '/b/agy', apiKey: false, adc: false };
+  assert.equal(AG.parseAgyLogEmail('OAuth: authenticated successfully as a@b.co\nOAuth: authenticated successfully as c@d.co'), 'c@d.co');
+  assert.equal(AG.parseAgyLogEmail('nothing'), null);
+  assert.equal(AG.readAgyFiles(home, read, dir).logEmail, 'me@gmail.com');   // the newest log, not notes.txt
+  assert.equal(AG.readAgyFiles(home, read).logEmail, null);                  // no folder listing: no hint
+  assert.equal(AG.readAgyFiles(home, read, () => { throw new Error('ENOENT'); }).logEmail, null);
+  assert.deepEqual(AG.keychainResult(0), true);
+  assert.deepEqual(AG.keychainResult(44), false);
+  assert.deepEqual(AG.keychainResult(1), null);
+  assert.deepEqual(AG.keychainResult(-1), null);
+  const f = AG.readAgyFiles(home, read, dir);
+  assert.deepEqual(AG.agyAuthState({ ...inst, keychain: true }, f), { installed: true, state: 'in', method: 'google', email: 'me@gmail.com' });
+  assert.deepEqual(AG.agyAuthState({ ...inst, keychain: true }, AG.readAgyFiles(home, read)), { installed: true, state: 'in', method: 'google' });
+  assert.deepEqual(AG.agyAuthState({ ...inst, keychain: false }, f), { installed: true, state: 'out' });   // a stale log does not make it logged in
+  assert.equal(AG.agyAuthState({ ...inst, keychain: null }, f).state, 'unknown');
+  assert.equal(AG.agyAuthState(inst, f).state, 'unknown');
+});
+
 test('agy durumu: dosyalar (settings.json modelProvider, google_accounts.json active) ve durum (v3.24)', () => {
   const AG = require('../src/agy-auth.js');
   const path = require('node:path');
