@@ -1004,12 +1004,14 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
 // from an allowlist (agy keeps its own Google login and data). resume: --continue, only for a tab
 // that continues (main tab, worktree tab); if it ends with an error within RESUME_GRACE_MS the tab starts fresh.
 // prompt: agy's -i, only when resuming. There is no session id: a sleeping or restarted tab continues the same way.
+const agyNoModel = new Set(); // tabs whose --model start failed this launch: started without it
 function startAgy(id, { tab, dir: cwd, project }, { resume = false, prompt = '' } = {}) {
   removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
   if (P.projectFilesOf(project)) syncProjectFiles(project); // v3.38: the project's approved .mcp.json may have changed
   const { cols, rows } = sizes.get(id) || lastSize;
   const isResume = resume && (!tab || Boolean(tab.worktree));
-  const args = EN.agyArgs({ resume: isResume, prompt, model: P.bossModelOf(project) });
+  const withModel = !agyNoModel.has(id) ? P.bossModelOf(project) : null;
+  const args = EN.agyArgs({ resume: isResume, prompt, model: withModel });
   const startedAt = Date.now();
   // an allowlist of the user's env (engine.js agyEnv): no Claude, Anthropic, office (AGENT_OFFICE_*) or MCP variable,
   // no sessionEnv; no office directory file is written for it
@@ -1047,6 +1049,13 @@ function startAgy(id, { tab, dir: cwd, project }, { resume = false, prompt = '' 
     terms.delete(id);
     setMarks(R.clearInterrupted(marks(), [id]));
     removeMcpFile(id);
+    // --model did not take: the same start once without it, with a one-line notice
+    if (withModel && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) {
+      agyNoModel.add(id);
+      send('pty:data', id, `\r\n[Agent Office] agy did not accept --model ${withModel}; starting without it.\r\n`);
+      return startPty(id, { resume, prompt });
+    }
+    agyNoModel.delete(id);
     // no conversation to continue: start fresh without showing the exit to the user
     if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) return startPty(id);
     activity.delete(id);
@@ -1132,7 +1141,7 @@ function startCommandCode(id, { project, tab, dir: cwd }, { resume = false, prom
     } catch { withMod = false; }
   }
   const mod = withMod ? CS.cmdModArgs({ modPath, spoolDir, manager: P.managerOf(state, project), saving }) : [];
-  const args = EN.cmdArgs({ resume: isResume, prompt, compact: Boolean(P.contextCapOf(project)), model: P.bossModelOf(project), permissionMode: project?.permissionMode ?? null, mod });
+  const args = EN.cmdArgs({ resume: isResume, prompt, compact: Boolean(P.contextCapOf(project)), model: P.bossModelOf(project), mod });
   const startedAt = Date.now();
   // an allowlist of the user's env (engine.js cmdEnv): no Claude, Anthropic, office or MCP variable of the user's;
   // MAX_MCP_OUTPUT_TOKENS only from the project's own Savings level (v3.37)
@@ -1173,6 +1182,7 @@ function startCommandCode(id, { project, tab, dir: cwd }, { resume = false, prom
     setMarks(R.clearInterrupted(marks(), [id]));
     removeMcpFile(id);
     cmdSpool.delete(id);
+    try { fs.rmSync(spoolDir, { recursive: true, force: true }); } catch { /* gone */ }
     // the mod did not load (or broke the start): the same start again without it, only watched (v3.37)
     if (withMod && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) { cmdNoMod.add(id); return startPty(id, { resume, prompt }); }
     // no session to continue: start fresh without showing the exit to the user

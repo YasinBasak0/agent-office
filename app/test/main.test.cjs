@@ -476,8 +476,7 @@ test('Command Code v3.37: cmdArgs bağlam sınırı, izin modu, mod; cmdEnv yaln
   const EN = require('../src/engine.js');
   const CS = require('../src/cmd-spool.js');
   assert.deepEqual(EN.cmdArgs({ compact: true }), ['--config', 'compactMode=fast']);
-  assert.deepEqual(EN.cmdArgs({ compact: false, permissionMode: 'plan' }), ['--permission-mode', 'plan']);
-  assert.deepEqual(EN.cmdArgs({ permissionMode: 'bogus' }), []);
+  assert.deepEqual(EN.cmdArgs({ permissionMode: 'plan' }), []); // not supported: ignored
   const mod = CS.cmdModArgs({ modPath: '/app/src/cmd-mod/agent-office.ts', spoolDir: '/ud/cmd-spool/t1', manager: true, saving: { stepBudget: 25, stepCap: true } });
   assert.deepEqual(mod, ['--mod', '/app/src/cmd-mod/agent-office.ts', '--mod-option', 'ao-spool=/ud/cmd-spool/t1', '--mod-option', 'ao-manager=true',
     '--mod-option', 'ao-step-budget=25', '--mod-option', 'ao-step-cap=true']);
@@ -3844,3 +3843,28 @@ test('login relay: parser finds the allowlisted URL and the code prompt in a stu
     assert.deepEqual(P.normalizeState({ projects: [{ dir: '/x', projectFiles: true }, { dir: '/y', projectFiles: 'yes' }] }).projects.map((p) => p.projectFiles ?? null), [true, null]);
   });
 }
+
+test('review fixes: bossModel survives another engine, exclude merge, secret file mode, symlinked roots', () => {
+  const s = P.normalizeState({ projects: [{ id: 'a', dir: '/a', engine: 'agy', bossModel: 'opus' }, { id: 'b', dir: '/b', bossModel: 'nonsense' }] });
+  assert.equal(s.projects[0].bossModel, 'opus'); // kept while agy is active
+  assert.deepEqual(P.bossModelArgs(s.projects[0]), []); // but no flag for agy
+  assert.equal('bossModel' in s.projects[1], false);
+  const PF = require('../src/project-files.js');
+  const own = [PF.EXCLUDE_BEGIN, '/a/.agents/x', PF.EXCLUDE_END].join('\n') + '\n';
+  const merged = PF.mergeExclude(own, 'b', ['.agents/y']);
+  assert.match(merged, /\/a\/\.agents\/x\n\/b\/\.agents\/y\n/); // other project's line kept
+  assert.equal(PF.mergeExclude(merged, 'b', []).includes('/b/'), false);
+  assert.match(PF.mergeExclude(merged, 'b', []), /\/a\/\.agents\/x/);
+  const noEnd = ['user-line', PF.EXCLUDE_BEGIN, '/.agents/old', 'keep-me'].join('\n') + '\n';
+  const out = PF.mergeExclude(noEnd, '', ['.agents/new']);
+  assert.match(out, /keep-me/); assert.match(out, /user-line/); assert.equal(out.includes('/.agents/old'), false);
+  const os2 = require('os'); const fs2 = require('fs'); const pa = require('path');
+  const d = fs2.mkdtempSync(pa.join(os2.tmpdir(), 'ao-pf-'));
+  const r = PF.syncProjectFiles(d, PF.desiredFiles({ engine: 'agy', enabled: true, projectMcp: { mcpServers: { s: { command: 'x', env: { K: 'v' } } } }, approved: ['s'] }));
+  assert.ok(r.written.includes('.agents/mcp_config.json'));
+  if (process.platform !== 'win32') assert.equal(fs2.statSync(pa.join(d, '.agents/mcp_config.json')).mode & 0o077, 0);
+  const d2 = fs2.mkdtempSync(pa.join(os2.tmpdir(), 'ao-pf-')); const out2 = fs2.mkdtempSync(pa.join(os2.tmpdir(), 'ao-out-'));
+  fs2.symlinkSync(out2, pa.join(d2, '.agents'));
+  const r2 = PF.syncProjectFiles(d2, PF.desiredFiles({ engine: 'agy', enabled: true, manager: true }));
+  assert.deepEqual(fs2.readdirSync(out2), []); assert.ok(r2.warnings.includes('.agents'));
+});

@@ -153,25 +153,64 @@ function gitExclude(dir) {
   }
 }
 
-/** Replaces Agent Office's block in .git/info/exclude with `rels` (none: the block goes). */
+/**
+ * Replaces this project's lines in Agent Office's block of .git/info/exclude with `rels`. Several projects can share a
+ * repository: the block holds the lines of all of them, so other projects' lines (other prefixes) are kept. Without an
+ * END marker the block is just our known paths (the user's lines after it stay). Pure: text in, text out.
+ */
+function mergeExclude(before, prefix, rels, known = [...Object.values(ROOTS)]) {
+  const lines = before.split('\n');
+  const pre = prefix ? '/' + prefix + '/' : '/';
+  const mine = (l) => known.some((r) => l.startsWith(pre + r + '/'));
+  const ours = (l) => known.some((r) => l.startsWith('/') && (l.startsWith('/' + r + '/') || l.includes('/' + r + '/'))); // any project's
+  const kept = [];
+  const others = [];
+  const hasEnd = lines.includes(EXCLUDE_END);
+  for (let i = 0, inBlock = false; i < lines.length; i++) {
+    const l = lines[i];
+    if (l === EXCLUDE_BEGIN) { inBlock = true; continue; }
+    if (inBlock) {
+      if (l === EXCLUDE_END) { inBlock = false; continue; }
+      if (hasEnd) { if (!mine(l) && l) others.push(l); continue; }
+      // no END marker: only our own known paths are ours; anything else is the user's and stays
+      if (mine(l)) continue;
+      if (ours(l)) { others.push(l); continue; }
+      inBlock = false;
+      kept.push(l);
+      continue;
+    }
+    kept.push(l);
+  }
+  while (kept.length && kept[kept.length - 1] === '') kept.pop();
+  const mineNow = rels.map((r) => pre + r);
+  const block = others.length || mineNow.length ? [EXCLUDE_BEGIN, ...others, ...mineNow, EXCLUDE_END] : [];
+  return [...kept, ...block].join('\n') + (kept.length || block.length ? '\n' : '');
+}
+
+/** Replaces Agent Office's lines for this project in .git/info/exclude with `rels` (none: they go). */
 function writeExclude(dir, rels) {
   const ex = gitExclude(dir);
   if (!ex) return false;
   const before = readText(ex.file) || '';
-  const lines = before.split('\n');
-  const kept = [];
-  for (let i = 0, skip = false; i < lines.length; i++) {
-    if (lines[i] === EXCLUDE_BEGIN) { skip = true; continue; }
-    if (skip) { if (lines[i] === EXCLUDE_END) skip = false; continue; }
-    kept.push(lines[i]);
-  }
-  while (kept.length && kept[kept.length - 1] === '') kept.pop();
-  const add = rels.length ? [EXCLUDE_BEGIN, ...rels.map((r) => '/' + (ex.prefix ? ex.prefix + '/' : '') + r), EXCLUDE_END] : [];
-  const next = [...kept, ...add].join('\n') + (kept.length || add.length ? '\n' : '');
+  const next = mergeExclude(before, ex.prefix, rels);
   if (next === before) return true;
   fs.mkdirSync(path.dirname(ex.file), { recursive: true });
   fs.writeFileSync(ex.file, next);
   return true;
+}
+
+// files that may carry env or header values of the project's MCP servers: owner-only
+const SECRET_FILES = new Set(['.agents/mcp_config.json']);
+
+/** A root folder (.agents, .commandcode) that is a symlink, or resolves outside the project, is never written into. */
+function unsafeRoot(dir, root) {
+  const p = path.join(dir, root);
+  try {
+    if (fs.lstatSync(p).isSymbolicLink()) return true;
+    const real = fs.realpathSync(p);
+    const base = fs.realpathSync(dir);
+    return real !== base && !real.startsWith(base + path.sep) ? true : false;
+  } catch { return false; } // absent: created later
 }
 
 const rmdirEmpty = (dir, root, rel) => {
@@ -185,10 +224,11 @@ const rmdirEmpty = (dir, root, rel) => {
  * → { written: rel[], removed: rel[], refused: rel[] (a user's file, or ours changed by the user: left alone) }.
  */
 function syncProjectFiles(dir, desired) {
-  const res = { written: [], removed: [], refused: [] };
+  const res = { written: [], removed: [], refused: [], warnings: [] };
   const want = new Map(desired.map((f) => [f.rel, f.content]));
   const owned = [];
   for (const root of Object.values(ROOTS)) {
+    if (unsafeRoot(dir, root)) { res.warnings.push(root); res.refused.push(root); continue; }
     const files = readManifest(dir, root);
     const next = {};
     for (const [rel, content] of want) {
@@ -198,7 +238,8 @@ function syncProjectFiles(dir, desired) {
       if (now !== null && !isOurs(now, rel, files)) { res.refused.push(rel); continue; }
       if (now !== content) {
         fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, content);
+        fs.writeFileSync(abs, content, { mode: SECRET_FILES.has(rel) ? 0o600 : 0o666 });
+        if (SECRET_FILES.has(rel)) { try { fs.chmodSync(abs, 0o600); } catch { /* best effort */ } }
         res.written.push(rel);
       }
       next[rel] = sha(content);
@@ -225,10 +266,11 @@ function syncProjectFiles(dir, desired) {
   }
   writeExclude(dir, owned);
   res.refused = [...new Set(res.refused)];
+  if (!res.warnings.length) delete res.warnings;
   return res;
 }
 
 module.exports = {
   MARKER, MANIFEST, ROOTS, HOOK_NAME, STOP_COMMAND, STOP_REASON, EXCLUDE_BEGIN, EXCLUDE_END,
-  agyMcpServers, desiredFiles, syncProjectFiles, gitExclude, writeExclude,
+  agyMcpServers, desiredFiles, syncProjectFiles, gitExclude, writeExclude, mergeExclude, unsafeRoot,
 };

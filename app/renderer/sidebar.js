@@ -266,11 +266,18 @@ export function mountSidebar(el, on) {
           return;
         }
         const eng = v === ENGINE_OPT.agy ? 'agy' : v === ENGINE_OPT.commandcode ? 'commandcode' : null;
+        // leaving agy/cmd for another Claude account: the account first, so the restarted tabs use it
+        const leaving = !eng && engine !== 'claude';
+        if (leaving && v !== p.accountId) await on.setAccount(p.id, v);
         if (eng || engine !== 'claude') {
           const r = await on.setEngine?.(p.id, eng);
-          if (r?.refused) { e.target.value = now; return; }
+          if (!r || r.refused) { // failed: put the select back (and the old account, if it was already moved)
+            e.target.value = now;
+            if (leaving && v !== p.accountId) await on.setAccount(p.id, p.accountId);
+            return;
+          }
         }
-        if (!eng && v !== p.accountId) on.setAccount(p.id, v);
+        if (!eng && !leaving && v !== p.accountId) on.setAccount(p.id, v);
       },
     }, accounts.map((a) => h('option', { value: a.id, selected: now === a.id }, labelOf(a))));
     if (!accounts.some((a) => a.id === p.accountId)) {

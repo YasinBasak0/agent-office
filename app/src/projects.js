@@ -24,7 +24,7 @@ function normalizeState(raw, { id = newId } = {}) {
       accountId: known.has(p.accountId) ? p.accountId : DEFAULT_ID,
       ...(Number.isFinite(p.addedAt) ? { addedAt: p.addedAt } : {}), // v3.13; projects from before have none
       ...withManager(p.manager),
-      ...withBossModel(p.bossModel, p.engine),
+      ...withBossModel(p.bossModel),
       ...withAgentModel(p.agentModel),
       ...withContextCap(p.contextCap),
       ...withSavings(p.savings),
@@ -235,7 +235,9 @@ const BOSS_MODELS_BY_ENGINE = {
   commandcode: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'deepseek/deepseek-v4-flash'],
 };
 const bossModelValue = (v, engine) => ((BOSS_MODELS_BY_ENGINE[engineValue(engine) || 'claude']).includes(v) ? v : null);
-const withBossModel = (v, engine) => (bossModelValue(v, engine) ? { bossModel: v } : {});
+// normalizeState keeps a model valid for ANY engine (switching back finds it again); only the launch args check the active engine
+const anyEngineBossModel = (v) => Object.values(BOSS_MODELS_BY_ENGINE).some((l) => l.includes(v));
+const withBossModel = (v) => (anyEngineBossModel(v) ? { bossModel: v } : {});
 
 /** value: one of the project's engine's models, or null (Auto). Same state when nothing changes. */
 function setProjectBossModel(state, id, value) {

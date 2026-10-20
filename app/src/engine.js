@@ -78,7 +78,6 @@ const CMD = {
 };
 
 // Command Code's documented permission modes (commandcode.ai/docs/reference/cli `--permission-mode`), contract v3.37.
-const CMD_PERMISSION_MODES = ['default', 'plan', 'accept-edits', 'yolo', 'dont-ask'];
 
 /**
  * Command Code's arguments for a start (contract v3.25, v3.36, v3.37), in this order:
@@ -89,14 +88,13 @@ const CMD_PERMISSION_MODES = ['default', 'plan', 'accept-edits', 'yolo', 'dont-a
  * - mod: the app's own mod and its options (cmdModArgs in src/cmd-spool.js), passed through as given;
  * - `--continue` (the most recent session in the folder, commandcode.ai/docs/sessions) when resuming, then (only
  *   when resuming and a prompt is given) the prompt as the positional argument.
- * @param {{ resume?: boolean, prompt?: string, model?: string | null, compact?: boolean, permissionMode?: string | null, mod?: string[] }} [o]
+ * @param {{ resume?: boolean, prompt?: string, model?: string | null, compact?: boolean, mod?: string[] }} [o]
  */
-function cmdArgs({ resume = false, prompt = '', model = null, compact = false, permissionMode = null, mod = [] } = {}) {
+function cmdArgs({ resume = false, prompt = '', model = null, compact = false, mod = [] } = {}) {
   const p = resume && prompt ? promptArg(prompt) : '';
   return [
     ...(model ? ['-m', model] : []),
     ...(compact ? ['--config', 'compactMode=fast'] : []),
-    ...(permissionMode && CMD_PERMISSION_MODES.includes(permissionMode) ? ['--permission-mode', permissionMode] : []),
     ...(Array.isArray(mod) ? mod.filter((a) => typeof a === 'string') : []),
     ...(resume ? ['--continue'] : []), ...(p ? [p] : []),
   ];
@@ -147,5 +145,5 @@ function cmdEnv(base, opts = {}, platform = process.platform) {
 
 module.exports = {
   AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES,
-  CMD, cmdArgs, CMD_COMMAND, cmdEnv, CMD_ENV_NAMES, CMD_ENV_PREFIXES, CMD_PERMISSION_MODES, CMD_MCP_OUTPUT_MAX,
+  CMD, cmdArgs, CMD_COMMAND, cmdEnv, CMD_ENV_NAMES, CMD_ENV_PREFIXES, CMD_MCP_OUTPUT_MAX,
 };

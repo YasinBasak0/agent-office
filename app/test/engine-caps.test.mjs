@@ -60,7 +60,8 @@ test('setProjectBossModel validates against the project engine; normalizeState d
   assert.equal(P.findProject(P.setProjectBossModel(s, 'c', 'deepseek/deepseek-v4-flash'), 'c').bossModel, 'deepseek/deepseek-v4-flash')
   assert.equal(P.setProjectBossModel(s, 'k', 'claude-opus-5-5'), s)
   const n = P.normalizeState({ projects: [{ dir: '/x', engine: 'agy', bossModel: 'opus' }, { dir: '/y', engine: 'agy', bossModel: 'flash' }] })
-  assert.deepEqual(n.projects.map((p) => p.bossModel ?? null), [null, 'flash'])
+  assert.deepEqual(n.projects.map((p) => p.bossModel ?? null), ['opus', 'flash']) // kept for another engine; bossModelOf says Auto for agy
+  assert.deepEqual(n.projects.map((p) => P.bossModelOf(p)), [null, 'flash'])
 })
 
 test('no leak: the model is the only thing added to the agy / Command Code launch line', () => {
