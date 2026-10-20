@@ -26,6 +26,7 @@ const EN = require('./src/engine.js');
 const AW = require('./src/agy-watch.js');
 const AG = require('./src/agy-auth.js');
 const CA = require('./src/cmd-auth.js');
+const OCA = require('./src/oc-auth.js');
 const LH = require('./src/link-host.js');
 const LC = require('./src/link-core.js');
 const OM = require('./src/office-mcp.js');
@@ -60,8 +61,10 @@ const isAgy = (project) => P.engineOf(project) === 'agy';
 // A Command Code project (contract v3.25): its tabs run `commandcode`. Like agy it gets nothing of Claude Code or the
 // office (cmdEnv's allowlist) and the app observes it one way (src/agy-watch.js).
 const isCmd = (project) => P.engineOf(project) === 'commandcode';
-// The engines the app observes itself instead of the plugin (agy v3.23, Command Code v3.25).
-const isObserved = (project) => isAgy(project) || isCmd(project);
+// An OpenCode project (contract v3.40): its tabs run `opencode`; the same rules, observed the same way, no transcript.
+const isOc = (project) => P.engineOf(project) === 'opencode';
+// The engines the app observes itself instead of the plugin (agy v3.23, Command Code v3.25, OpenCode v3.40).
+const isObserved = (project) => isAgy(project) || isCmd(project) || isOc(project);
 const asleep = new Map();
 const activity = new Map(); // pty id → { at: last start/input/output, draft: prompt text typed but unsent }
 // Antigravity and Command Code tabs in the office (contract v3.23/v3.25, src/agy-watch.js): running pty id → { watch, cursor } (cursor: the
@@ -376,6 +379,7 @@ function accountEnv(account) {
 // --- Windows: no login shell; claude is found on PATH and started directly (see src/platform.js)
 const CLAUDE_INSTALL_URL = 'https://code.claude.com/docs/en/setup';
 const COMMANDCODE_URL = 'https://commandcode.ai/docs';
+const OPENCODE_URL = 'https://opencode.ai/docs';
 const isFile = (f) => { try { return fs.statSync(f).isFile(); } catch { return false; } };
 /** How to start claude with these arguments in this environment; null when Claude Code is not installed. */
 function windowsClaude(args, env) {
@@ -397,6 +401,11 @@ function windowsCommandCode(args, env) {
   const cmd = OS.findCommandCode(env, isFile);
   return cmd ? OS.windowsCommand(cmd, args, env) : null;
 }
+/** How to start OpenCode's CLI (`opencode`, contract v3.40) with these arguments; null when it is not installed. */
+function windowsOpenCode(args, env) {
+  const oc = OS.findOpenCode(env, isFile);
+  return oc ? OS.windowsCommand(oc, args, env) : null;
+}
 // Antigravity is missing: the same as for Claude Code (Enter there tries again).
 function sendNoAgy(id) {
   send('pty:data', id, `\r\n\x1b[31m${T('main.noAgy')}\x1b[0m\r\n${T('main.noAgyHelp')}\r\n`);
@@ -405,6 +414,11 @@ function sendNoAgy(id) {
 // Command Code is missing: the same as for Claude Code (Enter there tries again).
 function sendNoCommandCode(id) {
   send('pty:data', id, `\r\n\x1b[31m${T('main.noCmd')}\x1b[0m\r\n${T('main.noCmdHelp', { url: COMMANDCODE_URL })}\r\n`);
+  send('pty:exit', id, 127);
+}
+// OpenCode is missing: the same as for Claude Code (Enter there tries again).
+function sendNoOpenCode(id) {
+  send('pty:data', id, `\r\n\x1b[31m${T('main.noOc')}\x1b[0m\r\n${T('main.noOcHelp', { url: OPENCODE_URL })}\r\n`);
   send('pty:exit', id, 127);
 }
 /** node-pty arguments: a verbatim cmd.exe line is passed as one pre-quoted string. */
@@ -471,6 +485,7 @@ function onFocus() {
   checkAllAuth();
   checkAgyAuth();
   checkCmdAuth();
+  checkOcAuth();
 }
 
 // `claude auth login` pty: same channel as the project ptys, id 'login:<accountId>'. One per account;
@@ -648,6 +663,65 @@ function startCmdLogin() {
   });
 }
 
+// --- OpenCode login (contract v3.40, src/oc-auth.js): providers, not one account. `opencode providers login` / `logout`
+// run in a login pty (they ask which provider and how). Logged in = auth.json holds a provider (only ids and types are
+// read, never the secrets). Not logged in is a normal state: OpenCode's free models need no login.
+// The check and the login pty get only ocEnv's allowlist: nothing of Claude Code or the office reaches OpenCode.
+const OC_LOGIN = 'login:oc';
+let ocAuth = /** @type {any} */ ({ installed: false, state: 'checking' });
+let ocChecking = null;
+const sendOcAuth = () => send('oc:auth', ocAuth);
+function ocStatus(env) {
+  if (IS_WIN) return Promise.resolve({ path: OS.findOpenCode(env, isFile) });
+  return new Promise((resolve) => {
+    const child = execFile(shell(), ['-l', '-i', '-c', OCA.OC_STATUS_COMMAND], { env, timeout: 15000, cwd: app.getPath('home') },
+      (_err, stdout) => resolve(OCA.parseOcStatus(String(stdout || ''))));
+    try { child.stdin?.end(); } catch {}
+  });
+}
+function checkOcAuth() {
+  if (ocChecking) return ocChecking;
+  ocChecking = (async () => {
+    const env = EN.ocEnv(process.env);
+    const status = await ocStatus(env);
+    let text = '';
+    try { text = fs.readFileSync(OCA.ocAuthFile(env.HOME || env.USERPROFILE || app.getPath('home'), env.XDG_DATA_HOME), 'utf8'); } catch {}
+    ocAuth = OCA.ocAuthState(status, text);
+    sendOcAuth();
+  })().catch((e) => console.error('oc auth:', e.message)).finally(() => { ocChecking = null; });
+  return ocChecking;
+}
+// "Giriş yap" / "Çıkış yap": `opencode providers login` / `logout` in a login pty. Same channel and replace rules as agy's.
+function startOcLogin(mode) {
+  if (!win) return;
+  const id = OC_LOGIN;
+  const old = logins.get(id);
+  if (old) { logins.delete(id); try { old.kill(); } catch {} }
+  const { cols, rows } = sizes.get(id) || lastSize;
+  const env = EN.ocEnv(process.env);
+  const args = mode === 'logout' ? OCA.OC_LOGOUT_ARGS : OCA.OC_LOGIN_ARGS;
+  let t;
+  try {
+    const win32 = IS_WIN ? windowsOpenCode(args, env) : null;
+    if (IS_WIN && !win32) return sendNoOpenCode(id);
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', EN.OC_COMMAND, EN.OC.bin, ...args], {
+      name: 'xterm-256color', cols, rows, cwd: app.getPath('home'), env,
+    });
+  } catch (e) {
+    console.error('oc login pty:', e.message);
+    send('pty:exit', id, -1);
+    return;
+  }
+  logins.set(id, t);
+  t.onData((d) => { if (logins.get(id) === t) send('pty:data', id, d); });
+  t.onExit(({ exitCode }) => {
+    if (logins.get(id) !== t) return;
+    logins.delete(id);
+    send('pty:exit', id, exitCode);
+    checkOcAuth();
+  });
+}
+
 // --- account quota (see src/usage.js)
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return undefined; } };
 
@@ -771,7 +845,7 @@ function tokenFolders(p) {
 /** detail: also the costliest sub-agent runs and the fixed prefix (contract v3.21; the panel, not the row). */
 async function tokenReport(id, { detail = false } = {}) {
   const p = P.findProject(state, id);
-  if (!p || P.engineOf(p) === 'agy') return null; // Antigravity writes no transcripts (v3.22)
+  if (!p || P.engineOf(p) === 'agy' || P.engineOf(p) === 'opencode') return null; // Antigravity writes no transcripts (v3.22); OpenCode's are a database (v3.40)
   const since = Number.isFinite(p.addedAt) ? p.addedAt : null;
   const folders = tokenFolders(p);
   const recs = await tokenScanner.scanFolders(folders, { since: since ?? 0 });
@@ -866,6 +940,7 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
   asleep.delete(id);
   if (isAgy(r.project)) return startAgy(id, r, { resume, prompt });
   if (isCmd(r.project)) return startCommandCode(id, r, { resume, prompt });
+  if (isOc(r.project)) return startOpenCode(id, r, { resume, prompt });
   const { project, tab, dir: cwd } = r;
   const account = A.accountOf(state, project);
   const { configDir } = account;
@@ -1051,7 +1126,7 @@ function agySessions(now = Date.now()) {
     if (!r) continue;
     const dir = agyOwnDir(id);
     const cmd = isCmd(r.project);
-    const file = !dir ? null : cmd ? AW.cmdTranscriptPath(home, dir) : AW.agyTranscriptPath(home, dir);
+    const file = !dir || isOc(r.project) ? null : cmd ? AW.cmdTranscriptPath(home, dir) : AW.agyTranscriptPath(home, dir);
     if (file) {
       w.cursor = cmd ? AW.readTranscript(file, w.cursor, AW.CMD_PROMPT_RE) : AW.readTranscript(file, w.cursor);
       w.watch.transcript(w.cursor, now);
@@ -1095,6 +1170,61 @@ function startCommandCode(id, { tab, dir: cwd }, { resume = false, prompt = '' }
   lastSid.delete(id);
   retireAgy(id);
   agyWatch.set(id, { watch: AW.createAgyWatch(startedAt, { engine: 'commandcode', label: 'Command Code' }), cursor: null, key: `cmd-${id.replace(/[^\w-]/g, '_')}-${++agySeq}` });
+  t.onData((d) => {
+    if (terms.get(id) !== t) return;
+    const a = activity.get(id);
+    if (a) a.at = Date.now();
+    agyWatch.get(id)?.watch.output(d);
+    send('pty:data', id, d);
+  });
+  t.onExit(({ exitCode }) => {
+    if (terms.get(id) !== t) return; // killed on purpose (restart/removal): silent
+    retireAgy(id);
+    terms.delete(id);
+    setMarks(R.clearInterrupted(marks(), [id]));
+    removeMcpFile(id);
+    // no session to continue: start fresh without showing the exit to the user
+    if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) return startPty(id);
+    activity.delete(id);
+    send('pty:exit', id, exitCode);
+    broadcast();
+  });
+  broadcast();
+}
+
+// A tab of an OpenCode project (contract v3.40): `opencode` from the same login shell, with none of Claude Code's
+// setup nor of the office: no plugin, mod, status line, memory, MCP or office directory file, no AGENT_OFFICE_* (the
+// launch line drops what rc files set), and an env from an allowlist (engine.js ocEnv). resume: --continue, only for
+// a tab that continues (main tab, worktree tab); with no session in the folder it simply starts a new one, so no history check. prompt only when resuming.
+// The app watches it one way like agy (src/agy-watch.js, engine 'opencode'), with no transcript. It needs no login: its free models work without one.
+function startOpenCode(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+  removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
+  const { cols, rows } = sizes.get(id) || lastSize;
+  const isResume = resume && (!tab || Boolean(tab.worktree));
+  const args = EN.ocArgs({ resume: isResume, prompt });
+  const startedAt = Date.now();
+  // an allowlist of the user's env (engine.js ocEnv): no Claude, Anthropic, office or MCP variable
+  const env = EN.ocEnv(process.env);
+  let t;
+  try {
+    const win32 = IS_WIN ? windowsOpenCode(args, env) : null;
+    if (IS_WIN && !win32) { sendNoOpenCode(id); return broadcast(); }
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', EN.OC_COMMAND, EN.OC.bin, ...args], {
+      name: 'xterm-256color',
+      cols, rows,
+      cwd: isDir(cwd) ? cwd : app.getPath('home'),
+      env,
+    });
+  } catch (e) {
+    console.error('pty başlatılamadı:', e.message);
+    send('pty:exit', id, -1);
+    return broadcast();
+  }
+  terms.set(id, t);
+  activity.set(id, { at: startedAt, draft: false });
+  lastSid.delete(id);
+  retireAgy(id);
+  agyWatch.set(id, { watch: AW.createAgyWatch(startedAt, { engine: 'opencode', label: 'OpenCode' }), cursor: null, key: `oc-${id.replace(/[^\w-]/g, '_')}-${++agySeq}` });
   t.onData((d) => {
     if (terms.get(id) !== t) return;
     const a = activity.get(id);
@@ -1597,7 +1727,7 @@ function sleepIdle() {
       const w = agyWatch.get(id);
       if (!w || w.watch.blocker() || !agyOwnDir(id)) continue;
       killPty(id);
-      asleep.set(id, isCmd(r.project) ? { cmd: true } : { agy: true });
+      asleep.set(id, isCmd(r.project) ? { cmd: true } : isOc(r.project) ? { oc: true } : { agy: true });
       send('pty:sleep', id);
       slept = true;
       continue;
@@ -1938,9 +2068,8 @@ ipcMain.handle('projects:setEngine', async (_e, id, value) => {
     }
   } else if (running.length) {
     if (!win) return { restarted: [], refused: 'cancelled' };
-    const choice = isCmd(p)
-      ? await ask(T('main.engineCcConfirm', { name: p.name }), T('main.engineCcDetail'), [T('main.engineSwitch'), T('main.cancel')], 'warning')
-      : await ask(T('main.engineAgyConfirm', { name: p.name }), T('main.engineAgyDetail'), [T('main.engineSwitch'), T('main.cancel')], 'warning');
+    const kind = isCmd(p) ? 'Cc' : isOc(p) ? 'Oc' : 'Agy';
+    const choice = await ask(T(`main.engine${kind}Confirm`, { name: p.name }), T(`main.engine${kind}Detail`), [T('main.engineSwitch'), T('main.cancel')], 'warning');
     if (choice !== 0) return { restarted: [], refused: 'cancelled' };
   }
   const next = P.setProjectEngine(state, id, value); // again: the state may have changed while the dialog was open
@@ -2011,6 +2140,8 @@ ipcMain.handle('agy:auth', async (_e, refresh) => { if (refresh) await checkAgyA
 ipcMain.handle('agy:login', () => { startAgyLogin(); });
 ipcMain.handle('cmd:auth', async (_e, refresh) => { if (refresh) await checkCmdAuth(); return cmdAuth; });
 ipcMain.handle('cmd:login', () => { startCmdLogin(); });
+ipcMain.handle('oc:auth', async (_e, refresh) => { if (refresh) await checkOcAuth(); return ocAuth; });
+ipcMain.handle('oc:login', (_e, mode) => { startOcLogin(mode === 'logout' ? 'logout' : 'login'); });
 ipcMain.handle('accounts:logout', async (_e, id) => {
   const account = accountById(id);
   // the default account is the user's normal Claude Code login: the app does not log out of it
@@ -2169,8 +2300,8 @@ let transferBusy = false;
 async function exportSession(projectId) {
   const p = P.findProject(state, projectId || state.activeId);
   if (!p || !win || transferBusy) return;
-  if (isAgy(p) || isCmd(p)) { // v3.22, v3.25: neither engine's sessions move between computers
-    const msg = isAgy(p) ? T('main.moveAgy') : T('main.moveCc');
+  if (isObserved(p)) { // v3.22, v3.25, v3.40: none of these engines' sessions move between computers
+    const msg = isAgy(p) ? T('main.moveAgy') : isOc(p) ? T('main.moveOc') : T('main.moveCc');
     return dialog.showMessageBox(win, { type: 'info', message: msg });
   }
   transferBusy = true;
@@ -2312,8 +2443,8 @@ async function runImport(file) {
   // 4. the project and account it goes to; its tab must be idle
   const real = (d) => { try { return fs.realpathSync(d); } catch { return d; } };
   const existing = P.findByDir(state, dir) || state.projects.find((p) => real(p.dir) === real(dir)) || null;
-  if (existing && (isAgy(existing) || isCmd(existing))) {
-    const msg = isAgy(existing) ? T('main.moveAgy') : T('main.moveCc');
+  if (existing && isObserved(existing)) {
+    const msg = isAgy(existing) ? T('main.moveAgy') : isOc(existing) ? T('main.moveOc') : T('main.moveCc');
     return warnBox(msg);
   }
   const account = existing ? A.accountOf(state, existing) : accountById(A.DEFAULT_ID) || A.DEFAULT_ACCOUNT;
@@ -2686,10 +2817,10 @@ function buildMenu() {
 // shareMcp = each session also gets the other office projects' MCP servers (contract v3.9), for sessions started afterwards;
 // reloadMcp = an idle running tab whose MCP servers changed restarts in its session (contract v3.11);
 // fallback = a project at the usage limit moves to its backup account and back after the reset (contract v3.17);
-// showAgyAccount / showCmdAccount = the Antigravity / Command Code row in Accounts: true (added via Add account),
+// showAgyAccount / showCmdAccount / showOcAccount = the Antigravity / Command Code / OpenCode row in Accounts: true (added via Add account),
 // false (removed), null (the old rule: shown when installed or a project runs it) (contract v3.30)
 const themeSetting = (v) => (TH ? TH.normalizeThemeSetting(v) : 'auto');
-const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, shareMcp: state.shareMcp !== false, reloadMcp: state.reloadMcp !== false, fallback: state.fallback !== false, sleepMinutes: sleepMinutes(), showAgyAccount: typeof state.showAgyAccount === 'boolean' ? state.showAgyAccount : null, showCmdAccount: typeof state.showCmdAccount === 'boolean' ? state.showCmdAccount : null });
+const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, shareMcp: state.shareMcp !== false, reloadMcp: state.reloadMcp !== false, fallback: state.fallback !== false, sleepMinutes: sleepMinutes(), showAgyAccount: typeof state.showAgyAccount === 'boolean' ? state.showAgyAccount : null, showCmdAccount: typeof state.showCmdAccount === 'boolean' ? state.showCmdAccount : null, showOcAccount: typeof state.showOcAccount === 'boolean' ? state.showOcAccount : null });
 ipcMain.handle('prefs:get', () => prefs());
 ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.resume === 'boolean' && p.resume !== prefs().resume) commit({ ...state, resume: p.resume });
@@ -2698,7 +2829,7 @@ ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.shareMcp === 'boolean' && p.shareMcp !== prefs().shareMcp) commit({ ...state, shareMcp: p.shareMcp });
   if (p && typeof p.reloadMcp === 'boolean' && p.reloadMcp !== prefs().reloadMcp) commit({ ...state, reloadMcp: p.reloadMcp });
   if (p && typeof p.fallback === 'boolean' && p.fallback !== prefs().fallback) commit({ ...state, fallback: p.fallback });
-  for (const k of ['showAgyAccount', 'showCmdAccount']) if (p && typeof p[k] === 'boolean' && p[k] !== prefs()[k]) commit({ ...state, [k]: p[k] });
+  for (const k of ['showAgyAccount', 'showCmdAccount', 'showOcAccount']) if (p && typeof p[k] === 'boolean' && p[k] !== prefs()[k]) commit({ ...state, [k]: p[k] });
   if (p && typeof p.theme === 'string' && themeSetting(p.theme) !== prefs().theme) commit({ ...state, theme: themeSetting(p.theme) });
   if (p && Z.SLEEP_CHOICES.includes(p.sleepMinutes) && p.sleepMinutes !== prefs().sleepMinutes) {
     commit({ ...state, sleepMinutes: p.sleepMinutes });
@@ -2754,6 +2885,7 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   checkAllAuth();
   checkAgyAuth();
   checkCmdAuth();
+  checkOcAuth();
   startLink();
   await startOffice();   // v3.35: listening (or not) before the first boss tab starts
   // in the packaged app the icon comes from the .icns; under npm start set it on the Dock by hand (Linux has no app.dock)

@@ -525,9 +525,14 @@ sidebar = mountSidebar($('sidebar'), {
   agyLogout: () => openAgy('logout'),
   agyRefresh: () => api.agy?.auth(true).then(setAgyAuth, (e) => console.error(e)),
   cmdLogin: () => openCmd(),
+  ocLogin: () => openOc('login'),
+  ocLogout: () => openOc('logout'),
+  ocRefresh: () => api.oc?.auth(true).then(setOcAuth, (e) => console.error(e)),
   cmdRefresh: () => api.cmd?.auth(true).then(setCmdAuth, (e) => console.error(e)),
   addAgy: () => addEngineAccount('agy'),
   addCmd: () => addEngineAccount('cmd'),
+  addOc: () => addEngineAccount('oc'),
+  hideOc: () => setEngineRow('showOcAccount', false),
   hideAgy: () => setEngineRow('showAgyAccount', false),
   hideCmd: () => setEngineRow('showCmdAccount', false),
   setLanguage: (setting) => api.language?.set(setting).catch((e) => console.error(e)),
@@ -574,19 +579,34 @@ function openCmd() {
 api.cmd?.onAuth(setCmdAuth);
 api.cmd?.auth().then(setCmdAuth, (e) => console.error(e));
 
-// Add account → Google Antigravity / Command Code (contract v3.30): the row stays in Accounts (showAgyAccount /
+// OpenCode's logins (contract v3.40): providers, added or removed in the 'login:oc' pty (`opencode providers login` /
+// `logout`, which ask which provider). Not logged in is normal: its free models need no login.
+function setOcAuth(a) { if (a) sidebar.setOcAuth(a); }
+function openOc(mode) {
+  if (!api.oc) return;
+  login.open({ id: 'oc', label: 'OpenCode' }, {
+    start: () => api.oc.login(mode),
+    hint: () => t(mode === 'logout' ? 'login.ocLogoutHint' : 'login.ocHint'),
+    title: () => t(mode === 'logout' ? 'login.ocLogoutTitle' : 'login.title', { label: 'OpenCode' }),
+  });
+}
+api.oc?.onAuth(setOcAuth);
+api.oc?.auth().then(setOcAuth, (e) => console.error(e));
+
+// Add account → Google Antigravity / Command Code (contract v3.30) / OpenCode (v3.40): the row stays in Accounts (showAgyAccount /
 // showCmdAccount); installed and not logged in → its login starts; not installed → the row shows the install line.
 async function setEngineRow(key, on) {
   try { sidebar.setEngineRows(await api.prefs?.set({ [key]: on })); } catch (e) { console.error(e); }
 }
 async function addEngineAccount(kind) {
-  const engine = kind === 'agy' ? api.agy : api.cmd;
+  const engine = kind === 'agy' ? api.agy : kind === 'oc' ? api.oc : api.cmd;
   if (!engine) return;
-  await setEngineRow(kind === 'agy' ? 'showAgyAccount' : 'showCmdAccount', true);
+  await setEngineRow(kind === 'agy' ? 'showAgyAccount' : kind === 'oc' ? 'showOcAccount' : 'showCmdAccount', true);
   let a = null;
   try { a = await engine.auth(true); } catch (e) { console.error(e); }
-  if (kind === 'agy') setAgyAuth(a); else setCmdAuth(a);
-  if (!a?.installed || a.state === 'in') return;
+  if (kind === 'agy') setAgyAuth(a); else if (kind === 'oc') setOcAuth(a); else setCmdAuth(a);
+  // OpenCode needs no login (free models): adding its row only shows it; signing in is a button on the row
+  if (kind === 'oc' || !a?.installed || a.state === 'in') return;
   if (kind === 'agy') openAgy('login'); else openCmd();
 }
 

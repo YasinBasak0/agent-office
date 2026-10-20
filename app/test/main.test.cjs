@@ -307,7 +307,7 @@ test('proje başına motor: normalizeState, setProjectEngine, engineOf (v3.22)',
   assert.equal('engine' in s.projects[1], false); // Claude Code (the default) is never written
   assert.equal('engine' in s.projects[2], false); // unknown values are dropped
   assert.equal(P.engineOf(null), 'claude');
-  assert.deepEqual(P.ENGINES, ['claude', 'agy', 'commandcode']);
+  assert.deepEqual(P.ENGINES, ['claude', 'agy', 'commandcode', 'opencode']);
   assert.equal(P.setProjectEngine(s, 'a', 'agy'), s);
   assert.equal(P.setProjectEngine(s, 'zz', 'agy'), s);
   assert.equal(P.setProjectEngine(s, 'd', null), s);
@@ -572,7 +572,7 @@ test('Command Code sekmesi gözlemlenir: agy-watch engine commandcode, uyku { cm
   assert.equal(s.stats.today.log[0].description, 'Command Code');
   assert.deepEqual(Zm.wakeOptions({ cmd: true }, false), { resume: true });
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
-  assert.match(src, /asleep\.set\(id, isCmd\(r\.project\) \? \{ cmd: true \} : \{ agy: true \}\)/);
+  assert.match(src, /asleep\.set\(id, isCmd\(r\.project\) \? \{ cmd: true \} : isOc\(r\.project\) \? \{ oc: true \} : \{ agy: true \}\)/);
 });
 
 test('lastJsonObject: gürültü arasındaki son nesne, dizgedeki parantezler, iç içe nesneler', () => {
@@ -3592,4 +3592,80 @@ test('login relay: parser finds the allowlisted URL and the code prompt in a stu
   assert.equal(LC.validateMessage({ t: 'login-result', id: 'r1', ok: false, reason: 'whatever' }), null);
   assert.deepEqual(LC.validateMessage({ t: 'acct-view', accounts: [{ id: 'work', label: 'Work\x1b[31m', state: 'out', email: 'me@example.com', token: 'sk-ant-x', configDir: '/Users/me/.claude-work' }] }),
     { t: 'acct-view', accounts: [{ id: 'work', label: 'Work', state: 'out', email: 'me@example.com' }], shared: true });   // labels, state, email only
+});
+
+// --- OpenCode (v3.40)
+test('OpenCode motoru (v3.40): engine değeri, ocArgs, ocEnv izin listesi, başlatma satırı', () => {
+  const EN = require('../src/engine.js');
+  let s = P.normalizeState({ projects: [{ id: 'a', dir: '/a', engine: 'opencode' }, { id: 'b', dir: '/b' }] }, { id });
+  assert.equal(P.engineOf(s.projects[0]), 'opencode');
+  s = P.setProjectEngine(s, 'b', 'opencode');
+  assert.equal(P.engineOf(P.findProject(s, 'b')), 'opencode');
+  s = P.setProjectEngine(s, 'b', 'claude');
+  assert.equal('engine' in P.findProject(s, 'b'), false);
+  assert.deepEqual(EN.ocArgs(), []);
+  assert.deepEqual(EN.ocArgs({ prompt: 'x' }), []);                                  // a fresh start never carries a prompt
+  assert.deepEqual(EN.ocArgs({ resume: true }), ['--continue']);
+  assert.deepEqual(EN.ocArgs({ resume: true, prompt: 'carry on' }), ['--continue', '--prompt', 'carry on']);
+  const env = EN.ocEnv({
+    PATH: '/b', HOME: '/h', XDG_DATA_HOME: '/d', LC_ALL: 'tr_TR', OPENCODE_CONFIG: '/c', OPENAI_API_KEY: 'k', GEMINI_API_KEY: 'g',
+    ANTHROPIC_API_KEY: 'a', CLAUDE_CONFIG_DIR: '/x', AGENT_OFFICE_HOME: '/o', MY_MCP_API_KEY: 'm', SECRET: 's', AGY_ADC_AUTH: 'true',
+  });
+  assert.deepEqual(Object.keys(env).sort(), ['COLORTERM', 'GEMINI_API_KEY', 'HOME', 'LC_ALL', 'OPENAI_API_KEY', 'OPENCODE_CONFIG', 'PATH', 'TERM', 'XDG_DATA_HOME']);
+  assert.match(EN.OC_COMMAND, /exec opencode "\$@"$/);
+  assert.equal(EN.OC.bin, 'opencode');
+});
+
+test('OpenCode girişi (v3.40): giriş yok normal durum; yalnız sağlayıcı adı ve türü okunur, anahtar asla', () => {
+  const OA = require('../src/oc-auth.js');
+  assert.deepEqual(OA.ocAuthState({ path: null }, '{"openai":{"type":"oauth"}}'), { installed: false, state: 'missing' });
+  assert.deepEqual(OA.ocAuthState({ path: '/b/opencode' }, ''), { installed: true, state: 'out' });
+  assert.deepEqual(OA.ocAuthState({ path: '/b/opencode' }, '{}'), { installed: true, state: 'out' });
+  assert.deepEqual(OA.ocAuthState({ path: '/b/opencode' }, 'broken{'), { installed: true, state: 'out' });
+  const secret = 'sk-SECRET-VALUE';
+  const st = OA.ocAuthState({ path: '/b/opencode' }, JSON.stringify({ openai: { type: 'oauth', access: secret, refresh: secret }, google: { type: 'api', key: secret }, 'bad id!': { type: 'api' }, odd: { type: 'x' }, str: 'text' }));
+  assert.deepEqual(st, { installed: true, state: 'in', providers: [{ id: 'openai', type: 'oauth' }, { id: 'google', type: 'api' }, { id: 'odd', type: 'other' }] });
+  assert.equal(JSON.stringify(st).includes(secret), false);
+  assert.deepEqual(OA.parseOcCredentials('[1,2]'), []);
+  assert.equal(OA.parseOcStatus('rc noise\n/opt/homebrew/bin/opencode\n').path, '/opt/homebrew/bin/opencode');
+  assert.equal(OA.parseOcStatus('opencode: aliased to x').path, null);
+  assert.equal(OA.ocAuthFile('/h'), require('node:path').join('/h', '.local', 'share', 'opencode', 'auth.json'));
+  assert.equal(OA.ocAuthFile('/h', '/data'), require('node:path').join('/data', 'opencode', 'auth.json'));
+  assert.equal(OA.ocAuthFile('/h', 'relative'), require('node:path').join('/h', '.local', 'share', 'opencode', 'auth.json'));
+  assert.deepEqual(OA.OC_LOGIN_ARGS, ['providers', 'login']);
+  assert.deepEqual(OA.OC_LOGOUT_ARGS, ['providers', 'logout']);
+});
+
+test('startOpenCode: ortam yalnız ocEnv; Claude Code ve ofis hiçbir şey vermez; transkript okunmaz (v3.40)', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
+  const start = src.indexOf('function startOpenCode(');
+  assert.ok(start > 0);
+  const body = src.slice(start, src.indexOf('\n}\n', start)).replace(/\/\/.*$/gm, '');
+  assert.match(body, /const env = EN\.ocEnv\(process\.env\);/);
+  assert.match(body, /engine: 'opencode', label: 'OpenCode'/);
+  for (const banned of ['sessionEnv', 'ptyEnv', 'officeDirectoryFile', 'AGENT_OFFICE_', 'sharedConfig', 'pluginDir', 'usageStatusLine', 'managerOf', 'savings', 'CLAUDE_', 'env.', 'env['])
+    assert.equal(body.includes(banned), false, `startOpenCode uses ${banned}`);
+  // the login pty gets the same allowlist, and the app never reads anything but auth.json's provider names
+  const login = src.slice(src.indexOf('function startOcLogin('), src.indexOf('// --- account quota'));
+  assert.match(login, /const env = EN\.ocEnv\(process\.env\);/);
+  assert.match(src, /if \(isOc\(r\.project\)\) return startOpenCode\(id, r, \{ resume, prompt \}\);/);
+  assert.match(src, /const file = !dir \|\| isOc\(r\.project\) \? null/);
+});
+
+test('OpenCode sekmesi gözlemlenir: agy-watch engine opencode ("esc interrupt" meşgul çizgisi), uyku { oc } ile --continue (v3.40)', () => {
+  const AWm = require('../src/agy-watch.js');
+  const Zm = require('../src/sleep.js');
+  const w = AWm.createAgyWatch(1000, { engine: 'opencode', label: 'OpenCode' });
+  assert.equal(w.isBusy, false);
+  w.output('█ working…  esc interrupt', 1100);
+  assert.equal(w.isBusy, true);
+  w.output('Permission required  Allow once  Allow always  Reject', 1300);
+  assert.equal(w.waiting?.kind, 'permission');
+  w.input('\r', 1400);
+  assert.equal(w.tick(20000), true);
+  const s = w.session('p', 'oc-x', 20000);
+  assert.equal(s.engine, 'opencode');
+  assert.equal(s.stats.today.log[0].description, 'OpenCode');
+  assert.deepEqual(Zm.wakeOptions({ oc: true }, false), { resume: true });
 });

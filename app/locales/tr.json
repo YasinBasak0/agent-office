@@ -205,7 +205,7 @@
     "agyKeyNote": "agy giriş yerine API anahtarı ya da ADC kullanıyor: /logout bir şey yapmaz. Bırakmak için GEMINI_API_KEY'i kaldır (ya da AGY_ADC_AUTH'u sil).",
     "agyUnknown": "giriş agy'de",
     "agyUnknownTitle": "agy girişini sistem anahtar zincirinde tutar, uygulama onu okumaz. Giriş yap gerekirse giriş yaptırır; Çıkış yap /logout için agy'yi açar.",
-    "addAccountTitle": "Hesap ekle: Claude, Google Antigravity veya Command Code",
+    "addAccountTitle": "Hesap ekle: Claude, Google Antigravity, Command Code veya OpenCode",
     "addClaude": "Claude",
     "addAgy": "Google Antigravity",
     "addAgyTitle": "Antigravity CLI (agy) girişini burada göster ve giriş yap. Tüm Antigravity projeleri için tek giriş.",
@@ -219,7 +219,25 @@
     "cmdMissingTitle": "Command Code projesi için Command Code CLI gerekir (Node.js 22 veya üstü). Bir terminalde kurun, sonra Tekrar kontrol et'e basın.",
     "cmdInstallTitle": "commandcode.ai/docs kurulum komutu (bir terminalde kendiniz çalıştırın)",
     "cmdInTitle": "Command Code'un kayıtlı bir girişi var (~/.commandcode/auth.json). Uygulama yalnızca dosyanın var olduğuna bakar.",
-    "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)"
+    "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)",
+    "ocHint": "OpenCode — izleniyor",
+    "ocHintTitle": "Bu proje OpenCode çalıştırıyor. Ofis onu tek yönlü izler, yalnızca terminalinden (kayıt dosyası okunmaz): patron çalışır, onay ister, biten her tur teslimat sayılır, boşta uyur. Alt ajanlar ve token kullanımı gösterilmez, ofisin hiçbir şeyi (günlük, dizin, diğer projeler, özet) OpenCode'a verilmez. Giriş gerekmez: ücretsiz modelleri girişsiz çalışır.",
+    "engineOpencode": "OpenCode",
+    "ocRunning": "OpenCode çalışıyor",
+    "ocStopped": "OpenCode durdu",
+    "ocAsleep": "Henüz başlamadı: bu projeyi açınca OpenCode son oturumundan devam ederek başlar",
+    "addOc": "OpenCode",
+    "addOcTitle": "OpenCode'u burada göster. Girişsiz çalışır (ücretsiz modeller); yalnızca kendi modellerini kullanmak için bir sağlayıcıya giriş yap.",
+    "ocTitle": "OpenCode (opencode): sağlayıcıları ve girişleri OpenCode'un kendisinde tutulur (~/.local/share/opencode). Ücretsiz modeller için giriş gerekmez.",
+    "ocMissing": "opencode kurulu değil",
+    "ocMissingTitle": "Bir OpenCode projesi için OpenCode CLI gerekir. Terminalde kur, sonra Tekrar kontrol et'e bas.",
+    "ocInstallTitle": "opencode.ai/docs'taki kurulum komutu (terminalde kendin çalıştır)",
+    "ocFree": "Giriş yok · ücretsiz modeller",
+    "ocFreeTitle": "Hiçbir sağlayıcıya giriş yapılmamış. OpenCode'un ücretsiz modelleri girişsiz çalışır; kendi sağlayıcılarını kullanmak için giriş yap.",
+    "ocInTitle": "Giriş yapılan: {providers}. Uygulama OpenCode'un giriş dosyasından yalnızca sağlayıcı adlarını okur, anahtarları asla.",
+    "ocLoginTitle": "opencode providers login'i burada çalıştır: bir sağlayıcı seç ve giriş yap",
+    "ocAddTitle": "Başka bir sağlayıcı ekle (opencode providers login)",
+    "ocLogoutTitle": "Bir sağlayıcının girişini kaldır (opencode providers logout)"
   },
   "panel": {
     "types": {
@@ -339,7 +357,10 @@
       "bad-url": "giriş bağlantısı bir Claude adresi değildi",
       "offline": "makine çevrimdışı oldu",
       "not-supported": "oradaki Agent Office'i güncelleyin"
-    }
+    },
+    "ocHint": "Listeden bir sağlayıcı seç ve adımlarını izle (tarayıcı açılabilir ya da bir API anahtarı yapıştırırsın). Bilgiler kaydedildi dediğinde bu pencereyi kapat.",
+    "ocLogoutHint": "Çıkış yapacağın sağlayıcıyı seç. Kaldırıldı dediğinde bu pencereyi kapat.",
+    "ocLogoutTitle": "OpenCode'dan çıkış yap"
   },
   "terminal": {
     "exited": "— Claude kapandı — yeniden başlatmak için Enter —",
@@ -540,7 +561,12 @@
     "officeUnavailable": "Boss sekmeleri için Agent Office araçları kapalı: ofis soketi açılamadı",
     "projOpNotice": "{device}: {project} → {op}",
     "loginRelayTitle": "Uzaktan giriş",
-    "loginRelayBody": "{device}, bu makinede {label} hesabına giriş yapıyor."
+    "loginRelayBody": "{device}, bu makinede {label} hesabına giriş yapıyor.",
+    "noOc": "OpenCode bulunamadı.",
+    "noOcHelp": "OpenCode'u kur ({url}), yeni bir terminalde `opencode` çalıştığından emin ol, sonra tekrar denemek için burada Enter'a bas.",
+    "moveOc": "Yalnızca Claude Code projeleri başka bir bilgisayara taşınabilir; bu proje OpenCode çalıştırıyor.",
+    "engineOcConfirm": "“{name}” Claude Code'a geçirilsin mi?",
+    "engineOcDetail": "Bu projede OpenCode çalışıyor ve Agent Office işin ortasında olup olmadığını bilemez. Geçiş onu şimdi durdurur; Claude Code sıfırdan başlar."
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",

@@ -116,6 +116,9 @@ const findAgy = (env, exists) => findOnPath('agy', env, exists);
  */
 const findCommandCode = (env, exists) => findOnPath('commandcode', env, exists);
 
+/** Where OpenCode's `opencode` is on Windows (contract v3.40): on PATH (npm's opencode.cmd, a native opencode.exe), else null. */
+const findOpenCode = (env, exists) => findOnPath('opencode', env, exists);
+
 /** One argument for a cmd.exe command line: bare if it is safe, else in double quotes. */
 const cmdQuote = (a) => (/^[\w\-.:\\/=@+,]+$/.test(a) ? a : `"${String(a).replace(/"/g, '""')}"`);
 
@@ -255,6 +258,6 @@ function dotPng(size, rgb) {
 
 module.exports = {
   isMac, isWindows, defaultShell, filesFromUriList, linuxClipboardCommands, shortcuts, canSelfUpdate,
-  envGet, withPathDir, findOnPath, findClaude, findAgy, findCommandCode, cmdQuote, windowsCommand, findGitBash,
+  envGet, withPathDir, findOnPath, findClaude, findAgy, findCommandCode, findOpenCode, cmdQuote, windowsCommand, findGitBash,
   filesFromDropFiles, filesFromFileNameW, windowsClipboardKind, pickWindowsFiles, windowsImageType, POWERSHELL_FILES, filesFromLines, dotPng,
 };

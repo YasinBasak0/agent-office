@@ -117,7 +117,57 @@ function cmdEnv(base, platform = process.platform) {
   return out;
 }
 
+// --- OpenCode (contract v3.40). The same rules again: an env allowlist, nothing of Claude Code or the office. The binary
+// is `opencode`. It keeps its own providers and logins (`opencode providers`, ~/.local/share/opencode/auth.json) and
+// works without any login: its free models (the `opencode/` provider) need none, and it picks one by itself.
+const OC = {
+  bin: 'opencode',
+};
+
+/**
+ * OpenCode's arguments for a start: `--continue` (the last session of the folder; with none it simply starts a new
+ * one, checked with opencode 1.18) when resuming, then (only when resuming and a prompt is given) `--prompt <prompt>`.
+ * @param {{ resume?: boolean, prompt?: string }} [o]
+ */
+function ocArgs({ resume = false, prompt = '' } = {}) {
+  const p = resume && prompt ? promptArg(prompt) : '';
+  return [...(resume ? ['--continue'] : []), ...(p ? ['--prompt', p] : [])];
+}
+
+/** OpenCode's launch line: drops any AGENT_OFFICE_* an rc file set (as AGY_COMMAND), then `opencode "$@"`. */
+const OC_COMMAND = AGY_COMMAND.replace(/exec agy "\$@"$/, `exec ${OC.bin} "$@"`);
+
+// What OpenCode reads from the environment, passed only when the user has it: its own OPENCODE_* switches and the
+// API keys of the providers the user chose to use (<NAME>_API_KEY, e.g. OPENAI_API_KEY, GEMINI_API_KEY). The deny
+// rule still wins: an ANTHROPIC_* or CLAUDE* variable never reaches it.
+const OC_ENV_PREFIXES = ['OPENCODE_'];
+const OC_KEY = /_API_KEY$/;
+
+/**
+ * The env OpenCode starts with: agyEnv's base allowlist (without agy's own names and families) plus OpenCode's own
+ * variables and provider API keys; the same deny rule (Claude, Anthropic, the office, MCP).
+ * @param {Record<string, string | undefined>} base @param {string} [platform]
+ * @returns {Record<string, string>}
+ */
+function ocEnv(base, platform = process.platform) {
+  const win = platform === 'win32';
+  const norm = (/** @type {string} */ n) => (win ? n.toUpperCase() : n);
+  const names = new Set([...AGY_ENV_NAMES.filter((n) => n !== 'AGY_ADC_AUTH'), ...(win ? AGY_ENV_WINDOWS : [])].map(norm));
+  const prefixes = ['LC_', ...OC_ENV_PREFIXES];
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const [k, v] of Object.entries(base || {})) {
+    if (typeof v !== 'string' || AGY_ENV_DENY.test(k)) continue;
+    const key = norm(k);
+    if (names.has(key) || prefixes.some((p) => key.startsWith(p)) || OC_KEY.test(key)) out[k] = v;
+  }
+  out.TERM = 'xterm-256color';
+  out.COLORTERM = 'truecolor';
+  return out;
+}
+
 module.exports = {
+  OC, ocArgs, OC_COMMAND, ocEnv, OC_ENV_PREFIXES,
   AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES,
   CMD, cmdArgs, CMD_COMMAND, cmdEnv, CMD_ENV_NAMES, CMD_ENV_PREFIXES,
 };

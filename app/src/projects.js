@@ -319,11 +319,12 @@ const savingsOf = (project) => savingsValue(project?.savings);
 // 'commandcode' runs Command Code's `commandcode` (contract v3.25); absent = Claude Code. Never written for Claude
 // Code. Neither engine gets anything of Claude Code's setup (account folder, plugin, status line, memory, MCP
 // config) or of the office (directory, journal, savings); the app observes both one way.
-const ENGINES = ['claude', 'agy', 'commandcode'];
-const engineValue = (v) => (v === 'agy' || v === 'commandcode' ? v : null);
+// 'opencode' runs OpenCode's `opencode` (contract v3.40), observed the same way.
+const ENGINES = ['claude', 'agy', 'commandcode', 'opencode'];
+const engineValue = (v) => (v === 'agy' || v === 'commandcode' || v === 'opencode' ? v : null);
 const withEngine = (v) => (engineValue(v) ? { engine: v } : {});
 
-/** value: 'agy' | 'commandcode' | 'claude' | null (both: Claude Code). Same state when nothing changes. */
+/** value: 'agy' | 'commandcode' | 'opencode' | 'claude' | null (both: Claude Code). Same state when nothing changes. */
 function setProjectEngine(state, id, value) {
   const p = findProject(state, id);
   const v = engineValue(value);
@@ -335,7 +336,7 @@ function setProjectEngine(state, id, value) {
   }) };
 }
 
-/** The program the project's tabs run: 'claude' | 'agy' | 'commandcode'. */
+/** The program the project's tabs run: 'claude' | 'agy' | 'commandcode' | 'opencode'. */
 const engineOf = (project) => engineValue(project?.engine) || 'claude';
 
 // --- backup account at the usage limit (contract v3.17, src/fallback.js)
