@@ -21,7 +21,7 @@ import type { VerifyStop } from './harness'
 import type { StopInput } from './finish'
 import { appendEntry, directoryProjects, entryOf, JOURNAL_FILE, LOOKBACK_MS, newsText, parseJournal, placeOfDir, selectNews } from './journal'
 import type { Host, JournalSeen, OfficeProject } from './journal'
-import { readyText, ReportTracker, writeReport } from './reports'
+import { readyText, ReportTracker, typedTaskId, writeReport } from './reports'
 
 // Claude Code side of Agent Office: writes agent arrivals, tools, deliveries and background shells to
 // ~/.claude/agent-office/sessions/<session>.json. The office itself is drawn by the
@@ -1518,9 +1518,16 @@ export const register: Register = on => {
     if (e.origin?.kind !== 'task-notification') {
       verifyPrompt()
       isBriefReminded = false
-      // one boss (v3.35): a dispatched task opens; one still open is closed as partial
-      const closed = isInApp && !isNested ? reports.prompt(e.text, Date.now()) : undefined
-      if (closed && rootDir) await writeReport(hostOf($), rootDir, sessionCwd, closed, Date.now(), true, isWindows)
+      // one boss (v3.35): a dispatched task opens (marker, or the id the app recorded before typing); any other
+      // prompt closes one still open as partial
+      if (isInApp && !isNested) {
+        const typed = await typedTaskId(hostOf($), rootDir, sessionId, Date.now()).catch(() => undefined)
+        const closed = reports.prompt(e.text, Date.now(), typed)
+        if (closed && rootDir) await writeReport(hostOf($), rootDir, sessionCwd, closed, Date.now(), true, isWindows)
+      }
+    } else {
+      const late = isInApp && !isNested ? reports.expired(Date.now()) : undefined
+      if (late && rootDir) await writeReport(hostOf($), rootDir, sessionCwd, late, Date.now(), true, isWindows)
     }
     if (e.origin?.kind === 'task-notification') await endNotified($, e.text)
     else await clearWaiting($)
@@ -1615,6 +1622,9 @@ export const register: Register = on => {
       // one boss (v3.35): the dispatched task's report, once none of this session's workers is still running
       const task = reports.complete(typeof e.answer === 'string' ? e.answer : '', workers.filter(w => w.doneAt === undefined).length)
       if (task && rootDir) await writeReport(hostOf($), rootDir, sessionCwd, task, Date.now(), false, isWindows)
+      // still waiting on workers past the limit: the answers so far, as partial
+      const late = reports.expired(Date.now())
+      if (late && rootDir) await writeReport(hostOf($), rootDir, sessionCwd, late, Date.now(), true, isWindows)
     } else {
       // the subagent's report (contract v2.2 `result`); "" when it gave none
       const answer = typeof e.answer === 'string' ? e.answer.trim() : ''

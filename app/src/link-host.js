@@ -17,7 +17,7 @@ const REPORT_POLL_MS = 5000;
  * @param {{ app: any, safeStorage: any, ipcMain: any, send: (ch: string, ...a: any[]) => void,
  *   notify: (title: string, body: string) => void, T: (k: string, v?: any) => string,
  *   projects: () => { id: string, name: string, engine: string }[],
- *   tabState: (projectId: string) => 'ready' | 'busy' | 'starting' | 'gone', type: (projectId: string, text: string) => void,
+ *   tabState: (projectId: string) => 'ready' | 'busy' | 'starting' | 'gone', type: (projectId: string, text: string, o?: { taskId?: string }) => boolean | void,   // false: not typed
  *   loginOf?: (projectId: string) => 'in' | 'out' | 'unknown', reportsDir?: string,
  *   onReport?: (r: { id: string, machine: string, pub: string, report: any }) => void,
  *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
@@ -306,11 +306,12 @@ function setupLink(d) {
         // 'busy' and 'starting' (no session id or no first prompt yet: the trust dialog may be up, v3.31) wait
         if (s !== 'ready') break;
         q.shift();
+        // type() → false: not typed (the project got handoff-locked meanwhile): refused, never 'delivered'
         if (c.report) {
           // v3.35: the plugin reports on the marked task (hooks/reports.ts); its report is owed to the dispatcher
+          if (d.type(project, C.markedTask(c.id, c.device.name, c.text), { taskId: c.id }) === false) { c.reply('rejected', 'locked'); break; }
           if (c.device.pub === SELF) localTasks.add(c.id); else link?.expectReport(c.id, c.device.pub);
-          d.type(project, C.markedTask(c.id, c.device.name, c.text));
-        } else d.type(project, C.markedCommand(c.device.name, c.text));
+        } else if (d.type(project, C.markedCommand(c.device.name, c.text)) === false) { c.reply('rejected', 'not-running'); break; }   // v1-safe reason
         c.reply('delivered');
         break;                                     // one per project per tick: the tab is busy after a prompt
       }
@@ -324,12 +325,16 @@ function setupLink(d) {
   const localTasks = new Set();            // ids of tasks dispatched to a project of this machine (until reported)
   const newId = () => require('crypto').randomBytes(8).toString('hex');
   /** A task for a project of this machine: the same queue and checks as a remote one. → { id, status, reason? } */
-  function dispatchLocal(projectId, text, fromName) {
+  /** onStatus(id, status, reason?) hears every status (queued, then delivered or rejected), also the later ones. */
+  function dispatchLocal(projectId, text, fromName, onStatus) {
     const s = C.sanitizeCommand(text);
     const id = newId();
     if (!s.ok) return { id, status: 'rejected', reason: s.reason };
-    /** @type {any} */ let out = null;   // the first answer (queued or rejected); 'delivered' may follow at once
-    onCommand({ device: { pub: SELF, name: fromName }, id, project: projectId, text: s.text, report: true, reply: (status, reason) => { if (!out) out = { id, status, ...(reason ? { reason } : {}) }; } });
+    /** @type {any} */ let out = null;   // the latest answer so far ('delivered' may follow 'queued' at once)
+    onCommand({ device: { pub: SELF, name: fromName }, id, project: projectId, text: s.text, report: true, reply: (status, reason) => {
+      out = { id, status, ...(reason ? { reason } : {}) };
+      try { onStatus?.(id, status, reason); } catch { /* the caller's record */ }
+    } });
     return out || { id, status: 'queued' };
   }
   /** A task for a project of a paired device (cmd with report, cap 'report'). Offline: refused, nothing queued. */

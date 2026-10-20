@@ -150,7 +150,7 @@ class RateLimiter {
 
 const STATUS = ['working', 'idle', 'approval'];
 const CMD_STATUS = ['queued', 'delivered', 'rejected'];
-const REASONS = ['not-allowed', 'unknown-project', 'engine', 'not-running', 'too-large', 'empty', 'not-text', 'rate-limited', 'queue-full', 'expired', 'removed', 'logged-out', 'offline', 'no-report'];
+const REASONS = ['not-allowed', 'unknown-project', 'engine', 'not-running', 'too-large', 'empty', 'not-text', 'rate-limited', 'queue-full', 'expired', 'removed', 'logged-out', 'offline', 'no-report', 'locked'];   // v3.35 reasons go only to peers with cap 'report'
 const isStr = (v, max) => typeof v === 'string' && v.length <= max;
 const isInt = (v, max = Number.MAX_SAFE_INTEGER) => Number.isInteger(v) && v >= 0 && v <= max;
 const isId = (v) => typeof v === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(v);
@@ -286,6 +286,8 @@ function validateMessage(m) {
       const report = cleanReport(m);
       return isId(m.id) && report ? { t: 'cmd-report', id: m.id, ...report } : null;
     }
+    case 'cmd-report-ack':   // v3.35, only to a peer with cap 'report'
+      return isId(m.id) ? { t: 'cmd-report-ack', id: m.id } : null;
     case 'cmd-status':
       return isId(m.id) && CMD_STATUS.includes(m.status) && (m.reason == null || REASONS.includes(m.reason))
         ? { t: 'cmd-status', id: m.id, status: m.status, ...(m.reason ? { reason: m.reason } : {}) } : null;

@@ -262,8 +262,14 @@ class Link extends EventEmitter {
       const o = this.outgoing.find((x) => x.id === m.id && x.pub === d.pub);
       if (o) { o.status = 'reported'; }
       const { t: _t, id, ...report } = m;
+      // acknowledged every time (the sender resends until it hears this); a repeat is dropped by the host (main)
+      if (this.peerHas(d.pub, 'report')) this.write(conn, { t: 'cmd-report-ack', id });
       this.emit('report', { device: d, id, report });
       this.emit('change');
+    } else if (m.t === 'cmd-report-ack') {
+      // v3.35 the dispatcher has the report: it is no longer resent
+      const r = this.reportsOut.get(m.id);
+      if (r && r.pub === d.pub && r.report && !r.sent) { r.sent = true; this.saveReports(); }
     } else if (m.t === 'ho-offer') {
       this.receiveOffer(conn, d, m);
     } else if (m.t === 'ho-chunk') {
@@ -507,7 +513,7 @@ class Link extends EventEmitter {
     if (!this.reportsFile) return;
     try {
       fs.mkdirSync(path.dirname(this.reportsFile), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(this.reportsFile, JSON.stringify(Object.fromEntries(keep)), { mode: 0o600 });
+      fs.writeFileSync(this.reportsFile, JSON.stringify(Object.fromEntries(keep.map(([id, r]) => [id, { pub: r.pub, report: r.report, sent: r.sent, at: r.at }]))), { mode: 0o600 });
     } catch { /* best effort */ }
   }
   /** A task from that device was typed with report: its report is owed to it. */
@@ -526,12 +532,11 @@ class Link extends EventEmitter {
   }
   flushReports(pub, conn) {
     if (!this.peerHas(pub, 'report') || !C.trusted(this.devices, this.secrets, pub)) return;
-    let sent = false;
-    for (const [id, r] of this.reportsOut) if (r.pub === pub && r.report && !r.sent && !conn.destroyed) {
+    // `sent` turns true only on the dispatcher's cmd-report-ack: until then each new connection (hello) resends it
+    for (const [id, r] of this.reportsOut) if (r.pub === pub && r.report && !r.sent && r.wroteOn !== conn && !conn.destroyed) {
       this.write(conn, { t: 'cmd-report', id, ...r.report });
-      r.sent = sent = true;
+      r.wroteOn = conn;   // not persisted: once per connection
     }
-    if (sent) this.saveReports();
   }
 
   // --- the published snapshot: at most once a second, only when it changed

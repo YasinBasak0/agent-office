@@ -10,7 +10,10 @@ const { spawn } = require('child_process');
 const OM = require('../src/office-mcp.js');
 const SC = require('../src/shared-config.js');
 
-const SCRIPT = path.join(__dirname, '..', 'src', 'office-mcp.js');
+// the script as the app writes it to userData (self-contained, run from there, never from app.asar)
+const SCRIPT_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-oms-'));
+process.on('exit', () => fs.rmSync(SCRIPT_DIR, { recursive: true, force: true }));
+const SCRIPT = OM.writeServerScript(SCRIPT_DIR);
 
 function client(env) {
   const p = spawn(process.execPath, [SCRIPT], { env: { PATH: process.env.PATH, ...env }, stdio: ['pipe', 'pipe', 'inherit'] });
@@ -68,7 +71,8 @@ test('office-mcp: socket path at most 100 bytes; server config carries the token
   const p = OM.socketPath(long, { platform: 'darwin', tmpdir: '/var/folders/ab/cdefgh/T' });
   assert.ok(Buffer.byteLength(p) <= 100, p);
   assert.equal(OM.socketPath('/Users/a/Library/Application Support/Agent Office', { platform: 'darwin' }), '/Users/a/Library/Application Support/Agent Office/link/office.sock');
-  assert.match(OM.socketPath('C:\\Users\\a', { platform: 'win32' }), /^\\\\\.\\pipe\\agent-office-[0-9a-f]{12}$/);
+  assert.match(OM.socketPath('C:\\Users\\a', { platform: 'win32', salt: 'abcdef012345' }), /^\\\\\.\\pipe\\agent-office-[0-9a-f]{12}-abcdef012345$/);
+  assert.equal(OM.socketPath(long, { platform: 'darwin', tmpdir: '/t', salt: 'abcdef012345', uid: 501 }), '/t/ao-501-abcdef012345/o.sock');
   const cfg = OM.serverConfig({ socket: '/s', token: 'tok', execPath: '/e', script: '/m.js' });
   assert.deepEqual(cfg, { type: 'stdio', command: '/e', args: ['/m.js'], env: { ELECTRON_RUN_AS_NODE: '1', AGENT_OFFICE_SOCKET: '/s', AGENT_OFFICE_TOKEN: 'tok' } });
 });
@@ -85,4 +89,35 @@ test('office-mcp: prepareShared writes the boss server (0600) but the MCP finger
   if (process.platform !== 'win32') assert.equal((fs.statSync(mcpFile).mode & 0o777).toString(8), '600');
   assert.equal(SC.mcpFingerprint(SC.mcpPlan({ account: {}, home, cwd: null })), before);
   assert.deepEqual(r.mcpNames, {});
+});
+
+test('office-mcp: the written script requires nothing of the app; it is rewritten only when changed', () => {
+  const text = fs.readFileSync(SCRIPT, 'utf8');
+  assert.deepEqual([...text.matchAll(/require\(([^)]*)\)/g)].map((m) => m[1]), ["'net'"]);
+  if (process.platform !== 'win32') assert.equal((fs.statSync(SCRIPT).mode & 0o777).toString(8), '600');
+  const before = fs.statSync(SCRIPT).mtimeMs;
+  assert.equal(OM.writeServerScript(SCRIPT_DIR), SCRIPT);
+  assert.equal(fs.statSync(SCRIPT).mtimeMs, before);
+});
+
+test('office-mcp: the socket folder must be private and ours; the salt is random and kept', { skip: process.platform === 'win32' }, (t) => {
+  const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-omd-'));
+  t.after(() => fs.rmSync(ud, { recursive: true, force: true }));
+  const salt = OM.socketSalt(ud);
+  assert.match(salt, /^[0-9a-f]{12}$/);
+  assert.equal(OM.socketSalt(ud), salt);
+  assert.equal((fs.statSync(path.join(ud, 'link', 'office-sock.salt')).mode & 0o777).toString(8), '600');
+  const fresh = path.join(ud, 'fresh');
+  OM.secureDir(fresh);
+  assert.equal((fs.statSync(fresh).mode & 0o777).toString(8), '700');
+  const open = path.join(ud, 'open');
+  fs.mkdirSync(open, { mode: 0o755 });
+  fs.chmodSync(open, 0o755);
+  assert.throws(() => OM.secureDir(open), /0700/);
+  OM.secureDir(open, { fix: true });
+  assert.equal((fs.statSync(open).mode & 0o777).toString(8), '700');
+  fs.symlinkSync(fresh, path.join(ud, 'link2'));
+  assert.throws(() => OM.secureDir(path.join(ud, 'link2')), /plain folder/);
+  assert.throws(() => OM.secureDir(fresh, { uid: 999999 }), /another user/);
+  assert.throws(() => OM.createOfficeSocket({ socketFile: path.join(ud, 'link2', 'o.sock'), handle: () => null }), /plain folder/);
 });

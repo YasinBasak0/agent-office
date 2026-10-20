@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { readyText, REPORT_MAX, reportOf, ReportTracker, taskIdOf, writeReport } from '../hooks/reports'
+import { readyText, REPORT_MAX, reportOf, ReportTracker, TASK_MAX_MS, taskIdOf, typedTaskId, writeReport } from '../hooks/reports'
 import type { Host } from '../hooks/journal'
 
 // one boss (app contract v3.35): the plugin of the machine that runs a dispatched task writes its report; the
@@ -68,4 +68,51 @@ test('report-ready wrapper: a fixed notice, names cleaned, any other row ignored
   expect(readyText({ at: 1, kind: 'report-ready', id: 'bad id!', machine: 'L', project: 'p' }, wrap)).toBe(undefined)
   expect(readyText({ at: 1, text: 'a task' }, wrap)).toBe(undefined)
   expect(readyText({ at: 1, kind: 'report', id: 'a1', text: 'the report' }, wrap)).toBe(undefined)
+})
+
+test('an unmarked prompt of the person closes the open task as partial, with the answers so far', async () => {
+  const tr = new ReportTracker()
+  tr.prompt(MARKED, 1)
+  expect(tr.complete('Half done; waiting on one agent.', 1)).toBe(undefined)
+  const closed = tr.prompt('stop that and look at the login page', 5)
+  expect(closed?.id).toBe('a1b2c3d4e5f60718')
+  expect(closed?.answer).toBe('Half done; waiting on one agent.')
+  expect(tr.pending).toBe(undefined)
+  expect(reportOf(closed!, [], 6, true).partial).toBe(true)
+  expect(tr.prompt('another plain prompt', 7)).toBe(undefined)
+})
+
+test('max wait: a task open longer than 2 h is reported as partial', async () => {
+  const tr = new ReportTracker()
+  tr.prompt(MARKED, 1000)
+  tr.complete('Started agents.', 3)
+  expect(tr.expired(1000 + TASK_MAX_MS)).toBe(undefined)
+  const late = tr.expired(1001 + TASK_MAX_MS)
+  expect(late?.id).toBe('a1b2c3d4e5f60718')
+  expect(late?.answer).toBe('Started agents.')
+  expect(tr.pending).toBe(undefined)
+})
+
+test('a collapsed paste without the marker: the id the app recorded before typing opens the task', async () => {
+  const files = new Map<string, string>([['/d/tasks/s-1.json', JSON.stringify({ id: 'feed000011112222', at: 100 })]])
+  const host: Host = {
+    run: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    stat: async () => ({ size: 0, mtimeMs: 0 }),
+    read: async path => {
+      if (!files.has(path)) throw new Error('missing')
+      return files.get(path)!
+    },
+    write: async (path, text) => {
+      files.set(path, text)
+    },
+  }
+  const typed = await typedTaskId(host, '/d', 's-1', 200)
+  expect(typed).toBe('feed000011112222')
+  expect(files.get('/d/tasks/s-1.json')).toBe('')
+  expect(await typedTaskId(host, '/d', 's-1', 300)).toBe(undefined)
+  files.set('/d/tasks/s-1.json', JSON.stringify({ id: 'old0', at: 0 }))
+  expect(await typedTaskId(host, '/d', 's-1', 3600 * 1000)).toBe(undefined)
+  const tr = new ReportTracker()
+  tr.prompt('[Pasted text #1 +40 lines]', 1, typed)
+  expect(tr.pending?.id).toBe('feed000011112222')
 })

@@ -1165,19 +1165,42 @@ function unfinishedTabs() {
   return tabs;
 }
 /** Types the prompt into a running claude's input box and submits it. */
-function typePrompt(id, text) {
+/** → false when nothing was typed (no tab, or the project is being handed off). taskId (v3.35): the dispatched task's id
+ *  is written to ~/.claude/agent-office/tasks/<session>.json first, so the plugin knows it even without the marker. */
+function typePrompt(id, text, { taskId = '' } = {}) {
   const t = terms.get(id);
-  if (!t || handoffLocked(id)) return;
+  if (!t || handoffLocked(id)) return false;
+  if (taskId) {
+    const p = P.findProject(state, id);
+    const sid = p ? validSid(readJson(Z.claudePidFile(A.accountOf(state, p).configDir, app.getPath('home'), t.pid))?.sessionId) : null;
+    const dir = path.join(app.getPath('home'), '.claude', 'agent-office', 'tasks');
+    if (sid) try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, `${sid}.json`), JSON.stringify({ id: taskId, at: Date.now() }), { mode: 0o600 }); } catch (e) { console.error('task id:', e.message); }
+  }
   t.write(R.typedPrompt(text));
   setTimeout(() => { if (terms.get(id) === t) t.write('\r'); }, ENTER_DELAY_MS);
   const a = activity.get(id);
   if (a) { a.at = Date.now(); a.draft = false; }
+  return true;
 }
 // --- device link (v3.28, src/link-host.js): remote commands go to the project's main tab, only when it is idle
 let linkHost = null;
 
 // --- v3.35 one boss (src/office-mcp.js): office_machines / office_dispatch / office_reports for the boss tab
 let officeSock = null;
+let officeScript = '';   // the server script written to userData (never run from app.asar)
+/** At startup, before any tab: writes the script, listens and waits; on failure no tab gets the server (a notice says so). */
+async function startOffice() {
+  const ud = app.getPath('userData');
+  try {
+    officeScript = OM.writeServerScript(path.join(ud, 'office'));
+    const sock = OM.createOfficeSocket({ socketFile: OM.socketPath(ud, { salt: OM.socketSalt(ud) }), handle: officeTool, ownDir: ud });
+    if (!(await sock.ready)) { sock.close(); throw new Error('cannot listen'); }
+    officeSock = sock;
+  } catch (e) {
+    console.error('office socket:', e.message);
+    notify(T('main.officeUnavailable'), String(e.message || e).slice(0, 120), null);
+  }
+}
 const dispatchFile = () => path.join(app.getPath('userData'), 'link', 'dispatches.json');
 let dispatches = null;   // id → { id, tab, machine, project, pub, at, status, reason?, report? } (newest 50, 0600)
 const loadDispatches = () => { if (!dispatches) { const o = readJson(dispatchFile()); dispatches = new Map(o && typeof o === 'object' ? Object.entries(o) : []); } return dispatches; };
@@ -1189,12 +1212,9 @@ function saveDispatches() {
 const officeName = (s) => LC.cleanLine(s, 64);
 const selfName = () => officeName(linkHost?.link()?.name || require('os').hostname().replace(/\.local$/, ''));
 function officeServerFor(id, project) {
-  if (id !== project.id || !P.managerOf(state, project)) return null;
-  if (!officeSock) {
-    try { officeSock = OM.createOfficeSocket({ socketFile: OM.socketPath(app.getPath('userData')), handle: officeTool }); } catch (e) { console.error('office socket:', e.message); return null; }
-  }
-  const token = officeSock.add(id);
-  return { [OM.SERVER_NAME]: OM.serverConfig({ socket: officeSock.socketFile, token, script: path.join(__dirname, 'src', 'office-mcp.js') }) };
+  if (id !== project.id || !P.managerOf(state, project) || !officeSock || !officeScript) return null;   // not listening: no server
+  const token = officeSock.add(id);   // a new token per tab start; removed (revoked) with the tab's MCP file at exit
+  return { [OM.SERVER_NAME]: OM.serverConfig({ socket: officeSock.socketFile, token, script: officeScript }) };
 }
 const byName = (list, key) => { const k = String(key || '').trim().toLowerCase(); return list.find((x) => x.id === key) || list.find((x) => String(x.name).toLowerCase() === k); };
 function officeMachines() {
@@ -1215,7 +1235,15 @@ function officeDispatch(tab, args) {
   if (isHere) {
     const p = byName(state.projects, args.project);
     if (!p || !linkHost) return { status: 'rejected', reason: 'unknown-project' };
-    r = linkHost.dispatchLocal(p.id, task, selfName());
+    if (p.id === tab) return { status: 'rejected', reason: 'self' };   // the boss's own project: it would type into itself
+    // every later status (delivered, or rejected e.g. locked/expired) lands in the record office_reports reads
+    r = linkHost.dispatchLocal(p.id, task, selfName(), (id, status, reason) => {
+      const x = loadDispatches().get(id);
+      if (!x || x.report) return;
+      x.status = status;
+      if (reason) x.reason = reason; else delete x.reason;
+      saveDispatches();
+    });
     rec = { machine: selfName(), project: officeName(p.name), pub: 'self' };
   } else {
     const dv = byName((l?.devices || []).map((x) => ({ id: x.pub, name: x.name })), machine);
@@ -1226,14 +1254,15 @@ function officeDispatch(tab, args) {
     r = linkHost.dispatchRemote(dv.id, p.id, task);
     rec = { machine: officeName(dv.name), project: officeName(p.name), pub: dv.id };
   }
-  if (r.status !== 'rejected') { loadDispatches().set(r.id, { id: r.id, tab, ...rec, at: Date.now(), status: r.status }); saveDispatches(); }
+  if (r.status !== 'rejected') { loadDispatches().set(r.id, { id: r.id, tab, ...rec, at: Date.now(), status: r.status, ...(r.reason ? { reason: r.reason } : {}) }); saveDispatches(); }
   return { id: r.id, status: r.status, ...(r.reason ? { reason: r.reason } : {}) };
 }
 function officeReports(args) {
   const out = l => l.map((x) => {
     const o = x.pub !== 'self' ? linkHost?.link()?.outgoing.find((y) => y.id === x.id) : null;
     const status = x.report ? 'reported' : o?.status || x.status;
-    return { id: x.id, machine: x.machine, project: x.project, status, ...(o?.reason ? { reason: o.reason } : {}), at: x.at, ...(x.report ? { report: x.report } : {}) };
+    const reason = x.report ? '' : o ? o.reason : x.reason;
+    return { id: x.id, machine: x.machine, project: x.project, status, ...(reason ? { reason } : {}), at: x.at, ...(x.report ? { report: x.report } : {}) };
   });
   const all = [...loadDispatches().values()].sort((x, y) => y.at - x.at);
   const list = args.id ? all.filter((x) => x.id === args.id) : all.slice(0, 10);
@@ -2638,6 +2667,7 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   checkAgyAuth();
   checkCmdAuth();
   startLink();
+  await startOffice();   // v3.35: listening (or not) before the first boss tab starts
   // in the packaged app the icon comes from the .icns; under npm start set it on the Dock by hand (Linux has no app.dock)
   if (!app.isPackaged) try { app.dock?.setIcon(path.join(__dirname, 'build', 'icon.png')); } catch {}
   return createWindow();

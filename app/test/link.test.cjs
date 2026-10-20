@@ -850,7 +850,33 @@ test('v3.35: a report made while apart is persisted and resent after reconnect (
   const sent = conn.out.filter((m) => m.t === 'cmd-report');
   assert.deepEqual(sent, [{ t: 'cmd-report', id: 't1', ...REPORT }]);
   b2.handle(conn, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
-  assert.equal(conn.out.filter((m) => m.t === 'cmd-report').length, 1);   // sent once
+  assert.equal(conn.out.filter((m) => m.t === 'cmd-report').length, 1);   // once per connection
+  // no ack yet: a new connection resends it (also after a restart), until the dispatcher acks
+  const conn2 = fakeConn();
+  b2.conns.set(pubA, conn2);
+  b2.handle(conn2, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
+  assert.equal(conn2.out.filter((m) => m.t === 'cmd-report').length, 1);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).t1.sent, false);
+  b2.handle(conn2, { pub: pubB }, { t: 'cmd-report-ack', id: 't1' });   // another device's ack does nothing
+  assert.equal(b2.reportsOut.get('t1').sent, false);
+  b2.handle(conn2, { pub: pubA }, { t: 'cmd-report-ack', id: 't1' });
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).t1.sent, true);
+  const conn3 = fakeConn();
+  b2.conns.set(pubA, conn3);
+  b2.handle(conn3, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
+  assert.equal(conn3.out.filter((m) => m.t === 'cmd-report').length, 0);
+  // the dispatcher's side: every cmd-report is acked (a repeat too); the host drops repeats
+  const a = fakeLink(t, null);
+  const ca = fakeConn();
+  a.conns.set(pubA, ca);
+  a.handle(ca, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
+  const heard = [];
+  a.on('report', (r) => heard.push(r.id));
+  a.handle(ca, { pub: pubA }, { t: 'cmd-report', id: 't1', ...REPORT });
+  a.handle(ca, { pub: pubA }, { t: 'cmd-report', id: 't1', ...REPORT });
+  assert.deepEqual(ca.out.filter((m) => m.t === 'cmd-report-ack'), [{ t: 'cmd-report-ack', id: 't1' }, { t: 'cmd-report-ack', id: 't1' }]);
+  assert.deepEqual(heard, ['t1', 't1']);
+  assert.deepEqual(C.validateMessage({ t: 'cmd-report-ack', id: 't1' }), { t: 'cmd-report-ack', id: 't1' });
 });
 
 test('v3.35: a removed device\'s reports are dropped; a v1 peer gets no report fields', async (t) => {
@@ -890,16 +916,17 @@ test('v3.35 host: local dispatch typed as a marked task, report file handed over
   const typed = [];
   const got = [];
   let login = 'in';
+  let lockType = false;
   const host = setupLink({
     app: { getPath: () => tmp, getVersion: () => '0.14.0' },
     safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'keychain', encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() },
     ipcMain: { handle: () => {} }, send: () => {}, notify: () => {}, T: (k) => k,
-    projects: () => [{ id: 'p1', name: 'shop', engine: 'claude' }, { id: 'p2', name: 'web', engine: 'agy' }], tabState: () => 'ready', type: (id, text) => typed.push([id, text]),
+    projects: () => [{ id: 'p1', name: 'shop', engine: 'claude' }, { id: 'p2', name: 'web', engine: 'agy' }], tabState: () => 'ready', type: (id, text, o) => (lockType ? false : typed.push([id, text, o])),
     loginOf: () => login, reportsDir, onReport: (r) => got.push(r),
   });
   t.after(() => host.destroy());
   const r = host.dispatchLocal('p1', 'run the tests', 'Studio');
-  assert.equal(r.status, 'queued');
+  assert.equal(r.status, 'delivered');   // the latest status at return (queued, then typed at once)
   assert.match(typed[0][1], new RegExp(`^\\[Agent Office: remote task #${r.id} from "Studio"\\] run the tests$`));
   assert.deepEqual(host.dispatchLocal('p2', 'x', 'Studio').reason, 'engine');
   assert.deepEqual(host.dispatchLocal('nope', 'x', 'Studio').reason, 'unknown-project');
@@ -912,4 +939,19 @@ test('v3.35 host: local dispatch typed as a marked task, report file handed over
   assert.equal(got[0].report.summary, 'half done');
   assert.equal(fs.existsSync(path.join(reportsDir, `${r.id}.json`)), false);
   assert.equal(host.dispatchRemote('cd'.repeat(32), 'p1', 'x').reason, 'unknown-machine');
+  // every status reaches the caller's record (queued → delivered), and a handoff-locked tab is 'locked', not delivered
+  login = 'in';
+  const seen = [];
+  const r2 = host.dispatchLocal('p1', 'again', 'Studio', (id, status, reason) => seen.push([id, status, reason]));
+  assert.deepEqual(seen.map((x) => x[1]), ['queued', 'delivered']);
+  assert.equal(r2.status, 'delivered');
+  assert.equal(typed.at(-1)[2].taskId, r2.id);
+  lockType = true;
+  const seen3 = [];
+  const r3 = host.dispatchLocal('p1', 'locked one', 'Studio', (id, status, reason) => seen3.push([status, reason]));
+  assert.deepEqual(seen3, [['queued', undefined], ['rejected', 'locked']]);
+  assert.deepEqual([r3.status, r3.reason], ['rejected', 'locked']);
+  fs.writeFileSync(path.join(reportsDir, `${r3.id}.json`), JSON.stringify(REPORT));
+  host.scanReports();
+  assert.equal(got.length, 1);   // no report is taken for a task that was never typed
 });

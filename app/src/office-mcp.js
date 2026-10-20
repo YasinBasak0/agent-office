@@ -24,7 +24,7 @@ const TOOLS = [
   },
   {
     name: 'office_dispatch',
-    description: 'Gives a task to the boss of a project on this machine or on a paired device. The task is typed into that project as a marked prompt; when its turn is done (and its agents finished) a report comes back: you are told "report ready" and read it with office_reports. Returns { id, status } or a refusal reason (offline, logged-out, not-allowed, engine, queue-full, unknown-machine, unknown-project, no-report, too-large).',
+    description: 'Gives a task to the boss of a project on this machine or on a paired device. The task is typed into that project as a marked prompt; when its turn is done (and its agents finished) a report comes back: you are told "report ready" and read it with office_reports. Returns { id, status } or a refusal reason (offline, logged-out, not-allowed, engine, queue-full, unknown-machine, unknown-project, no-report, too-large, self: the boss own project, locked: being handed off).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -46,15 +46,40 @@ const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 const fullHash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 const shortHash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 12);
-/** The socket the app listens on: userData/link/office.sock when its path fits, else a short tmp path; a pipe on Windows. */
-function socketPath(userData, { platform = process.platform, tmpdir = os.tmpdir() } = {}) {
-  if (platform === 'win32') return `\\\\.\\pipe\\agent-office-${shortHash(userData)}`;
+const SALT_RE = /^[0-9a-f]{12}$/;
+/** A random name part kept in userData/link/office-sock.salt (0600), so the socket's tmp folder and the Windows pipe
+ *  name are not predictable from the user's paths. A salt that cannot be kept is random for this run only. */
+function socketSalt(userData) {
+  const f = path.join(userData, 'link', 'office-sock.salt');
+  try { const v = fs.readFileSync(f, 'utf8').trim(); if (SALT_RE.test(v)) return v; } catch { /* first run */ }
+  const salt = crypto.randomBytes(6).toString('hex');
+  try { fs.mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 }); fs.writeFileSync(f, salt, { mode: 0o600 }); } catch { /* this run only */ }
+  return salt;
+}
+/** The socket the app listens on: userData/link/office.sock when its path fits, else <tmp>/ao-<uid>-<salt>/o.sock; a
+ *  pipe on Windows (agent-office-<hash>-<salt>). */
+function socketPath(userData, { platform = process.platform, tmpdir = os.tmpdir(), salt = shortHash(userData), uid = process.getuid?.() ?? 0 } = {}) {
+  if (platform === 'win32') return `\\\\.\\pipe\\agent-office-${shortHash(userData)}-${salt}`;
   const fits = (p) => Buffer.byteLength(p, 'utf8') <= SOCKET_MAX;
-  const candidates = [path.join(userData, 'link', 'office.sock'), path.join(tmpdir, `ao-${shortHash(userData)}`, 'o.sock'), path.join('/tmp', `ao-${shortHash(userData)}`, 'o.sock')];
+  const short = `ao-${uid}-${salt}`;
+  const candidates = [path.join(userData, 'link', 'office.sock'), path.join(tmpdir, short, 'o.sock'), path.join('/tmp', short, 'o.sock')];
   return candidates.find(fits) || candidates[2];
 }
+/**
+ * The socket's folder: created 0700; it must be a plain folder (no link) owned by this user with mode 0700, else
+ * refused (throws). `fix`: a folder of the app's own (under userData) is set to 0700 instead of refused for its mode.
+ */
+function secureDir(dir, { fix = false, uid = process.getuid?.() } = {}) {
+  fs.mkdirSync(path.dirname(dir), { recursive: true, mode: 0o700 });
+  try { fs.mkdirSync(dir, { mode: 0o700 }); } catch (e) { if (/** @type {any} */ (e).code !== 'EEXIST') throw e; }
+  let st = fs.lstatSync(dir);
+  if (!st.isDirectory()) throw new Error('office socket folder is not a plain folder');
+  if (uid !== undefined && st.uid !== uid) throw new Error('office socket folder belongs to another user');
+  if ((st.mode & 0o777) !== 0o700 && fix) { fs.chmodSync(dir, 0o700); st = fs.lstatSync(dir); }
+  if ((st.mode & 0o777) !== 0o700) throw new Error('office socket folder is not private (0700)');
+}
 
-/** The tab's --mcp-config entry. execPath: Electron (ELECTRON_RUN_AS_NODE) or node; script: this file. */
+/** The tab's --mcp-config entry. execPath: Electron (ELECTRON_RUN_AS_NODE) or node; script: the written server script. */
 const serverConfig = ({ socket, token, execPath = process.execPath, script = __filename }) => ({
   type: 'stdio', command: execPath, args: [script],
   env: { ELECTRON_RUN_AS_NODE: '1', AGENT_OFFICE_SOCKET: socket, AGENT_OFFICE_TOKEN: token },
@@ -65,14 +90,15 @@ const serverConfig = ({ socket, token, execPath = process.execPath, script = __f
 /**
  * Listens on `socketFile` (0600, its folder 0700). Each line { token, tool, args } is answered with one line
  * { ok: true, result } or { ok: false, error }. handle(tab, tool, args) may return a promise.
- * @param {{ socketFile: string, handle: (tab: string, tool: string, args: any) => any }} o
+ * Throws when its folder is not private (secureDir); `ready` resolves false when listening failed.
+ * @param {{ socketFile: string, handle: (tab: string, tool: string, args: any) => any, ownDir?: string }} o
  */
-function createOfficeSocket({ socketFile, handle }) {
+function createOfficeSocket({ socketFile, handle, ownDir = '' }) {
   const tokens = new Map();   // sha256(token) → tab
   const isPipe = socketFile.startsWith('\\\\.\\pipe\\');
   if (!isPipe) {
-    fs.mkdirSync(path.dirname(socketFile), { recursive: true, mode: 0o700 });
-    try { fs.chmodSync(path.dirname(socketFile), 0o700); } catch { /* not ours to change */ }
+    const dir = path.dirname(socketFile);
+    secureDir(dir, { fix: Boolean(ownDir) && dir.startsWith(ownDir + path.sep) });   // throws when not private
     fs.rmSync(socketFile, { force: true });
   }
   const server = net.createServer((conn) => {
@@ -180,6 +206,35 @@ function runStdio({ input = process.stdin, output = process.stdout, env = proces
   });
 }
 
-module.exports = { SERVER_NAME, TOOLS, TASK_MAX, SOCKET_MAX, socketPath, serverConfig, createOfficeSocket, runStdio };
+/**
+ * The stdio server as one self-contained script (no require of app files: only Node's net), written to userData and
+ * run from there, never from inside app.asar (like the status line script, usage.js).
+ */
+const serverScript = () => [
+  "// Agent Office: the agent-office MCP server of a boss tab (contract v3.35). Written by the app; do not edit.",
+  "'use strict';",
+  "const net = require('net');",
+  `const SERVER_NAME = ${JSON.stringify(SERVER_NAME)};`,
+  `const TASK_MAX = ${TASK_MAX};`,
+  `const CALL_MS = ${CALL_MS};`,
+  `const TOOLS = ${JSON.stringify(TOOLS)};`,
+  'const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));',
+  callApp.toString(),
+  runStdio.toString(),
+  'runStdio().then(() => setTimeout(() => process.exit(0), 200));',
+  '',
+].join('\n');
+/** Writes the script to <dir>/office-mcp.js (0600, only when changed). → its path. Throws when it cannot. */
+function writeServerScript(dir) {
+  const f = path.join(dir, 'office-mcp.js');
+  const text = serverScript();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  let same = false;
+  try { same = fs.readFileSync(f, 'utf8') === text; } catch { /* not there yet */ }
+  if (!same) { fs.writeFileSync(`${f}.tmp`, text, { mode: 0o600 }); fs.renameSync(`${f}.tmp`, f); }
+  return f;
+}
+
+module.exports = { SERVER_NAME, TOOLS, TASK_MAX, SOCKET_MAX, socketPath, socketSalt, secureDir, serverConfig, createOfficeSocket, runStdio, serverScript, writeServerScript };
 
 if (require.main === module) runStdio().then(() => setTimeout(() => process.exit(0), 200));
