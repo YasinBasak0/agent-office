@@ -24,6 +24,7 @@ const PD = require('./src/project-data.js');
 const FB = require('./src/fallback.js');
 const EN = require('./src/engine.js');
 const AW = require('./src/agy-watch.js');
+const CS = require('./src/cmd-spool.js');
 const AG = require('./src/agy-auth.js');
 const CA = require('./src/cmd-auth.js');
 const LH = require('./src/link-host.js');
@@ -1056,25 +1057,49 @@ function agySessions(now = Date.now()) {
       w.cursor = cmd ? AW.readTranscript(file, w.cursor, AW.CMD_PROMPT_RE) : AW.readTranscript(file, w.cursor);
       w.watch.transcript(w.cursor, now);
     }
+    const sp = cmdSpool.get(id);
+    if (sp) { // the tab's Command Code mod spool (v3.37): workers, the dialog's tool, tokens
+      const got = CS.readSpool(sp.file, sp.cursor);
+      sp.cursor = got.cursor;
+      if (got.events.length) w.watch.spool(got.events, now);
+    }
     w.watch.tick(now);
     out.push(w.watch.session(r.project.name, w.key, now));
   }
   return out;
 }
 
-// A tab of a Command Code project (contract v3.25): `commandcode` from the same login shell, with none of Claude Code's
-// setup nor of the office: no plugin, mod, status line, memory, MCP or office directory file, no AGENT_OFFICE_* (the
-// launch line drops what rc files set), and an env from an allowlist (engine.js cmdEnv). resume: --continue, only for
-// a tab that continues (main tab, worktree tab) and whose folder has a session (hasCmdHistory); prompt only then.
-// The app watches it one way like agy (src/agy-watch.js, engine 'commandcode').
-function startCommandCode(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+// A tab of a Command Code project (contract v3.25, v3.37): `commandcode` from the same login shell, with none of Claude
+// Code's setup nor of the office: no plugin, status line, memory, MCP or office directory file, no AGENT_OFFICE_* (the
+// launch line drops what rc files set), and an env from an allowlist (engine.js cmdEnv). The documented items of
+// v3.37 only: `--config compactMode=fast` when the project's context cap is set, `--permission-mode` when the project
+// has one, MAX_MCP_OUTPUT_TOKENS from the project's own Savings level, and the app's static mod (src/cmd-mod) with
+// the tab's spool folder, the manager switch and the Savings step numbers. When the mod file is missing, or a start
+// with it ends with an error within RESUME_GRACE_MS, the tab starts again without it (cmdNoMod) and is only watched.
+// resume: --continue, only for a tab that continues (main tab, worktree tab) and whose folder has a session
+// (hasCmdHistory); prompt only then. The app watches it one way like agy (src/agy-watch.js, engine 'commandcode').
+const cmdNoMod = new Set(); // tabs whose mod failed this launch: started without --mod
+const cmdSpool = new Map(); // tab → { file, cursor } of its mod spool
+function startCommandCode(id, { project, tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
   removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
   const { cols, rows } = sizes.get(id) || lastSize;
   const isResume = resume && (!tab || Boolean(tab.worktree)) && hasCmdHistory(cwd);
-  const args = EN.cmdArgs({ resume: isResume, prompt });
+  const saving = A.SAVINGS[P.savingsOf(project)] || null;
+  const modPath = CS.cmdModPath(__dirname);
+  const spoolDir = CS.spoolDirOf(app.getPath('userData'), id);
+  let withMod = !cmdNoMod.has(id) && isFile(modPath);
+  if (withMod) {
+    try {
+      fs.rmSync(spoolDir, { recursive: true, force: true });
+      fs.mkdirSync(spoolDir, { recursive: true, mode: 0o700 });
+    } catch { withMod = false; }
+  }
+  const mod = withMod ? CS.cmdModArgs({ modPath, spoolDir, manager: P.managerOf(state, project), saving }) : [];
+  const args = EN.cmdArgs({ resume: isResume, prompt, compact: Boolean(P.contextCapOf(project)), permissionMode: project?.permissionMode ?? null, mod });
   const startedAt = Date.now();
-  // an allowlist of the user's env (engine.js cmdEnv): no Claude, Anthropic, office or MCP variable
-  const env = EN.cmdEnv(process.env);
+  // an allowlist of the user's env (engine.js cmdEnv): no Claude, Anthropic, office or MCP variable of the user's;
+  // MAX_MCP_OUTPUT_TOKENS only from the project's own Savings level (v3.37)
+  const env = EN.cmdEnv(process.env, { mcpOutput: saving ? saving.mcpOutput : null });
   let t;
   try {
     const win32 = IS_WIN ? windowsCommandCode(args, env) : null;
@@ -1095,6 +1120,8 @@ function startCommandCode(id, { tab, dir: cwd }, { resume = false, prompt = '' }
   lastSid.delete(id);
   retireAgy(id);
   agyWatch.set(id, { watch: AW.createAgyWatch(startedAt, { engine: 'commandcode', label: 'Command Code' }), cursor: null, key: `cmd-${id.replace(/[^\w-]/g, '_')}-${++agySeq}` });
+  if (withMod) cmdSpool.set(id, { file: path.join(spoolDir, CS.SPOOL_FILE), cursor: null });
+  else cmdSpool.delete(id);
   t.onData((d) => {
     if (terms.get(id) !== t) return;
     const a = activity.get(id);
@@ -1108,6 +1135,9 @@ function startCommandCode(id, { tab, dir: cwd }, { resume = false, prompt = '' }
     terms.delete(id);
     setMarks(R.clearInterrupted(marks(), [id]));
     removeMcpFile(id);
+    cmdSpool.delete(id);
+    // the mod did not load (or broke the start): the same start again without it, only watched (v3.37)
+    if (withMod && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) { cmdNoMod.add(id); return startPty(id, { resume, prompt }); }
     // no session to continue: start fresh without showing the exit to the user
     if (isResume && exitCode !== 0 && Date.now() - startedAt < RESUME_GRACE_MS) return startPty(id);
     activity.delete(id);
