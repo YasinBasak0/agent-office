@@ -15,7 +15,7 @@ const QUEUE_TTL_MS = 30 * 60 * 1000;    // a command that waited this long is dr
  * @param {{ app: any, safeStorage: any, ipcMain: any, send: (ch: string, ...a: any[]) => void,
  *   notify: (title: string, body: string) => void, T: (k: string, v?: any) => string,
  *   projects: () => { id: string, name: string, engine: string }[],
- *   tabState: (projectId: string) => 'ready' | 'busy' | 'gone', type: (projectId: string, text: string) => void,
+ *   tabState: (projectId: string) => 'ready' | 'busy' | 'starting' | 'gone', type: (projectId: string, text: string) => void,
  *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
  *     confirmPush: (project: string, url: string) => Promise<boolean>, confirmKeep: (project: string, device: string) => Promise<boolean>,
  *     target: (dir: string) => { root: string, memoryDir: string, factsFile: string, accountId?: string },
@@ -64,7 +64,7 @@ function setupLink(d) {
     try {
       const keys = loadKeys();
       const saved = readJson(devicesFile) || {};
-      link = new C_Link({ keyPair: { publicKey: keys.publicKey, secretKey: keys.secretKey }, name: saved.name || os.hostname().replace(/\.local$/, ''), devices: saved.devices, secrets: keys.secrets, resultsFile });
+      link = new C_Link({ keyPair: { publicKey: keys.publicKey, secretKey: keys.secretKey }, name: saved.name || os.hostname().replace(/\.local$/, ''), devices: saved.devices, secrets: keys.secrets, resultsFile, app: typeof d.app.getVersion === 'function' ? d.app.getVersion() : '' });
       link.on('persist', save);
       if (keys.fresh) link.persist();
       link.on('change', push);
@@ -93,7 +93,7 @@ function setupLink(d) {
     if (!defaults.has(id)) { const h = link?.handoffsIn.get(id); defaults.set(id, h ? H.defaultTarget(h.offer) || '' : ''); }
     return defaults.get(id);
   }
-  const view = () => ({ ...(link ? { ...withTargets(link.view()), error: null } : { name: os.hostname(), id: '', pairing: null, devices: [], remotes: [], outgoing: [], handoffs: { out: [], in: [] }, error: error || 'off' }), owners: ownersView() });
+  const view = () => ({ ...(link ? { ...withTargets(link.view()), error: null } : { name: os.hostname(), id: '', pairing: null, devices: [], remotes: [], outgoing: [], handoffs: { out: [], in: [] }, self: { app: '', res: null, catalog: [] }, error: error || 'off' }), owners: ownersView() });
   let pushTimer = null;
   function push() {
     if (pushTimer) return;
@@ -297,6 +297,7 @@ function setupLink(d) {
         if (now - c.at > QUEUE_TTL_MS) { q.shift(); c.reply('rejected', 'expired'); continue; }
         const s = d.tabState(project);
         if (s === 'gone') { q.shift(); c.reply('rejected', 'not-running'); continue; }
+        // 'busy' and 'starting' (no session id or no first prompt yet: the trust dialog may be up, v3.31) wait
         if (s !== 'ready') break;
         q.shift();
         d.type(project, C.markedCommand(c.device.name, c.text));
@@ -323,6 +324,8 @@ function setupLink(d) {
   ipc('link:setAllow', (l, id, on) => l.setAllow(String(id), on === true));
   ipc('link:remove', (l, id) => l.remove(String(id)));
   ipc('link:setAllowHandoff', (l, id, on) => l.setAllowHandoff(String(id), on === true));
+  ipc('link:setAllowManage', (l, id, on) => l.setAllowManage(String(id), on === true));       // v3.31
+  ipc('link:setAllowAccounts', (l, id, on) => l.setAllowAccounts(String(id), on === true));   // v3.31
   ipc('link:handoffAnswer', (l, id, accept) => answerHandoff(l, String(id), accept === true));
   ipc('link:handoffAsk', (_l, folder) => askAgain(String(folder)));
   ipc('link:handoffKeep', (_l, folder) => keepHere(String(folder)));
@@ -333,6 +336,11 @@ function setupLink(d) {
 
   return {
     publish(projects, office, attention) { if (link) link.publish(C.snapshotOf(projects, office, attention)); },
+    /** v3.32: this machine's resources (C.resOf) and project catalog; the link sends them by capability and opt-in. */
+    publishMachine(res, catalog) { if (link) { link.publishRes(res); link.publishCatalog(catalog); } },
+    pump,
+    /** The Link (tests; null while off). */
+    link: () => link,
     /** Paired devices a project can be handed to (online ones first). */
     devices() { const l = start(); return l ? l.devices.map((x) => ({ id: x.pub, name: x.name, online: l.conns.has(x.pub) })) : []; },
     handOff, unknownFor, askAgain, keepHere,

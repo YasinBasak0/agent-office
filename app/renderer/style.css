@@ -958,3 +958,31 @@ label.sb-langrow { cursor: pointer; }
 .sb-rproj.st-approval .sb-name { color: #e5a84d; }
 .sb-note.cmd-rejected { color: #e5484d; }
 .sb-note.cmd-delivered { color: #3fb950; }
+
+/* Machines panel (v3.32, machines.js) */
+.machines-panel .mc-list { display: flex; flex-direction: column; gap: 10px; }
+.mc-card { border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); padding: 6px 8px; }
+.mc-card.self { border-color: var(--accent); }
+.mc-head { display: flex; align-items: center; gap: 6px; font-weight: bold; }
+.mc-card .mc-online { background: var(--status-text); opacity: .35; }
+.mc-card.online .mc-online { background: #3fb950; opacity: 1; }
+.mc-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-sub { font-size: 10px; opacity: .65; font-weight: normal; }
+.mc-amber { color: #f2c14e; opacity: 1; }
+.mc-note { font-size: 11px; opacity: .75; margin-top: 4px; }
+.mc-note.warn { color: #f2c14e; opacity: 1; }
+.mc-stats { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.mc-row { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 6px; font-size: 11px; }
+.mc-row.mc-sub { display: block; }
+.mc-bar { min-width: 40px; }
+.mc-num { text-align: right; }
+.mc-projects { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.mc-proj { padding: 2px 0; border-top: 1px dashed color-mix(in srgb, var(--accent) 20%, transparent); }
+.mc-proj-top { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.mc-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--status-text); opacity: .35; }
+.mc-proj.st-running .mc-dot { background: #3fb950; opacity: 1; }
+.mc-proj.st-asleep .mc-dot { background: #8b949e; opacity: .8; }
+.mc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; }
+.mc-move { opacity: .7; }
+.sb-machines { margin: 4px 6px; }

@@ -1,9 +1,14 @@
-// Device link (contract v3.28): the pure parts. Pairing codes, topics, message schema, command sanitizing, rate
+// Device link (contract v3.28, v3.31 capabilities, v3.32 res/catalog): the pure parts. Pairing codes, topics, message schema, command sanitizing, rate
 // limits and trust checks. No Electron, no network; src/link.js does the networking, main.js the glue.
 'use strict';
 const crypto = require('crypto');
 
-const PROTOCOL = 1;
+// v3.31: 2 = hello carries the app version and capabilities; a v1 peer gets no message type it does not know
+const PROTOCOL = 2;
+// what a peer may say it understands (hello.caps); unknown names are dropped
+const CAPS = ['res', 'catalog', 'manage', 'accounts', 'report'];
+// what this build sends and understands (v3.32: res and catalog)
+const OUR_CAPS = ['res', 'catalog'];
 // a trusted session pings every HEARTBEAT_MS; HEARTBEAT_MISSES intervals without any data from the peer close it
 // (a quit or crash may never close the stream: UDX alone took ~17 s to notice)
 const HEARTBEAT_MS = 5000;
@@ -161,6 +166,76 @@ function cleanSnapshot(s) {
   return { projects, workers, delivered: isInt(s.delivered, 999999) ? s.delivered : 0 };
 }
 
+// --- v3.32 machine resources and the project catalog (display only)
+
+const PLATFORMS = ['darwin', 'linux', 'win32'];
+const PROJECT_STATES = ['running', 'asleep', 'stopped'];
+const ENGINES = ['claude', 'agy', 'commandcode'];
+const isNum = (v, max) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max;
+
+/** A received `res` reduced to the known fields; null when malformed. */
+function cleanRes(r) {
+  if (!r || typeof r !== 'object' || !r.mem || typeof r.mem !== 'object') return null;
+  if (!isInt(r.at) || !isInt(r.mem.total) || !isInt(r.mem.free) || r.mem.free > r.mem.total) return null;
+  if (!isNum(r.load1, 10000) || !isInt(r.cpus, 4096) || r.cpus < 1) return null;
+  return {
+    at: r.at, mem: { total: r.mem.total, free: r.mem.free }, load1: Math.round(r.load1 * 100) / 100, cpus: r.cpus,
+    tabs: isInt(r.tabs, 999) ? r.tabs : 0, agents: isInt(r.agents, 999) ? r.agents : 0, sleeping: isInt(r.sleeping, 999) ? r.sleeping : 0,
+    platform: PLATFORMS.includes(r.platform) ? r.platform : 'other',
+    app: isStr(r.app, 20) && /^[0-9A-Za-z.+-]{1,20}$/.test(r.app) ? r.app : '',
+  };
+}
+
+/**
+ * A received `catalog`: the projects of a machine for display only (id, folder name, state, engine, account label).
+ * No paths, remotes, prompts or output. `shared: false` = that machine stopped sharing it with us. Null when malformed.
+ */
+function cleanCatalog(c) {
+  if (!c || typeof c !== 'object' || !Array.isArray(c.projects) || c.projects.length > 50) return null;
+  const projects = [];
+  for (const p of c.projects) {
+    if (!p || !isId(p.id) || !PROJECT_STATES.includes(p.state)) return null;
+    projects.push({ id: p.id, dirName: cleanLine(p.dirName, 80) || '?', state: p.state, engine: ENGINES.includes(p.engine) ? p.engine : 'claude', accountLabel: cleanLine(p.accountLabel, 40) });
+  }
+  return { projects, shared: c.shared !== false };
+}
+
+/**
+ * This machine's resources. `cpuTimes` (os.cpus()) is used where there is no load average (Windows): the busy share
+ * since the previous sample times the CPU count. Returns { res, sample } (sample = the times for the next call).
+ * @param {{ now: number, total: number, free: number, loadavg: number[], cpus: { times: Record<string, number> }[], platform: string, app: string,
+ *   tabs: number, agents: number, sleeping: number, prev?: { busy: number, all: number } | null }} o
+ */
+function resOf(o) {
+  const n = Math.max(1, o.cpus.length);
+  let busy = 0, all = 0;
+  for (const c of o.cpus) { const t = c.times || {}; const sum = Object.values(t).reduce((a, b) => a + (Number(b) || 0), 0); all += sum; busy += sum - (Number(t.idle) || 0); }
+  let load1 = Number(o.loadavg?.[0]) || 0;
+  if (o.platform === 'win32' || !(load1 > 0)) {
+    const db = busy - (o.prev?.busy || 0), da = all - (o.prev?.all || 0);
+    load1 = o.platform === 'win32' && o.prev && da > 0 ? (db / da) * n : load1;
+  }
+  const res = cleanRes({ at: o.now, mem: { total: Math.round(o.total), free: Math.min(Math.round(o.free), Math.round(o.total)) }, load1: Math.max(0, load1), cpus: n, tabs: o.tabs, agents: o.agents, sleeping: o.sleeping, platform: o.platform, app: o.app });
+  return { res, sample: { busy, all } };
+}
+
+/** Is `next` worth sending after `prev` (sent at prev.at)? Counts changed, memory or load moved more than 2 %, or 30 s passed. */
+function resChanged(prev, next) {
+  if (!prev) return true;
+  if (!next) return false;
+  if (next.at - prev.at >= 30000) return true;
+  if (prev.tabs !== next.tabs || prev.agents !== next.agents || prev.sleeping !== next.sleeping || prev.app !== next.app || prev.cpus !== next.cpus) return true;
+  const moved = (a, b, scale) => Math.abs(a - b) > 0.02 * scale;
+  return moved(prev.mem.free, next.mem.free, next.mem.total) || moved(prev.load1, next.load1, next.cpus);
+}
+
+/**
+ * v3.31 amendment 4: may anything be typed into a tab from outside (remote command, dispatch)? Only once its claude's
+ * session id is known AND that session has had its first prompt: before that the folder trust dialog may be showing.
+ * @param {{ sessionId?: string | null, prompted?: boolean }} o
+ */
+const typingReady = (o) => Boolean(o && typeof o.sessionId === 'string' && /^[\w-]{8,}$/.test(o.sessionId) && o.prompted === true);
+
 /**
  * Validates one decoded message from a trusted device. Unknown types, missing or oversized fields → null.
  * Pairing messages are validated separately (validatePair), before trust exists.
@@ -171,8 +246,21 @@ function validateMessage(m) {
   switch (m.t) {
     case 'ping':
       return { t: 'ping' };
-    case 'hello':
-      return isInt(m.v, 1000) && isStr(m.name, 200) ? { t: 'hello', v: m.v, name: deviceName(m.name) } : null;
+    case 'hello': {
+      if (!isInt(m.v, 1000) || !isStr(m.name, 200)) return null;
+      // v3.31 optional: app version and capabilities (a v1 peer sends neither: caps [])
+      const app = isStr(m.app, 20) && /^[0-9A-Za-z.+-]{1,20}$/.test(m.app) ? m.app : '';
+      const caps = Array.isArray(m.caps) ? [...new Set(m.caps.slice(0, 16).filter((c) => CAPS.includes(c)))] : null;
+      return { t: 'hello', v: m.v, name: deviceName(m.name), ...(app ? { app } : {}), ...(caps ? { caps } : {}) };
+    }
+    case 'res': {
+      const res = cleanRes(m.res);
+      return res ? { t: 'res', res } : null;
+    }
+    case 'catalog': {
+      const catalog = cleanCatalog(m.catalog);
+      return catalog ? { t: 'catalog', catalog } : null;
+    }
     case 'state': {
       const snap = cleanSnapshot(m.snap);
       return isInt(m.seq) && snap ? { t: 'state', seq: m.seq, snap } : null;
@@ -246,12 +334,13 @@ function encode(m) {
 
 // --- the trust list (devices.json; the secrets live apart, encrypted)
 
-/** @typedef {{ pub: string, name: string, addedAt: number, allowCommands: boolean, allowHandoff: boolean }} Device */
+/** @typedef {{ pub: string, name: string, addedAt: number, allowCommands: boolean, allowHandoff: boolean, allowManage: boolean, allowAccounts: boolean }} Device */
 function normalizeDevices(raw) {
   const out = [];
   for (const d of Array.isArray(raw) ? raw : []) {
     if (!d || !isHex(d.pub, 32) || out.some((o) => o.pub === d.pub)) continue;
-    out.push({ pub: d.pub, name: deviceName(d.name), addedAt: isInt(d.addedAt) ? d.addedAt : 0, allowCommands: d.allowCommands === true, allowHandoff: d.allowHandoff === true });
+    out.push({ pub: d.pub, name: deviceName(d.name), addedAt: isInt(d.addedAt) ? d.addedAt : 0, allowCommands: d.allowCommands === true, allowHandoff: d.allowHandoff === true,
+      allowManage: d.allowManage === true, allowAccounts: d.allowAccounts === true });   // v3.31, both OFF by default
   }
   return out;
 }
@@ -264,6 +353,10 @@ function trusted(devices, secrets, remotePub) {
 const mayCommand = (devices, secrets, remotePub) => Boolean(trusted(devices, secrets, remotePub)?.allowCommands);
 /** May this device hand us a project? Only a trusted device with "Accept handoffs" on (v3.29). */
 const mayHandoff = (devices, secrets, remotePub) => Boolean(trusted(devices, secrets, remotePub)?.allowHandoff);
+/** May this device see our project catalog (and, later, manage projects)? "Allow managing projects" on (v3.31). */
+const mayManage = (devices, secrets, remotePub) => Boolean(trusted(devices, secrets, remotePub)?.allowManage);
+/** May this device work with our accounts (later phases)? "Allow account sign-in" on (v3.31). */
+const mayAccounts = (devices, secrets, remotePub) => Boolean(trusted(devices, secrets, remotePub)?.allowAccounts);
 
 // --- what this device publishes: from the same OfficeData the office renders, nothing else
 
@@ -291,10 +384,11 @@ function snapshotOf(projects, office, attention = new Map()) {
 const logEntry = (at, device, project, text, outcome) => ({ at: new Date(at).toISOString(), device, project, firstLine: cleanLine(String(text).split(/\r?\n/)[0], 120), outcome });
 
 module.exports = {
-  PROTOCOL, HEARTBEAT_MS, HEARTBEAT_MISSES, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
+  PROTOCOL, CAPS, OUR_CAPS, HEARTBEAT_MS, HEARTBEAT_MISSES, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
   MAX_BUNDLE, MAX_PACK, CHUNK, HANDOFF_REASONS, HANDOFF_STATUS,
   makeCode, normalizeCode, pairSecrets, pairProof, proofOk, pairTopic, hex, isHex,
   cleanLine, sanitizeCommand, markedCommand, deviceName, RateLimiter,
   cleanSnapshot, validateMessage, validatePair, LineReader, encode,
-  normalizeDevices, trusted, mayCommand, mayHandoff, snapshotOf, logEntry,
+  normalizeDevices, trusted, mayCommand, mayHandoff, mayManage, mayAccounts, snapshotOf, logEntry,
+  cleanRes, cleanCatalog, resOf, resChanged, typingReady,
 };
