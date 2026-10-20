@@ -336,7 +336,7 @@ test('Command Code motoru (v3.25): engine değerini anar; cmdArgs yalnız --cont
   assert.equal('engine' in P.findProject(s, 'a'), false);
 
   const EN = require('../src/engine.js');
-  assert.deepEqual(EN.cmdArgs(), []); // a fresh start: no arguments, no mod
+  assert.deepEqual(EN.cmdArgs(), []); // a fresh start: no arguments (the mod comes only via mod, v3.37)
   assert.deepEqual(EN.cmdArgs({ resume: true }), ['--continue']);
   assert.deepEqual(EN.cmdArgs({ prompt: 'hi' }), []); // the prompt only with a resume
   // promptArg makes it one line, never starting with '-', without cmd.exe's special characters (quotes included)
@@ -454,21 +454,127 @@ test('Command Code ortamı: izin listesi; Claude, Anthropic, ofis, MCP, Savings 
   assert.equal(JSON.stringify(w).includes('secret'), false);
 });
 
-test('startCommandCode: ortam yalnız cmdEnv; sessionEnv, ptyEnv, ofis dizini, mod, eklenti yok (v3.25)', () => {
+test('startCommandCode: ortam yalnız cmdEnv (+ Savings MCP sınırı); sessionEnv, ptyEnv, ofis dizini, eklenti yok (v3.25, v3.37)', () => {
   const fs = require('node:fs'), path = require('node:path');
   const src = fs.readFileSync(path.join(__dirname, '..', 'main.js'), 'utf8');
   const start = src.indexOf('function startCommandCode(');
   assert.ok(start > 0);
   const body = src.slice(start, src.indexOf('\n}\n', start)).replace(/\/\/.*$/gm, '');
-  assert.match(body, /const env = EN\.cmdEnv\(process\.env\);/);
-  for (const banned of ['sessionEnv', 'ptyEnv', 'officeDirectoryFile', 'AGENT_OFFICE_', 'sharedConfig', 'pluginDir', 'usageStatusLine', '--mod', 'managerOf', 'savings', 'CLAUDE_', 'env.', 'env[']) {
+  assert.match(body, /const env = EN\.cmdEnv\(process\.env, \{ mcpOutput: saving \? saving\.mcpOutput : null \}\);/);
+  for (const banned of ['sessionEnv', 'ptyEnv', 'officeDirectoryFile', 'AGENT_OFFICE_', 'sharedConfig', 'pluginDir', 'usageStatusLine', 'CLAUDE_', 'env.', 'env[', 'journal', 'directory']) {
     assert.equal(body.includes(banned), false, `startCommandCode uses ${banned}`);
   }
-  // no mod is shipped or passed any more
-  assert.equal(src.includes('commandCodeMod'), false);
+  // v3.37: the app's own mod only through cmdModArgs, with a fallback without it
+  assert.match(body, /CS\.cmdModArgs\(\{ modPath, spoolDir, manager: P\.managerOf\(state, project\), saving \}\)/);
+  assert.match(body, /cmdNoMod\.add\(id\); return startPty\(id/);
   assert.equal(fs.existsSync(path.join(__dirname, '..', '..', 'plugin', 'mods', 'agent-office.ts')), false);
-  assert.equal(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8').includes('mods/'), false);
+  assert.ok(fs.existsSync(path.join(__dirname, '..', 'src', 'cmd-mod', 'agent-office.ts')));
+  assert.ok(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).build.asarUnpack.includes('src/cmd-mod/**'));
 });
+
+test('Command Code v3.37: cmdArgs bağlam sınırı, izin modu, mod; cmdEnv yalnız uygulamanın MCP sınırı', () => {
+  const EN = require('../src/engine.js');
+  const CS = require('../src/cmd-spool.js');
+  assert.deepEqual(EN.cmdArgs({ compact: true }), ['--config', 'compactMode=fast']);
+  assert.deepEqual(EN.cmdArgs({ compact: false, permissionMode: 'plan' }), ['--permission-mode', 'plan']);
+  assert.deepEqual(EN.cmdArgs({ permissionMode: 'bogus' }), []);
+  const mod = CS.cmdModArgs({ modPath: '/app/src/cmd-mod/agent-office.ts', spoolDir: '/ud/cmd-spool/t1', manager: true, saving: { stepBudget: 25, stepCap: true } });
+  assert.deepEqual(mod, ['--mod', '/app/src/cmd-mod/agent-office.ts', '--mod-option', 'ao-spool=/ud/cmd-spool/t1', '--mod-option', 'ao-manager=true',
+    '--mod-option', 'ao-step-budget=25', '--mod-option', 'ao-step-cap=true']);
+  assert.deepEqual(CS.cmdModArgs({ modPath: '/m.ts', spoolDir: '/s', manager: false, saving: null }), ['--mod', '/m.ts', '--mod-option', 'ao-spool=/s']);
+  // order: compact, permission, mod, then --continue and the prompt (positional last)
+  assert.deepEqual(EN.cmdArgs({ resume: true, prompt: 'go on', compact: true, mod: ['--mod', '/m.ts'] }), ['--config', 'compactMode=fast', '--mod', '/m.ts', '--continue', 'go on']);
+  // fallback: no mod → no --mod at all
+  assert.equal(EN.cmdArgs({ resume: true, compact: true, mod: [] }).includes('--mod'), false);
+  assert.equal(CS.cmdModPath('/A/app.asar'), '/A/app.asar.unpacked/src/cmd-mod/agent-office.ts'.replace(/\//g, require('node:path').sep));
+  assert.equal(require('node:path').basename(CS.spoolDirOf('/ud', 'p1:tab/2')), 'p1_tab_2');
+  // env: the user's own MCP vars and Claude/Anthropic/office stay out; MAX_MCP_OUTPUT_TOKENS only from the app's value
+  const base = { ...SECRET_ENV, PATH: '/bin', HOME: '/h', MAX_MCP_OUTPUT_TOKENS: '999999', MCP_TOOL_TIMEOUT: '1', MY_MCP_TOKEN: 'mcp-secret' };
+  const env = EN.cmdEnv(base, { mcpOutput: 8000, platform: 'darwin' });
+  assert.equal(env.MAX_MCP_OUTPUT_TOKENS, '8000');
+  for (const k of Object.keys(env)) if (k !== 'MAX_MCP_OUTPUT_TOKENS') assert.doesNotMatch(k, /ANTHROPIC|CLAUDE|AGENT_OFFICE|MCP/i);
+  for (const v of SECRET_VALUES) assert.equal(JSON.stringify(env).includes(v), false);
+  assert.equal('MCP_TOOL_TIMEOUT' in env || 'MY_MCP_TOKEN' in env, false);
+  assert.equal('MAX_MCP_OUTPUT_TOKENS' in EN.cmdEnv(base, { mcpOutput: null }, 'darwin'), false); // Savings off: the user's own value is still dropped
+  assert.equal('MAX_MCP_OUTPUT_TOKENS' in EN.cmdEnv(base, { mcpOutput: 1e9 }, 'darwin'), false);
+  assert.deepEqual(EN.cmdEnv(base, 'linux'), EN.cmdEnv(base, {}, 'linux')); // the v3.25 signature still works
+});
+
+test('Command Code v3.37: spool ayrıştırıcı → işçiler, onay, token', () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const CS = require('../src/cmd-spool.js');
+  const AW = require('../src/agy-watch.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-spool-'));
+  try {
+    const file = path.join(dir, CS.SPOOL_FILE);
+    const t0 = 1_800_000_000_000;
+    const L = (o) => JSON.stringify(o) + '\n';
+    fs.writeFileSync(file, L({ t: 'subagent_start', id: 'c1', type: 'explore', at: t0 }) + 'not json\n' + L({ t: 'evil', id: 'x', at: t0 })
+      + L({ t: 'subagent_progress', id: 'c1', tool: 'read', tokens: 100, at: t0 + 1 }) + L({ t: 'permission', tool: 'bash', at: t0 + 2 }) + '{"t":"turn_end"');
+    let r = CS.readSpool(file, null);
+    assert.deepEqual(r.events.map((e) => e.t), ['subagent_start', 'subagent_progress', 'permission']);
+    const w = AW.createAgyWatch(t0, { engine: 'commandcode', label: 'Command Code' });
+    w.spool(r.events, t0 + 3);
+    let s = w.session('proj', 'k', t0 + 3);
+    assert.equal(s.workers.length, 1);
+    assert.equal(s.workers[0].type, 'explore');
+    assert.equal(s.workers[0].toolCount, 1);
+    assert.equal(s.workers[0].tool, 'read');
+    assert.deepEqual(s.stats.waiting, { kind: 'permission', tool: 'bash', since: t0 + 2 });
+    assert.equal(s.stats.isBossBusy, true);
+    w.input('1', t0 + 4); // the person answers the dialog
+    fs.appendFileSync(file, ',"turn":1,"usage":{"inputTokens":300,"outputTokens":50,"evil key":5}}\n' + L({ t: 'subagent_stop', id: 'c1', type: 'explore', tokens: 400, at: t0 + 5 }));
+    r = CS.readSpool(file, r.cursor);
+    assert.deepEqual(r.events.map((e) => e.t), ['turn_end', 'subagent_stop']);
+    assert.deepEqual(r.events[0].usage, { inputTokens: 300, outputTokens: 50 });
+    w.spool(r.events, t0 + 6);
+    s = w.session('proj', 'k', t0 + 6);
+    assert.equal(s.stats.waiting, undefined);
+    assert.equal(s.workers[0].doneAt, t0 + 5);
+    assert.equal(s.stats.tokens.total, 750);
+    assert.ok(s.stats.today.log.some((l) => l.id === 'c1' && l.type === 'explore'));
+    assert.equal(w.session('proj', 'k', t0 + 120000).workers.length, 0); // a done worker leaves after a while
+    assert.deepEqual(CS.readSpool(path.join(dir, 'missing.jsonl'), null).events, []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Command Code modu (v3.37): yalnız spool\'a yazar; yönetici özeti statik; adım bütçesi', async () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'cmd-mod', 'agent-office.ts'), 'utf8');
+  // writes only: no read, no env, no other file API
+  for (const banned of ['readFile', 'readdir', 'process.env', 'existsSync', 'createReadStream', 'require(', 'fetch(']) assert.equal(src.includes(banned), false, banned);
+  const modUrl = require('node:url').pathToFileURL(path.join(__dirname, '..', 'src', 'cmd-mod', 'agent-office.ts')).href;
+  let mod;
+  try { mod = await import(modUrl); } catch (e) { if (/Unknown file extension/.test(String(e))) return; throw e; } // node without type stripping: tsc checks it
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-mod-'));
+  try {
+    const flags = { 'ao-spool': dir, 'ao-manager': 'true', 'ao-step-budget': '4', 'ao-step-cap': 'true' };
+    const h = { on: {}, prompt: [], before: null, perm: null };
+    const d = { dispose() {} };
+    mod.default({
+      addFlag: () => d, getFlag: (n) => flags[n],
+      appendSystemPrompt: (f) => { h.prompt.push(f); return d; },
+      beforeToolCall: (f) => { h.before = f; return d; },
+      onPermissionRequest: (f) => { h.perm = f; return d; },
+      on: (ev, f) => { h.on[ev] = f; return d; },
+    });
+    assert.equal(h.prompt[0]({}), mod.MANAGER_BRIEF);
+    assert.doesNotMatch(mod.MANAGER_BRIEF, /\/Users|\\\\|@|directory/i);
+    h.on.turn_start({ turnNumber: 1 });
+    const res = Array.from({ length: 9 }, () => h.before({ toolName: 'read' }));
+    assert.equal(res[2], undefined);
+    assert.match(res[3].additionalContext, /Wrap up/);
+    assert.equal(res[8].block, true);
+    assert.equal(h.perm({ toolName: 'bash', input: { cmd: 'cat secret' }, description: 'secret-desc' }), undefined);
+    h.on.subagent_start({ toolCallId: 'c9', subagentType: 'general' });
+    h.on.turn_end({ turnNumber: 1, usage: { inputTokens: 5 } });
+    const text = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8');
+    assert.equal(text.includes('secret'), false);
+    const evs = text.trim().split('\n').map((l) => CS_parse(l));
+    assert.deepEqual(evs.map((e) => e && e.t), ['cap', 'permission', 'subagent_start', 'turn_end']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+const CS_parse = (l) => require('../src/cmd-spool.js').parseSpoolLine(l);
 
 test('Command Code başlatma satırı: rc dosyasının AGENT_OFFICE_*\'ı gider; argv yalnız Command Code argümanları (v3.25)', { skip: process.platform === 'win32' }, () => {
   const EN = require('../src/engine.js');
