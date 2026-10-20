@@ -3561,3 +3561,35 @@ test('checkCmdAuth / startCmdLogin: ortam yalnız cmdEnv; auth.json okunmaz, Cla
   assert.match(src, /EN\.CMD_COMMAND, EN\.CMD\.bin, \.\.\.CA\.CMD_LOGIN_ARGS/);
   assert.match(src, /const CMD_LOGIN = 'login:cmd';/);
 });
+
+// --- v3.34 remote Claude login relay: the URL / prompt parser against Claude Code 2.1.304's strings, host and code checks
+test('login relay: parser finds the allowlisted URL and the code prompt in a stub claude auth login (v3.34)', async () => {
+  const LC = require('../src/link-core.js');
+  const path = require('path');
+  const { execFile } = require('child_process');
+  const run = (env) => new Promise((resolve) => {
+    const p = execFile(process.execPath, [path.join(__dirname, 'claude-login-stub.cjs')], { env: { ...process.env, ...env } }, (_e, stdout) => resolve(stdout));
+    setTimeout(() => p.stdin.end('\n'), 200);   // answer the prompt with nothing: the stub exits
+  });
+  const out = await run({});
+  assert.match(LC.stripAnsi(out), /Browser didn't open\? Use the url below to sign in/);
+  const got = LC.parseLoginOutput(out);
+  assert.ok(got.url.startsWith('https://claude.ai/oauth/authorize?'));
+  assert.ok(got.url.includes('redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback'));
+  assert.ok(!/[\x1b\x07\s]/.test(got.url));   // eslint-disable-line no-control-regex
+  assert.equal(got.prompt, 'Paste code here if prompted >');
+  // host rejection: the same output from another host yields no URL
+  assert.equal(LC.parseLoginOutput(await run({ STUB_HOST: 'claude.ai.evil.example' })).url, null);
+  assert.equal(LC.parseLoginOutput(await run({ STUB_HOST: 'evil.example' })).url, null);
+  const cb = 'redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback';
+  for (const h of ['claude.ai', 'platform.claude.com', 'console.anthropic.com']) assert.ok(LC.loginUrlOk(`https://${h}/oauth/authorize?${cb}`), h);
+  for (const bad of [`http://claude.ai/oauth/authorize?${cb}`, `https://claude.ai:444/x?${cb}`, `https://u:p@claude.ai/x?${cb}`, 'https://claude.ai/oauth/authorize?redirect_uri=https%3A%2F%2Fevil.example%2Fcb',
+    'https://claude.ai/oauth/authorize', `https://claude.ai.evil.example/x?${cb}`, `https://claude.ai/x?${cb} x`, 'javascript:alert(1)', null]) assert.equal(LC.loginUrlOk(bad), false, String(bad));
+  // the code: <code>#<state> from the callback page only
+  assert.ok(LC.loginCodeOk('AbCdEf0123-_.~xyz#state_123ABC'));
+  for (const bad of ['short#state123', 'AbCdEf0123456', 'AbCdEf0123456#st', 'AbCdEf0123456#state 1234', 'AbCdEf0123456#state\n1234', `${'a'.repeat(401)}#state1234`, '', null]) assert.equal(LC.loginCodeOk(bad), false, String(bad));
+  assert.equal(LC.validateMessage({ t: 'login-code', id: 'r1', code: 'nope' }), null);
+  assert.equal(LC.validateMessage({ t: 'login-result', id: 'r1', ok: false, reason: 'whatever' }), null);
+  assert.deepEqual(LC.validateMessage({ t: 'acct-view', accounts: [{ id: 'work', label: 'Work\x1b[31m', state: 'out', email: 'me@example.com', token: 'sk-ant-x', configDir: '/Users/me/.claude-work' }] }),
+    { t: 'acct-view', accounts: [{ id: 'work', label: 'Work', state: 'out', email: 'me@example.com' }], shared: true });   // labels, state, email only
+});

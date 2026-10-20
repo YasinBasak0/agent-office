@@ -792,8 +792,9 @@ const devices = mountDevices($('sidebar'), api, { onMachines: () => machines?.to
 // v3.32 Machines panel (renderer/machines.js): every machine's resources and projects, over the office like the others
 try {
   const { mountMachines } = await import('./machines.js');
-  machines = mountMachines($('machines-panel'), { api, view: () => devices.view(), anchor: $('office'), onClose: () => focusActive() });
-  devices.onView(() => machines?.render());
+  machines = mountMachines($('machines-panel'), { api, view: () => devices.view(), anchor: $('office'), onClose: () => focusActive(),
+    onLogin: (device, account) => login?.openRemote({ api, device, account, view: () => devices.view() }) });   // v3.34 login relay
+  devices.onView(() => { machines?.render(); login?.updateRemote(); });
   if (new URLSearchParams(location.search).has('machines')) setTimeout(() => machines?.show(), 300);
 } catch (e) {
   console.warn('Makineler paneli yüklenemedi:', e.message);

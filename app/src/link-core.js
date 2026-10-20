@@ -8,7 +8,7 @@ const PROTOCOL = 2;
 // what a peer may say it understands (hello.caps); unknown names are dropped
 const CAPS = ['res', 'catalog', 'manage', 'accounts', 'report'];
 // what this build sends and understands (v3.32: res and catalog)
-const OUR_CAPS = ['res', 'catalog', 'report'];   // v3.35 adds 'report'
+const OUR_CAPS = ['res', 'catalog', 'report', 'accounts'];   // v3.35 adds 'report', v3.34 'accounts' (login relay)
 // a trusted session pings every HEARTBEAT_MS; HEARTBEAT_MISSES intervals without any data from the peer close it
 // (a quit or crash may never close the stream: UDX alone took ~17 s to notice)
 const HEARTBEAT_MS = 5000;
@@ -251,6 +251,55 @@ function resChanged(prev, next) {
  */
 const typingReady = (o) => Boolean(o && typeof o.sessionId === 'string' && /^[\w-]{8,}$/.test(o.sessionId) && o.prompted === true);
 
+// --- v3.34 remote Claude login relay (cap 'accounts', opt-in allowAccounts). Credentials never cross the link:
+// only the sign-in URL (B → A), the one-time code the person pastes (A → B, memory only) and the outcome.
+const LOGIN_HOSTS = ['claude.ai', 'platform.claude.com', 'console.anthropic.com'];
+const LOGIN_REDIRECT = 'https://platform.claude.com/oauth/code/callback';
+const LOGIN_CODE_RE = /^[A-Za-z0-9._~-]{10,400}#[A-Za-z0-9._~-]{8,200}$/;
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+const LOGIN_REASONS = ['not-allowed', 'busy', 'unknown-account', 'timeout', 'cancelled', 'failed', 'bad-url', 'offline', 'not-supported'];
+const ACCOUNT_STATES = ['in', 'out', 'checking', 'error', 'unknown'];
+/** A sign-in URL Claude Code printed: https, an allowlisted host, the code-callback redirect. Checked on both sides. */
+function loginUrlOk(url) {
+  if (typeof url !== 'string' || url.length > 4000 || /[\s\0]/.test(url)) return false;
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  return u.protocol === 'https:' && LOGIN_HOSTS.includes(u.hostname) && !u.port && !u.username && !u.password
+    && u.searchParams.get('redirect_uri') === LOGIN_REDIRECT;
+}
+const loginCodeOk = (code) => typeof code === 'string' && LOGIN_CODE_RE.test(code);
+/** Terminal output → plain text (CSI, OSC and other escapes, control characters but newlines). */
+/* eslint-disable no-control-regex */
+function stripAnsi(s) {
+  return String(s ?? '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[@-Z\\-_]/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '');
+}
+/* eslint-enable no-control-regex */
+/**
+ * `claude auth login` output (cleaned or raw) → the first allowlisted sign-in URL and the code prompt line, if shown.
+ * @returns {{ url: string | null, prompt: string }}
+ */
+function parseLoginOutput(text) {
+  const plain = stripAnsi(text);
+  const url = (plain.match(/https:\/\/[^\s"'<>]+/g) || []).find(loginUrlOk) || null;
+  const line = plain.split('\n').map((l) => l.trim()).find((l) => /paste (the )?code/i.test(l)) || '';
+  return { url, prompt: cleanLine(line, 200) };
+}
+function cleanAccounts(list) {
+  if (!Array.isArray(list) || list.length > 20) return null;
+  const out = [];
+  for (const a of list) {
+    if (!a || !isId(a.id)) return null;
+    const email = isStr(a.email, 200) && /^[^\s@]+@[^\s@]+$/.test(a.email) ? a.email : '';
+    out.push({ id: a.id, label: cleanLine(a.label, 40) || a.id, state: ACCOUNT_STATES.includes(a.state) ? a.state : 'unknown', ...(email ? { email } : {}) });
+  }
+  return out;
+}
+
 /**
  * Validates one decoded message from a trusted device. Unknown types, missing or oversized fields → null.
  * Pairing messages are validated separately (validatePair), before trust exists.
@@ -288,6 +337,22 @@ function validateMessage(m) {
     }
     case 'cmd-report-ack':   // v3.35, only to a peer with cap 'report'
       return isId(m.id) ? { t: 'cmd-report-ack', id: m.id } : null;
+    // v3.34 login relay, only to/from a peer with cap 'accounts'
+    case 'acct-view': {
+      const accounts = cleanAccounts(m.accounts);
+      return accounts ? { t: 'acct-view', accounts, shared: m.shared !== false } : null;
+    }
+    case 'login-start':
+      return isId(m.id) && isId(m.account) ? { t: 'login-start', id: m.id, account: m.account } : null;
+    case 'login-url':   // the host allowlist is checked by the receiver's handler (a bad URL fails the login there)
+      return isId(m.id) && isStr(m.url, 4000) ? { t: 'login-url', id: m.id, url: m.url, prompt: cleanLine(m.prompt, 200) } : null;
+    case 'login-code':
+      return isId(m.id) && loginCodeOk(m.code) ? { t: 'login-code', id: m.id, code: m.code } : null;
+    case 'login-result':
+      return isId(m.id) && typeof m.ok === 'boolean' && (m.reason == null || LOGIN_REASONS.includes(m.reason))
+        ? { t: 'login-result', id: m.id, ok: m.ok, ...(isStr(m.email, 200) && /^[^\s@]+@[^\s@]+$/.test(m.email) ? { email: m.email } : {}), ...(m.reason ? { reason: m.reason } : {}) } : null;
+    case 'login-cancel':
+      return isId(m.id) ? { t: 'login-cancel', id: m.id } : null;
     case 'cmd-status':
       return isId(m.id) && CMD_STATUS.includes(m.status) && (m.reason == null || REASONS.includes(m.reason))
         ? { t: 'cmd-status', id: m.id, status: m.status, ...(m.reason ? { reason: m.reason } : {}) } : null;
@@ -412,4 +477,5 @@ module.exports = {
   cleanSnapshot, validateMessage, validatePair, LineReader, encode,
   normalizeDevices, trusted, mayCommand, mayHandoff, mayManage, mayAccounts, snapshotOf, logEntry,
   cleanRes, cleanCatalog, resOf, resChanged, typingReady,
+  LOGIN_HOSTS, LOGIN_REDIRECT, LOGIN_CODE_RE, LOGIN_TIMEOUT_MS, LOGIN_REASONS, loginUrlOk, loginCodeOk, stripAnsi, parseLoginOutput, cleanAccounts,
 };

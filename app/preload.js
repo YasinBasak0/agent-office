@@ -114,6 +114,11 @@ contextBridge.exposeInMainWorld('agentOffice', {
     handoffKeep: (dir) => ipcRenderer.invoke('link:handoffKeep', dir),   // outcome unknown: keep it here (confirm dialog)
     send: (id, project, text) => ipcRenderer.invoke('link:send', id, project, text),
     handOff: (projectId, deviceId) => ipcRenderer.invoke('link:handOff', projectId, deviceId),   // v3.32 Machines panel Move ▸
+    // v3.34 remote Claude login relay: no URL or code ever comes back here (the page opens from main)
+    loginStart: (id, account) => ipcRenderer.invoke('link:loginStart', id, account),   // { ok, id?, reason? }
+    loginOpen: (loginId) => ipcRenderer.invoke('link:loginOpen', loginId),
+    loginCode: (loginId, code) => ipcRenderer.invoke('link:loginCode', loginId, code), // { ok, reason? }
+    loginCancel: (loginId) => ipcRenderer.invoke('link:loginCancel', loginId),
     onChange: listen('link:changed'),
   },
   office: {

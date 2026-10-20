@@ -933,6 +933,28 @@ agentOffice.link.handOff(projectId, deviceId): Promise<boolean>   // IPC link:ha
 - **Receiving.** `cleanRes` / `cleanCatalog` keep only the fields above (strings cleaned and cut); malformed ones are dropped as invalid messages.
 - **Panel** `renderer/machines.js` (`#machines-panel`, opened by **Makineler / Machines** in the Devices section; Esc or × closes): one card per machine, this one first, then paired devices (online first): name, online dot, RAM bar (*free of total*, *(approx.)* on macOS, which counts reclaimable memory as used), load on N CPUs, tabs · agents · sleeping, version (amber when it differs from this machine's). Under each card its projects (folder name, state, engine when not Claude, account). Actions in this step only: **Move ▸ <device>** on this machine's Claude Code projects (= v3.29 handoff) and, for a remote running Claude Code project in its snapshot, the v3.28 prompt box. A remote device without `allowManage` for us shows *Projects not shared*. Dev mock: `?machines[=n]`.
 
+## Remote Claude login relay (v3.34, P2P phase 3 step D)
+
+Sign in an account that already exists on machine B from machine A's Machines panel. Only when A's hello has cap
+`accounts` (OUR_CAPS now `['res','catalog','report','accounts']`; a v1 or no-cap peer is sent none of these types) and B
+turned on "Allow account sign-in" (`allowAccounts`) for A. No account creation, assignment or layout mirror.
+
+```ts
+// B → A (cap 'accounts', allowAccounts for A): sent on hello and when it changes; off again → { accounts: [], shared: false }
+{ t: 'acct-view', accounts: [{ id, label /* ≤40 */, state: 'in'|'out'|'checking'|'error'|'unknown', email? }] /* ≤20 */ }
+{ t: 'login-start', id, account }            // A → B
+{ t: 'login-url', id, url, prompt }          // B → A: the first allowlisted URL Claude Code printed, the code prompt line (≤200)
+{ t: 'login-code', id, code }                // A → B: ^[A-Za-z0-9._~-]{10,400}#[A-Za-z0-9._~-]{8,200}$
+{ t: 'login-result', id, ok, email?, reason? }   // B → A; reason not-allowed|busy|unknown-account|timeout|cancelled|failed|bad-url|offline|not-supported
+{ t: 'login-cancel', id }                    // A → B (also sent by A when it rejects the URL)
+```
+
+- **B (src/login-relay.js, main `spawnRelayLogin`).** `claude auth login` with the account's config folder in its own `relay:<id>` pty map (amendment 8): cols 4000, `BROWSER=true`, output never sent to the renderer, no window needed. A local login of that account running → `busy` (never killed). One relay per device; 10 min timeout; a notice on B ("<device> is logging in account <label> on this machine"). Output is stripped of escapes; the first `https` URL whose host is `claude.ai`, `platform.claude.com` or `console.anthropic.com` and whose `redirect_uri` is exactly `https://platform.claude.com/oauth/code/callback` is sent with the `Paste code` line (or after 2 s without it). The code is typed once (`code\r`) and kept nowhere. On exit B runs its auth check: `login-result` ok = logged in (+ email). Connection lost, device removed or opt-in turned off → the relay is killed.
+- **accounts.log** (`userData/link/accounts.log`, 0600): `{ at, event: 'start'|'result', device, ok?, reason? }` only, never the URL, code or pty output.
+- **A.** Checks the URL again (same allowlist and redirect) on `login-url` and again right before `shell.openExternal`; a bad one fails the relay (`bad-url`) and cancels it on B. The LinkView carries `devices[].accounts` and `logins: [{ id, device, deviceName, account, status: starting|waiting|sent|ok|failed, host?, prompt?, reason?, email?, at }]` (no URL, no code). Local timeout 10 min 30 s. IPC `link:loginStart(deviceId, account)`, `link:loginOpen(loginId)`, `link:loginCode(loginId, code)`, `link:loginCancel(loginId)`.
+- **UI.** Machines → a remote card lists its accounts with state/email and "Log in" for any not logged in; the login overlay opens in remote mode: Open sign-in page, a code field and Send, status by relay state; closing it cancels the relay. Strings `machines.accounts|login|loginTitle|acctState.*`, `login.remote*`, `login.reason.*`, `main.loginRelay*` (en, tr).
+- **Credentials and tokens never cross the link.** Untested here: a real OAuth sign-in across two machines; Claude Code's strings may change (the allowlist parser fails closed, then the relay times out).
+
 ## One boss: dispatch and reports (v3.35, P2P phase 3 step B)
 
 ```ts
