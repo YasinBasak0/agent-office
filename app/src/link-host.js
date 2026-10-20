@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const C = require('./link-core.js');
+const H = require('./handoff.js');
 
 const QUEUE_MAX = 5;                    // waiting commands per project
 const QUEUE_TTL_MS = 30 * 60 * 1000;    // a command that waited this long is dropped ('expired')
@@ -14,13 +15,22 @@ const QUEUE_TTL_MS = 30 * 60 * 1000;    // a command that waited this long is dr
  * @param {{ app: any, safeStorage: any, ipcMain: any, send: (ch: string, ...a: any[]) => void,
  *   notify: (title: string, body: string) => void, T: (k: string, v?: any) => string,
  *   projects: () => { id: string, name: string, engine: string }[],
- *   tabState: (projectId: string) => 'ready' | 'busy' | 'gone', type: (projectId: string, text: string) => void }} d
+ *   tabState: (projectId: string) => 'ready' | 'busy' | 'gone', type: (projectId: string, text: string) => void,
+ *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
+ *     confirmPush: (project: string, url: string) => Promise<boolean>,
+ *     target: (dir: string) => { root: string, memoryDir: string, factsFile: string, accountId?: string },
+ *     adopt: (o: { dir: string, settings: any, sessionIds: string[], accountId?: string }) => void, pickFolder: (defaultPath: string) => Promise<string | null> } }} d
  */
 function setupLink(d) {
   const dir = path.join(d.app.getPath('userData'), 'link');
   const keysFile = path.join(dir, 'keys.bin');
   const devicesFile = path.join(dir, 'devices.json');
   const logFile = path.join(dir, 'commands.log');
+  const handoffLog = path.join(dir, 'handoff.log');
+  const ownersFile = path.join(dir, 'owners.json');
+  const targets = new Map();             // incoming handoff id → the folder chosen for it
+  const defaults = new Map();            // incoming handoff id → the folder used without asking ('' = the person picks)
+  const answered = new Set();            // incoming handoff ids already answered (a second click does nothing)
   let link = null;
   let error = null;
   const queue = new Map();               // projectId → [{ id, device, text, at, reply }]
@@ -59,6 +69,13 @@ function setupLink(d) {
       link.on('change', push);
       link.on('remote', onRemote);
       link.on('command', onCommand);
+      link.on('handoff-offer', onHandoffOffer);
+      link.on('handoff-refused', ({ device, offer, reason }) => hlog({ dir: 'in', device: device.name, project: offer.name, outcome: `refused:${reason}` }));
+      link.on('handoff-failed', ({ offer, reason }) => { targets.delete(offer.id); defaults.delete(offer.id); answered.delete(offer.id); hlog({ dir: 'in', project: offer.name, outcome: `failed:${reason}` }); });
+      link.on('handoff-data', (x) => { applyHandoff(x).catch(() => {}); });
+      link.on('handoff-late-result', onLateResult);
+      // a handoff whose outcome is still unknown keeps its project locked across restarts
+      for (const v of Object.values(readOwners())) if (v?.owner === 'unknown' && v.projectId) d.handoff?.lock(v.projectId, true);
       if (link.devices.length) link.ensureSwarm();
     } catch (e) {
       console.error('link:', e.message);
@@ -69,7 +86,12 @@ function setupLink(d) {
   }
   const C_Link = require('./link.js').Link;
 
-  const view = () => (link ? { ...link.view(), error: null } : { name: os.hostname(), id: '', pairing: null, devices: [], remotes: [], outgoing: [], error: error || 'off' });
+  const withTargets = (v) => ({ ...v, handoffs: { ...v.handoffs, in: v.handoffs.in.map((x) => ({ ...x, target: targetFor(x.id), answered: answered.has(x.id) })) } });
+  function targetFor(id) {
+    if (!defaults.has(id)) { const h = link?.handoffsIn.get(id); defaults.set(id, h ? H.defaultTarget(h.offer) || '' : ''); }
+    return defaults.get(id);
+  }
+  const view = () => ({ ...(link ? { ...withTargets(link.view()), error: null } : { name: os.hostname(), id: '', pairing: null, devices: [], remotes: [], outgoing: [], handoffs: { out: [], in: [] }, error: error || 'off' }), owners: ownersView() });
   let pushTimer = null;
   function push() {
     if (pushTimer) return;
@@ -85,6 +107,137 @@ function setupLink(d) {
 
   function log(device, project, text, outcome) {
     try { fs.mkdirSync(dir, { recursive: true }); fs.appendFileSync(logFile, `${JSON.stringify(C.logEntry(Date.now(), device, project, text, outcome))}\n`); } catch { /* the log is best effort */ }
+  }
+
+  // --- project handoff (v3.29)
+  function hlog(entry) {
+    try { fs.mkdirSync(dir, { recursive: true }); fs.appendFileSync(handoffLog, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`); } catch { /* best effort */ }
+  }
+  /** @returns {Record<string, { owner: string, ownerName: string, project: string, at: number, handoffId?: string, pub?: string, projectId?: string, wipPushed?: boolean, remoteName?: string, wip?: string }>} folder → who owns it ('self' or a device key) */
+  const readOwners = () => { const o = readJson(ownersFile); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; };
+  /** owner 'unknown': handed to the device ownerName, outcome not known yet (extra: handoffId, pub, projectId, push data). */
+  function setOwner(folder, owner, ownerName, project, extra = {}) {
+    const o = readOwners();
+    if (owner == null) delete o[folder];
+    else o[folder] = { owner, ownerName, project, at: Date.now(), ...extra };
+    try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); fs.writeFileSync(ownersFile, JSON.stringify(o, null, 2), { mode: 0o600 }); } catch { /* best effort */ }
+  }
+  const ownersView = () => Object.entries(readOwners()).filter(([, v]) => v && v.owner && v.owner !== 'self').map(([folder, v]) => ({ dir: folder, project: String(v.project || ''), deviceName: String(v.ownerName || '?'), at: Number(v.at) || 0, unknown: v.owner === 'unknown' }));
+
+  /** The receiver's result for a handoff this side had marked unknown (it applied, or not, while we were apart). */
+  function onLateResult({ device, id, ok, applied }) {
+    const hit = Object.entries(readOwners()).find(([, v]) => v?.owner === 'unknown' && v.handoffId === id && v.pub === device.pub);
+    if (!hit) return;
+    const [folder, v] = hit;
+    hlog({ dir: 'out', device: device.name, project: v.project, outcome: ok ? `late-done:${applied || ''}` : 'late-failed' });
+    if (ok) {
+      setOwner(folder, device.pub, device.name, v.project);
+      if (v.wipPushed) H.deleteRemoteWip({ top: folder, remoteName: v.remoteName, wip: v.wip });
+      if (v.projectId) d.handoff?.release(v.projectId);
+    } else {
+      setOwner(folder, null);
+      if (v.projectId) d.handoff?.lock(v.projectId, false);
+    }
+    push();
+  }
+
+  /** Hands a local project to a paired device. Resolves with the outcome; on success the project leaves this office. */
+  async function handOff(pub, projectId) {
+    const l = start();
+    const dev = l?.devices.find((x) => x.pub === pub);
+    if (!l || !dev || !d.handoff) return { ok: false, reason: 'not-allowed' };
+    const info = d.handoff.describe(projectId);
+    if (!info) return { ok: false, reason: 'unknown-project' };
+    const isGit = Boolean(H.gitInfo(info.dir));
+    const why = H.refusal({ engine: info.engine, busy: info.busy, git: isGit, subfolder: isGit && !H.isRepoRoot(info.dir), online: l.conns.has(pub) });
+    if (why) { hlog({ dir: 'out', device: dev.name, project: info.name, outcome: `refused:${why}` }); return { ok: false, reason: why }; }
+    // no prompts (typed or remote) reach the project's tabs from the snapshot until the outcome is known
+    d.handoff.lock(projectId, true);
+    /** @type {any} */ let r;
+    let snap = null;
+    let pushed = false;
+    try {
+      snap = H.snapshotWip(info.dir);
+      if (!snap) r = { ok: false, reason: 'not-git' };
+      else {
+        const code = await H.prepareCode(snap, os.tmpdir(), { confirmPush: (url) => d.handoff.confirmPush(info.name, url) });
+        if ('reason' in code) r = { ok: false, reason: code.reason };
+        else {
+          pushed = code.mode === 'remote';
+          const pack = H.packSession({ root: info.root, dir: info.dir, sessionIds: info.sessionIds, memoryDir: info.memoryDir, factsFile: info.factsFile, settings: info.settings });
+          hlog({ dir: 'out', device: dev.name, project: info.name, outcome: `offered:${code.mode}`, wip: snap.wip, bytes: pack.length + (code.bundle?.length || 0) });
+          const s = snap;
+          // just before the data goes: still idle, and nothing changed in the folder since the snapshot
+          const beforeSend = () => H.changedSince(s, info.dir) || (d.handoff?.describe(projectId)?.busy ? 'busy' : null);
+          r = await l.offerHandoff(pub, { name: info.name, dir: info.dir, git: { mode: code.mode, wip: snap.wip, base: snap.base, root: snap.root, branch: snap.branch, remote: snap.remote } }, { pack, bundle: code.bundle }, { beforeSend });
+        }
+      }
+    } catch (e) { r = { ok: false, reason: String(e.message) === 'too-large' ? 'too-large' : 'bad-data' }; }
+    hlog({ dir: 'out', device: dev.name, project: info.name, outcome: r.ok ? `done:${r.applied || ''}` : r.unknown ? `unknown:${r.reason}` : `failed:${r.reason}` });
+    if (r.ok) {
+      setOwner(info.dir, pub, dev.name, info.name);
+      if (pushed && snap) H.deleteRemoteWip(snap);
+      d.handoff.release(projectId);
+    } else if (r.unknown) {
+      // the receiver may have applied it: neither side runs it until its result comes (on the next connection)
+      setOwner(info.dir, 'unknown', dev.name, info.name, { handoffId: r.id, pub, projectId, wipPushed: pushed, remoteName: snap?.remoteName || '', wip: snap?.wip || '' });
+    } else {
+      if (pushed && snap) H.deleteRemoteWip(snap);
+      d.handoff.lock(projectId, false);
+    }
+    push();
+    return r;
+  }
+
+  function onHandoffOffer({ device, offer }) {
+    hlog({ dir: 'in', device: device.name, project: offer.name, outcome: 'offered', mode: offer.git.mode });
+    d.notify(d.T('main.handoffOffer', { device: device.name, project: offer.name }), '');
+    push();
+  }
+  /** The person's answer: on accept the folder is the sender's path when free or the same repo, else picked. */
+  async function answerHandoff(l, id, accept) {
+    const h = l.handoffsIn.get(id);
+    if (!h || h.stage !== 'asking' || answered.has(id)) return;
+    answered.add(id);
+    push();
+    if (!accept) { hlog({ dir: 'in', project: h.offer.name, outcome: 'declined' }); l.answerHandoff(id, false); return; }
+    // the sender's path is used only when it is free or the same repository; any other folder is the person's choice
+    const folder = targetFor(id) || await d.handoff?.pickFolder(h.offer.dir);
+    if (!folder || !path.isAbsolute(folder)) { l.answerHandoff(id, false, 'cancelled'); return; }
+    targets.set(id, folder);
+    l.answerHandoff(id, true);
+  }
+  async function applyHandoff({ device, offer, parts, done, alive = () => true }) {
+    const folder = targets.get(offer.id);
+    targets.delete(offer.id);
+    defaults.delete(offer.id);
+    answered.delete(offer.id);
+    let bundleFile = null;
+    try {
+      const pack = H.parsePack(parts.pack);
+      if (!folder || !pack || !d.handoff) return done({ ok: false, reason: 'bad-data' });
+      if (parts.bundle) { bundleFile = path.join(os.tmpdir(), `agent-office-handoff-${offer.id}.bundle`); fs.writeFileSync(bundleFile, parts.bundle, { mode: 0o600 }); }
+      await H.receiveCode(folder, offer.git, bundleFile);
+      const applied = H.restoreWip(folder, offer.git);
+      const target = d.handoff.target(folder);   // the account of the project at this folder if there is one
+      // the sender gave up meanwhile (it then still owns the project): leave the fetched branch, adopt nothing
+      if (!alive() || !link?.handoffsIn.has(offer.id)) {
+        hlog({ dir: 'in', device: device.name, project: offer.name, outcome: 'failed:dropped', folder });
+        return done({ ok: false, reason: 'cancelled' });
+      }
+      H.writeSession(pack, { from: offer.dir, to: folder, root: target.root, memoryDir: target.memoryDir, factsFile: target.factsFile });
+      d.handoff.adopt({ dir: folder, settings: pack.settings, sessionIds: pack.sessionIds, accountId: target.accountId });
+      setOwner(folder, 'self', '', offer.name);
+      hlog({ dir: 'in', device: device.name, project: offer.name, outcome: `done:${applied}`, folder });
+      if (applied === 'branch-only') d.notify(d.T('main.handoffBranchOnly', { project: offer.name, branch: offer.git.wip }), '');
+      done({ ok: true, applied });
+    } catch (e) {
+      hlog({ dir: 'in', device: device.name, project: offer.name, outcome: 'failed:apply-failed', error: C.cleanLine(e.message, 200) });
+      done({ ok: false, reason: 'apply-failed' });
+    } finally {
+      if (bundleFile) fs.rmSync(bundleFile, { force: true });
+      push();
+    }
   }
 
   // Claude Code projects only: their busy state is known (pid file) and their prompt takes a bracketed paste.
@@ -134,6 +287,8 @@ function setupLink(d) {
   ipc('link:rename', (l, id, name) => l.rename(String(id), String(name || '')));
   ipc('link:setAllow', (l, id, on) => l.setAllow(String(id), on === true));
   ipc('link:remove', (l, id) => l.remove(String(id)));
+  ipc('link:setAllowHandoff', (l, id, on) => l.setAllowHandoff(String(id), on === true));
+  ipc('link:handoffAnswer', (l, id, accept) => answerHandoff(l, String(id), accept === true));
   ipc('link:send', (l, id, project, text) => l.sendCommand(String(id), String(project), String(text ?? '')));
 
   // Start at launch only when something is paired: a user who never pairs never touches the DHT.
@@ -141,6 +296,9 @@ function setupLink(d) {
 
   return {
     publish(projects, office, attention) { if (link) link.publish(C.snapshotOf(projects, office, attention)); },
+    /** Paired devices a project can be handed to (online ones first). */
+    devices() { const l = start(); return l ? l.devices.map((x) => ({ id: x.pub, name: x.name, online: l.conns.has(x.pub) })) : []; },
+    handOff,
     destroy() { clearInterval(pumpTimer); return link?.destroy(); },
   };
 }

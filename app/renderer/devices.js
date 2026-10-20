@@ -19,6 +19,8 @@ function h(tag, attrs = {}, ...children) {
 const why = (r) => t(`devices.reason.${r}`);
 /** @param {Event} e */
 const val = (e) => /** @type {HTMLInputElement} */ (e.target).value;
+/** Incoming handoff ids already answered from this window (a second click must not open a second folder picker). */
+const hoClicked = new Set();
 
 /**
  * @param {HTMLElement} sidebarEl the #sidebar element (already mounted by sidebar.js)
@@ -50,7 +52,32 @@ export function mountDevices(sidebarEl, api) {
       h('label', { class: 'sb-check sb-dev-allow' },
         h('input', { type: 'checkbox', checked: d.allowCommands, onchange: (/** @type {Event} */ e) => apply(api.link.setAllow(d.id, /** @type {HTMLInputElement} */ (e.target).checked)) }),
         t('devices.allow')),
+      h('label', { class: 'sb-check sb-dev-allow' },
+        h('input', { type: 'checkbox', class: 'sb-dev-handoff', checked: d.allowHandoff, onchange: (/** @type {Event} */ e) => apply(api.link.setAllowHandoff(d.id, /** @type {HTMLInputElement} */ (e.target).checked)) }),
+        t('devices.allowHandoff')),
     ));
+    // v3.29 handoffs: offers waiting for an answer, transfers in progress, projects handed off from here
+    const pct = (/** @type {number} */ a, /** @type {number} */ b) => (b ? Math.min(100, Math.floor((a / b) * 100)) : 0);
+    const ho = view.handoffs || { out: [], in: [] };
+    const answer = (/** @type {string} */ id, /** @type {boolean} */ yes) => {
+      if (hoClicked.has(id)) return;
+      hoClicked.add(id);
+      for (const b of document.querySelectorAll(`#sb-ho-${id} button`)) /** @type {HTMLButtonElement} */ (b).disabled = true;
+      apply(api.link.handoffAnswer(id, yes));
+    };
+    const incoming = ho.in.map((/** @type {any} */ x) => h('div', { class: 'sb-handoff', id: `sb-ho-${x.id}` },
+      h('div', { class: 'sb-note' }, t('devices.handoff.offer', { device: x.deviceName, project: x.name })),
+      x.stage === 'asking' ? h('div', { class: 'sb-note sb-ho-target', title: x.target || x.dir }, x.target ? t('devices.handoff.target', { dir: x.target }) : t('devices.handoff.targetAsk')) : null,
+      x.stage === 'asking'
+        ? h('div', { class: 'sb-row' },
+          // one answer per offer: both buttons go grey on the first click (no second folder picker)
+          h('button', { class: 'sb-x', disabled: x.answered || hoClicked.has(x.id), onclick: () => answer(x.id, true) }, t('devices.handoff.accept')),
+          h('button', { class: 'sb-x', disabled: x.answered || hoClicked.has(x.id), onclick: () => answer(x.id, false) }, t('devices.handoff.decline')))
+        : h('div', { class: 'sb-note' }, x.stage === 'receiving' ? t('devices.handoff.receiving', { pct: pct(x.got, x.total) }) : t('devices.handoff.applying'))));
+    const outgoing = ho.out.map((/** @type {any} */ x) => h('div', { class: `sb-note ho-${x.stage}` },
+      `${t('devices.handoff.out', { project: x.name, device: x.deviceName })} — `,
+      x.stage === 'sending' ? t('devices.handoff.sending', { pct: pct(x.sent, x.total) }) : x.stage === 'failed' ? t('devices.handoff.failed', { reason: t(`main.handoffReason.${x.reason}`) }) : t(`devices.handoff.${x.stage}`)));
+    const owners = (view.owners || []).map((/** @type {any} */ o) => h('div', { class: 'sb-note', title: o.dir }, t(o.unknown ? 'devices.handedOffUnknown' : 'devices.handedOff', { project: o.project, device: o.deviceName })));
     const p = view.pairing;
     const pairing = p?.code
       ? h('div', { class: 'sb-pair' },
@@ -73,11 +100,13 @@ export function mountDevices(sidebarEl, api) {
       h('label', { class: 'sb-row' }, t('devices.thisDevice'),
         h('input', { class: 'sb-dev-name', value: view.name, maxlength: 40, onchange: (/** @type {Event} */ e) => apply(api.link.setName(val(e))) })),
       view.devices.length ? h('ul', { class: 'sb-list' }, list) : h('div', { class: 'sb-note' }, t('devices.none')),
+      ...incoming, ...outgoing,
+      owners.length ? h('div', { class: 'sb-sub' }, t('devices.handedOffTitle')) : null, ...owners,
       pairing,
       p?.code ? null : join,
       joinState.error ? h('div', { class: 'sb-note warn' }, t('devices.pairFailed', { error: joinState.error })) : null,
     ].filter((c) => c != null));                   // replaceChildren would show a null as the text "null"
-    /** @type {HTMLDetailsElement} */ (section).open = wasOpen || Boolean(p) || joinState.busy;
+    /** @type {HTMLDetailsElement} */ (section).open = wasOpen || Boolean(p) || joinState.busy || ho.in.length > 0;
   }
 
   function renderRemote() {

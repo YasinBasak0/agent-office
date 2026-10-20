@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld('agentOffice', {
     rename: (id, name) => ipcRenderer.invoke('link:rename', id, name),
     setAllow: (id, on) => ipcRenderer.invoke('link:setAllow', id, on),
     remove: (id) => ipcRenderer.invoke('link:remove', id),
+    setAllowHandoff: (id, on) => ipcRenderer.invoke('link:setAllowHandoff', id, on),   // v3.29
+    handoffAnswer: (id, accept) => ipcRenderer.invoke('link:handoffAnswer', id, accept),
     send: (id, project, text) => ipcRenderer.invoke('link:send', id, project, text),
     onChange: listen('link:changed'),
   },
