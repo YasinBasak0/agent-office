@@ -60,6 +60,8 @@ export function mountSidebar(el, on) {
   // The Antigravity / Command Code rows (v3.30): true = added via Add account, false = removed, null = the old rule
   let showAgy = null;
   let showCmd = null;
+  let ocAuth = null; // OpenCode's logins (v3.40, main's OcAuth); null until main answers
+  let showOc = null;
   let addMenu = false; // the Add account type menu is open (v3.30)
   let addFor = null; // the project whose Account dropdown opened the type menu (v3.36): a new Claude account goes to it
   let activeId = null;
@@ -228,7 +230,7 @@ export function mountSidebar(el, on) {
   }
   renderChrome();
 
-  const engineOfRow = (p) => (p.engine === 'agy' || p.engine === 'commandcode' ? p.engine : 'claude');
+  const engineOfRow = (p) => (p.engine === 'agy' || p.engine === 'commandcode' || p.engine === 'opencode' ? p.engine : 'claude');
   /**
    * A row control with its label (contract v3.36): every engine shows it; one the engine can't honour (src/engine-caps.mjs)
    * is disabled, its reason in the title and in a small line shown on hover or focus.
@@ -248,7 +250,7 @@ export function mountSidebar(el, on) {
   // engine (main's projects:setEngine: refused or cancelled, the select goes back); choosing a Claude account sets the
   // engine back to Claude Code and the account. p.accountId stays the Claude account while another engine runs.
   const NEW_ACCOUNT = '__new__';
-  const ENGINE_OPT = { agy: '__engine:agy', commandcode: '__engine:commandcode' };
+  const ENGINE_OPT = { agy: '__engine:agy', commandcode: '__engine:commandcode', opencode: '__engine:opencode' }; // opencode: v3.40
   function accountSelect(p) {
     const engine = engineOfRow(p);
     const now = engine === 'claude' ? p.accountId : ENGINE_OPT[engine];
@@ -265,7 +267,7 @@ export function mountSidebar(el, on) {
           acctList.querySelector('.sb-add-menu')?.scrollIntoView?.({ block: 'nearest' });
           return;
         }
-        const eng = v === ENGINE_OPT.agy ? 'agy' : v === ENGINE_OPT.commandcode ? 'commandcode' : null;
+        const eng = Object.keys(ENGINE_OPT).find((k) => ENGINE_OPT[k] === v) || null;
         // leaving agy/cmd for another Claude account: the account first, so the restarted tabs use it
         const leaving = !eng && engine !== 'claude';
         if (leaving && v !== p.accountId) await on.setAccount(p.id, v);
@@ -289,6 +291,9 @@ export function mountSidebar(el, on) {
     }
     if (cmdShown() || engine === 'commandcode') {
       sel.append(h('option', { value: ENGINE_OPT.commandcode, selected: engine === 'commandcode' }, t('sidebar.engineCommandcode')));
+    }
+    if (ocShown() || engine === 'opencode') { // contract v3.40
+      sel.append(h('option', { value: ENGINE_OPT.opencode, selected: engine === 'opencode' }, t('sidebar.engineOpencode')));
     }
     sel.append(h('option', { value: NEW_ACCOUNT }, t('sidebar.newAccount')));
     return control(p, 'account', t('sidebar.account'), sel);
@@ -385,10 +390,11 @@ export function mountSidebar(el, on) {
   }
 
   // The program the project's tabs run (contract v3.22, v3.25): a read-only tag since v3.36; the Account dropdown
-  // picks it (Claude accounts, Antigravity, Command Code).
+  // picks it (Claude accounts, Antigravity, Command Code, OpenCode).
   function engineTag(p) {
     const engine = engineOfRow(p);
     if (engine === 'claude') return h('span', { class: 'sb-tag sb-engine', title: t('sidebar.engineTitle'), 'aria-label': t('sidebar.engine') }, t('sidebar.engineClaude'));
+    if (engine === 'opencode') return h('span', { class: 'sb-tag sb-agy', title: t('sidebar.ocHintTitle') }, t('sidebar.ocHint')); // v3.40
     return engine === 'commandcode'
       ? h('span', { class: 'sb-tag sb-agy', title: t('sidebar.cmdHintTitle') }, t('sidebar.cmdHint'))
       : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint'));
@@ -420,6 +426,10 @@ export function mountSidebar(el, on) {
   /** Warning in the project row if its account is not logged in; clicking opens the login overlay. */
   function loginBadge(p) {
     const engine = engineOfRow(p);
+    if (engine === 'opencode') { // contract v3.40: no login is normal (free models); only a missing CLI is a problem
+      if (ocAuth?.state !== 'missing') return null;
+      return h('span', { class: 'sb-warn', title: t('sidebar.ocMissingTitle') }, t('sidebar.ocMissing'));
+    }
     if (engine !== 'claude') { // Antigravity's / Command Code's own login (v3.24, v3.30; contract v3.36)
       const auth = engine === 'agy' ? agyAuth : cmdAuth;
       if (auth?.state !== 'out') return null;
@@ -447,7 +457,9 @@ export function mountSidebar(el, on) {
       const claude = engineOfRow(p) === 'claude'; // every engine shows every control; some disabled (contract v3.36)
       const dotTitle = !claude ? (p.engine === 'commandcode'
         ? (live ? t('sidebar.cmdRunning') : sleeping ? t('sidebar.cmdAsleep') : t('sidebar.cmdStopped'))
-        : live ? t('sidebar.agyRunning') : sleeping ? t('sidebar.agyAsleep') : t('sidebar.agyStopped'))
+        : p.engine === 'opencode'
+          ? (live ? t('sidebar.ocRunning') : sleeping ? t('sidebar.ocAsleep') : t('sidebar.ocStopped'))
+          : live ? t('sidebar.agyRunning') : sleeping ? t('sidebar.agyAsleep') : t('sidebar.agyStopped'))
         : live ? t('sidebar.claudeRunning') : sleeping ? t('sidebar.claudeAsleep') : t('sidebar.claudeStopped');
       return h('li', {
         class: 'sb-proj' + (p.id === activeId ? ' active' : ''),
@@ -576,6 +588,10 @@ export function mountSidebar(el, on) {
   const CMD_INSTALL = 'npm i -g command-code';
   const cmdUsed = () => projects.some((p) => p.engine === 'commandcode');
   const cmdShown = () => cmdUsed() || showCmd === true || (showCmd !== false && Boolean(cmdAuth?.installed));
+  // OpenCode (contract v3.40): the same rule; its free models need no login, so a row without one is normal.
+  const OC_INSTALL = platform === 'win32' ? 'npm i -g opencode-ai' : 'curl -fsSL https://opencode.ai/install | bash';
+  const ocUsed = () => projects.some((p) => p.engine === 'opencode');
+  const ocShown = () => ocUsed() || showOc === true || (showOc !== false && Boolean(ocAuth?.installed));
   const rowBtn = (cls, text, title, fn) => h('button', { class: 'sb-btn ' + cls, title, onclick: (e) => { e.stopPropagation(); fn(); } }, text);
   /** × on an engine row: hides it (no log out); not while a project runs that engine. */
   const hideBtn = (used, fn) => (used ? null : h('button', { class: 'sb-x', title: t('sidebar.hideEngineRow'), onclick: () => fn() }, '×'));
@@ -647,6 +663,39 @@ export function mountSidebar(el, on) {
       auth);
   }
 
+  /** OpenCode's logins (contract v3.40): the providers it is logged in to, with Giriş yap (add one) / Çıkış yap; or that
+   *  the free models work without any login. Giriş yap runs `opencode providers login` (it asks which provider). */
+  function ocRow() {
+    if (!ocShown()) return null;
+    const state = ocAuth?.state || 'checking';
+    const text = (s, title = '') => h('span', { class: 'sb-auth-text' + (state === 'in' ? ' sb-email' : ''), title }, s);
+    let auth;
+    if (state === 'missing') {
+      auth = h('div', { class: 'sb-auth sb-agy-missing' }, text(t('sidebar.ocMissing'), t('sidebar.ocMissingTitle')),
+        rowBtn('', t('sidebar.checkAgain'), t('sidebar.checkAgainTitle'), () => on.ocRefresh?.()),
+        h('code', { class: 'sb-agy-install', title: t('sidebar.ocInstallTitle') }, OC_INSTALL));
+    } else if (state === 'in') {
+      const names = (ocAuth.providers || []).map((x) => x.id).join(', ');
+      auth = h('div', { class: 'sb-auth' }, text(names || t('sidebar.loggedIn'), t('sidebar.ocInTitle', { providers: names })),
+        rowBtn('', t('sidebar.login'), t('sidebar.ocAddTitle'), () => on.ocLogin?.()),
+        rowBtn('', t('sidebar.logout'), t('sidebar.ocLogoutTitle'), () => on.ocLogout?.()));
+    } else if (state === 'out') {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.ocFree'), t('sidebar.ocFreeTitle')),
+        rowBtn('primary', t('sidebar.login'), t('sidebar.ocLoginTitle'), () => on.ocLogin?.()));
+    } else {
+      auth = h('div', { class: 'sb-auth' }, text(t('sidebar.checking')));
+    }
+    return h('li', { class: `sb-acc sb-agy sb-oc auth-${state}`, 'data-id': 'oc' },
+      h('div', { class: 'sb-acc-top', title: t('sidebar.ocTitle') },
+        h('span', { class: 'sb-adot', title: hasText(`sidebar.authDot.${state}`) ? t(`sidebar.authDot.${state}`) : '' }),
+        h('span', { class: 'sb-name' }, 'OpenCode'),
+        h('span', { class: 'sb-tag' }, 'oc'),
+        h('button', { class: 'sb-x', title: t('sidebar.refreshAuth'), disabled: state === 'checking', onclick: () => on.ocRefresh?.() }, '↻'),
+        hideBtn(ocUsed(), () => on.hideOc?.()),
+      ),
+      auth);
+  }
+
   /** The Add account type menu (contract v3.30): Claude (the name field, as before), Google Antigravity, Command Code. */
   function addMenuRow() {
     const item = (text, title, fn) => h('button', {
@@ -656,7 +705,8 @@ export function mountSidebar(el, on) {
     return h('li', { class: 'sb-add-menu', role: 'menu' },
       item(t('sidebar.addClaude'), t('sidebar.newAccountTitle'), () => { editing = { id: null, ...(addFor ? { forProject: addFor } : {}) }; renderAccounts(); }),
       item(t('sidebar.addAgy'), t('sidebar.addAgyTitle'), () => { renderAccounts(); on.addAgy?.(); }),
-      item(t('sidebar.addCmd'), t('sidebar.addCmdTitle'), () => { renderAccounts(); on.addCmd?.(); }));
+      item(t('sidebar.addCmd'), t('sidebar.addCmdTitle'), () => { renderAccounts(); on.addCmd?.(); }),
+      item(t('sidebar.addOc'), t('sidebar.addOcTitle'), () => { renderAccounts(); on.addOc?.(); }));
   }
 
   function renderAccounts() {
@@ -695,7 +745,8 @@ export function mountSidebar(el, on) {
     }
     const agy = agyRow();
     const cmd = cmdRow();
-    acctList.replaceChildren(...rows, ...(agy ? [agy] : []), ...(cmd ? [cmd] : []),
+    const oc = ocRow();
+    acctList.replaceChildren(...rows, ...(agy ? [agy] : []), ...(cmd ? [cmd] : []), ...(oc ? [oc] : []),
       h('li', {}, h('button', {
         class: 'sb-add', title: t('sidebar.addAccountTitle'), 'aria-haspopup': 'menu', 'aria-expanded': String(addMenu),
         onclick: (e) => { e.stopPropagation(); addMenu = !addMenu; addFor = null; renderAccounts(); acctList.querySelector('.sb-add-menu')?.scrollIntoView?.({ block: 'nearest' }); },
@@ -825,7 +876,7 @@ export function mountSidebar(el, on) {
       attn = new Map((s.status || []).filter((x) => x.attention).map((x) => [x.id, x.attention]));
       const pk = JSON.stringify([projects, activeId, [...status], [...asleep], [...attn], accounts.map((a) => [a.id, a.label, a.auth?.state])]);
       if (pk !== projKey) { projKey = pk; renderProjects(); }
-      const ak = JSON.stringify([accounts, agyShown(), cmdShown()]);
+      const ak = JSON.stringify([accounts, agyShown(), cmdShown(), ocShown()]);
       if (ak !== acctKey && !editing) { acctKey = ak; renderAccounts(); }
     },
     /** Antigravity's login state (contract v3.24, main's AgyAuth). */
@@ -842,10 +893,16 @@ export function mountSidebar(el, on) {
       if (before !== cmdAuth?.state) renderProjects();
       if (!editing) renderAccounts();
     },
-    /** The Antigravity / Command Code rows' setting (contract v3.30, prefs showAgyAccount / showCmdAccount). */
+    /** OpenCode's login state (contract v3.40, main's OcAuth). */
+    setOcAuth(a) {
+      ocAuth = a || null;
+      if (!editing) renderAccounts();
+    },
+    /** The Antigravity / Command Code / OpenCode rows' setting (contract v3.30, prefs showAgyAccount / showCmdAccount). */
     setEngineRows(p) {
       showAgy = typeof p?.showAgyAccount === 'boolean' ? p.showAgyAccount : null;
       showCmd = typeof p?.showCmdAccount === 'boolean' ? p.showCmdAccount : null;
+      showOc = typeof p?.showOcAccount === 'boolean' ? p.showOcAccount : null;
       if (!editing) renderAccounts();
     },
     /** Today's token usage per project: [{ id, usd, total, pct }] (contract v3.13); the line opens the usage panel. */

@@ -57,6 +57,13 @@ contextBridge.exposeInMainWorld('agentOffice', {
     login: () => ipcRenderer.invoke('cmd:login'),
     onAuth: listen('cmd:auth'),
   },
+  // v3.40: OpenCode's logins in the Accounts section (OcAuth of src/oc-auth.js); the pty is 'login:oc'.
+  // login(mode): 'login' (providers login, the default) or 'logout' (providers logout). Not logged in is normal: free models need none.
+  oc: {
+    auth: (refresh) => ipcRenderer.invoke('oc:auth', refresh),   // { installed, state: 'in' | 'out' | 'missing', providers?: [{ id, type }] }
+    login: (mode) => ipcRenderer.invoke('oc:login', mode),
+    onAuth: listen('oc:auth'),
+  },
   pty: {
     write: (id, d) => ipcRenderer.send('pty:write', id, d),
     resize: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
@@ -84,7 +91,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     install: () => ipcRenderer.send('update:install'),
   },
   prefs: {
-    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, shareMcp: boolean, reloadMcp: boolean, fallback: boolean, sleepMinutes: 0 | 15 | 30 | 60, showAgyAccount: boolean | null, showCmdAccount: boolean | null } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7, shareMcp: v3.9, reloadMcp: v3.11, fallback: v3.17, showAgyAccount/showCmdAccount: v3.30)
+    get: () => ipcRenderer.invoke('prefs:get'),         // { resume: boolean, resumeWork: boolean, theme: 'auto' | name, manager: boolean, shareMcp: boolean, reloadMcp: boolean, fallback: boolean, sleepMinutes: 0 | 15 | 30 | 60, showAgyAccount: boolean | null, showCmdAccount: boolean | null, showOcAccount: boolean | null } (theme: v3.1, manager: v3.2, sleepMinutes: v3.3, resumeWork: v3.7, shareMcp: v3.9, reloadMcp: v3.11, fallback: v3.17, showAgyAccount/showCmdAccount: v3.30, showOcAccount: v3.40)
     set: (p) => ipcRenderer.invoke('prefs:set', p),
   },
   language: {

@@ -18,7 +18,8 @@
 // The result is a session in the plugin's file shape (`session()`), handed to readOffice as an observed session, so
 // the office, the agent panel and attention.js need no Antigravity case.
 // Command Code tabs (contract v3.25) use the same watcher (`engine: 'commandcode'`) and, read-only, the newest
-// session file of the tab's folder in ~/.commandcode/projects/<slug>/ (cmdTranscriptPath).
+// session file of the tab's folder in ~/.commandcode/projects/<slug>/ (cmdTranscriptPath). OpenCode tabs (v3.40) use it
+// with `engine: 'opencode'` and no transcript (its sessions are in a database): terminal and keys only.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -34,6 +35,7 @@ const TAIL = 2000; // characters of plain screen text kept to match patterns acr
 // --- patterns (see contract v3.23 for which are documented and which are guessed)
 // busy: the spinner frames of a terminal "dots" spinner (Gemini CLI family) or the cancel hint of the busy line
 const BUSY_RE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|\besc to (cancel|interrupt|stop)\b/i;
+const OC_BUSY_RE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|\besc (to )?(cancel|interrupt|stop)\b/i; // OpenCode's busy line says "esc interrupt" (v3.40)
 // an approval dialog. agy's documented prompts: "Allow create this file? [y/n/f]" (a `[y/n…]` choice after a
 // question), the sandbox choices "Yes, and run in sandbox" / "Yes, and run without sandbox restrictions" and the
 // sub-agent notice 'Subagent 12 asks to run "npm test"'. The rest are Gemini CLI's dialog labels (guessed for agy).
@@ -79,9 +81,10 @@ const dayKey = (ms) => {
 /**
  * One agy tab's watcher. Feed it with output(data), input(data) and exit(); tick(now) ends quiet turns;
  * session(project) gives the office its view. engine/label: the observed CLI (v3.25: 'commandcode', 'Command Code').
- * @param {number} [startAt] @param {{ engine?: 'agy' | 'commandcode', label?: string }} [o]
+ * @param {number} [startAt] @param {{ engine?: 'agy' | 'commandcode' | 'opencode', label?: string }} [o]
  */
 function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigravity' } = {}) {
+  const busyRe = engine === 'opencode' ? OC_BUSY_RE : BUSY_RE;
   let busy = false;
   let turnOpen = false; // a turn that has not been counted yet
   let turnAt = 0; // when the current turn began
@@ -145,7 +148,7 @@ function createAgyWatch(startAt = Date.now(), { engine = 'agy', label = 'Antigra
         lastSign = now;
         return;
       }
-      if (BUSY_RE.test(text)) {
+      if (busyRe.test(text)) {
         if (!busy) startTurn(now);
         lastSign = now;
       }
@@ -349,4 +352,4 @@ function readTranscript(file, from, promptRe = /"USER_INPUT"/g) {
   return { file, size: st.size, prompts };
 }
 
-module.exports = { createAgyWatch, dayKey, plainText, agyTranscriptPath, readTranscript, cmdProjectDir, hasCmdSession, cmdTranscriptPath, CMD_PROMPT_RE, BUSY_RE, ASK_RE, QUIET_MS, SUBMIT_GRACE_MS };
+module.exports = { createAgyWatch, dayKey, plainText, agyTranscriptPath, readTranscript, cmdProjectDir, hasCmdSession, cmdTranscriptPath, CMD_PROMPT_RE, BUSY_RE, OC_BUSY_RE, ASK_RE, QUIET_MS, SUBMIT_GRACE_MS };

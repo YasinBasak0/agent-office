@@ -104,7 +104,7 @@
     "addProjectTitle": "Add project ({mod}O)",
     "accounts": "ACCOUNTS",
     "account": "Account",
-    "accountTitle": "The account this project runs on: a Claude account (Claude Code), Antigravity (Google Antigravity CLI, its own Google login) or Command Code (its own login). Choosing Antigravity or Command Code switches the project's engine and starts its tabs again, fresh; choosing a Claude account switches back. Changing the Claude account restarts Claude.",
+    "accountTitle": "The account this project runs on: a Claude account (Claude Code), Antigravity (Google Antigravity CLI, its own Google login), Command Code (its own login) or OpenCode (its own providers; no login needed for its free models). Choosing Antigravity, Command Code or OpenCode switches the project's engine and starts its tabs again, fresh; choosing a Claude account switches back. Changing the Claude account restarts Claude.",
     "newAccount": "+ New account…",
     "projectManager": "Boss",
     "projectManagerTitle": "How this project's boss works: Global follows the Manager mode setting; Delegates splits the work across agents; Does it itself works without agents. Either way it keeps going until the work is done. Applies when the project's Claude starts next (idle tabs restart now).",
@@ -134,7 +134,7 @@
     "savingsNormal": "Normal",
     "savingsStrict": "Strict",
     "engine": "Engine",
-    "engineTitle": "This project runs Claude Code. The Account dropdown picks the engine: a Claude account, Antigravity or Command Code.",
+    "engineTitle": "This project runs Claude Code. The Account dropdown picks the engine: a Claude account, Antigravity, Command Code or OpenCode.",
     "engineClaude": "Claude Code",
     "engineAgy": "Antigravity",
     "agyHint": "Antigravity — observed",
@@ -208,7 +208,7 @@
     "agyKeyNote": "agy uses an API key or ADC, not a login: /logout does nothing. To stop, remove GEMINI_API_KEY (or unset AGY_ADC_AUTH).",
     "agyUnknown": "login kept by agy",
     "agyUnknownTitle": "agy keeps its login in the system keychain, which the app does not read. Log in signs in if needed; Log out opens agy for /logout.",
-    "addAccountTitle": "Add an account: Claude, Google Antigravity or Command Code",
+    "addAccountTitle": "Add an account: Claude, Google Antigravity, Command Code or OpenCode",
     "addClaude": "Claude",
     "addAgy": "Google Antigravity",
     "addAgyTitle": "Show the Antigravity CLI (agy) login here and sign in. One login for every Antigravity project.",
@@ -223,6 +223,24 @@
     "cmdInstallTitle": "Install command from commandcode.ai/docs (run it yourself in a terminal)",
     "cmdInTitle": "Command Code has a saved login (~/.commandcode/auth.json). The app only checks that the file exists.",
     "cmdLoginTitle": "Run commandcode login here (a browser opens to authorize)",
+    "ocHint": "OpenCode — observed",
+    "ocHintTitle": "This project runs OpenCode. The office follows it one way, from its terminal (no log is read): the boss works, asks for approval, counts each finished turn as a delivery and sleeps when idle. No sub-agents are shown, no token use, and nothing of the office (journal, directory, other projects, brief) is passed to OpenCode. It needs no login: its free models work without one.",
+    "engineOpencode": "OpenCode",
+    "ocRunning": "OpenCode running",
+    "ocStopped": "OpenCode stopped",
+    "ocAsleep": "Not started yet: OpenCode starts, continuing its last session, when you open this project",
+    "addOc": "OpenCode",
+    "addOcTitle": "Show OpenCode here. It works without a login (free models); sign in to a provider only to use your own models.",
+    "ocTitle": "OpenCode (opencode): its providers and logins are kept by OpenCode itself (~/.local/share/opencode). No login is needed for its free models.",
+    "ocMissing": "opencode not installed",
+    "ocMissingTitle": "An OpenCode project needs the OpenCode CLI. Install it in a terminal, then press Check again.",
+    "ocInstallTitle": "Install command from opencode.ai/docs (run it yourself in a terminal)",
+    "ocFree": "No login · free models",
+    "ocFreeTitle": "Not logged in to any provider. OpenCode's free models work without a login; sign in to use your own providers.",
+    "ocInTitle": "Logged in to: {providers}. The app only reads the provider names from OpenCode's login file, never the keys.",
+    "ocLoginTitle": "Run opencode providers login here: pick a provider and sign in",
+    "ocAddTitle": "Add another provider (opencode providers login)",
+    "ocLogoutTitle": "Remove a provider's login (opencode providers logout)",
     "na": {
       "agyContextCap": "Antigravity compacts its conversation automatically; it has no size setting.",
       "agySavings": "Antigravity has no documented output caps or step budget.",
@@ -231,7 +249,15 @@
       "agyCost": "Antigravity writes no token counts Agent Office can read.",
       "cmdBackup": "Command Code has one login; there is no second account to switch to.",
       "filesOff": "Needs the project's files: turn on Agent Office files for this project.",
-      "claudeProjectFiles": "Claude Code gets Agent Office's setup at launch; nothing is written to the project."
+      "claudeProjectFiles": "Claude Code gets Agent Office's setup at launch; nothing is written to the project.",
+      "ocManager": "OpenCode gets no launch config or files from the app, so there is no manager mode for it.",
+      "ocAgentModel": "OpenCode picks its own subagent models; the app passes it no agent setting.",
+      "ocContextCap": "OpenCode compacts its conversation by itself; the app sets no size for it.",
+      "ocSavings": "OpenCode gets no output caps or step budget from the app.",
+      "ocBackup": "OpenCode keeps its own provider logins; there is no second account to switch to.",
+      "ocWorkers": "Workers are not followed for OpenCode: the app only watches its terminal.",
+      "ocCost": "OpenCode reports no token counts to the app.",
+      "ocProjectFiles": "Agent Office writes no project files for OpenCode."
     }
   },
   "panel": {
@@ -361,7 +387,10 @@
       "bad-url": "the sign-in link was not a Claude address",
       "offline": "the machine went offline",
       "not-supported": "update Agent Office there"
-    }
+    },
+    "ocHint": "Pick a provider in the list and follow its steps (a browser may open, or paste an API key). When it says the credentials are saved, close this window.",
+    "ocLogoutHint": "Pick the provider to log out of. When it says it was removed, close this window.",
+    "ocLogoutTitle": "Log out of OpenCode"
   },
   "terminal": {
     "exited": "— Claude exited — press Enter to restart —",
@@ -572,6 +601,11 @@
     "projOpNotice": "{device}: {op} {project}",
     "loginRelayTitle": "Remote login",
     "loginRelayBody": "{device} is logging in account {label} on this machine.",
+    "noOc": "OpenCode was not found.",
+    "noOcHelp": "Install OpenCode ({url}), check that `opencode` runs in a new terminal, then press Enter here to try again.",
+    "moveOc": "Only Claude Code projects can move to another computer; this project runs OpenCode.",
+    "engineOcConfirm": "Switch “{name}” to Claude Code?",
+    "engineOcDetail": "OpenCode is running in this project, and Agent Office can't tell whether it is in the middle of work. Switching stops it now; Claude Code starts fresh.",
     "projectFilesRefused": "Agent Office left some files in “{name}” alone: a file of the same name that it didn't write (or that was changed after it did) is never overwritten or removed."
   },
   "auth": {

@@ -11,7 +11,17 @@ const { promptArg } = require('./resume.js');
 // The env it starts with is agyEnv's allowlist, so the rc files have no carrier (AGENT_OFFICE_CONFIG_DIR and the like)
 // to rebuild the app's Claude variables from; any AGENT_OFFICE_* an rc file still sets is dropped before exec. The
 // user's own rc variables (theirs, whatever their name) are left alone.
-const AGY_COMMAND = 'for v in $(env | sed -n \'s/^\\(AGENT_OFFICE_[A-Za-z0-9_]*\\)=.*/\\1/p\'); do unset "$v"; done; exec agy "$@"';
+const UNSET_OFFICE_ENV = 'for v in $(env | sed -n \'s/^\\(AGENT_OFFICE_[A-Za-z0-9_]*\\)=.*/\\1/p\'); do unset "$v"; done; ';
+// OpenCode (v3.40) also has an Anthropic provider that reads ANTHROPIC_API_KEY itself: its line also drops any
+// ANTHROPIC_* and CLAUDE* an rc file set (sed -E: BSD and GNU).
+const UNSET_OFFICE_CLAUDE_ENV = 'for v in $(env | sed -nE \'s/^((AGENT_OFFICE_|ANTHROPIC_|CLAUDE)[A-Za-z0-9_]*)=.*/\\1/p\'); do unset "$v"; done; ';
+/**
+ * A third-party engine's launch line (agy, Command Code, OpenCode): drops any AGENT_OFFICE_* first (with `claude`,
+ * also ANTHROPIC_* and CLAUDE*), then `exec <bin> "$@"`.
+ * @param {string} bin @param {{ claude?: boolean }} [o]
+ */
+const launchLine = (bin, { claude = false } = {}) => `${claude ? UNSET_OFFICE_CLAUDE_ENV : UNSET_OFFICE_ENV}exec ${bin} "$@"`;
+const AGY_COMMAND = launchLine('agy');
 
 /**
  * agy's arguments for a start: `--continue` (the most recent conversation of the folder agy starts in: agy keeps one
@@ -101,7 +111,7 @@ function cmdArgs({ resume = false, prompt = '', model = null, compact = false, m
 }
 
 /** Command Code's launch line: drops any AGENT_OFFICE_* an rc file set (as AGY_COMMAND), then `commandcode "$@"`. */
-const CMD_COMMAND = AGY_COMMAND.replace(/exec agy "\$@"$/, `exec ${CMD.bin} "$@"`);
+const CMD_COMMAND = launchLine(CMD.bin);
 
 // Command Code's own documented variables (commandcode.ai/docs/settings, /docs/sessions), passed only when the user
 // has them: its API key, zero-data-retention and model-catalog switches, updater, scratchpad and the telemetry
@@ -143,7 +153,74 @@ function cmdEnv(base, opts = {}, platform = process.platform) {
   return out;
 }
 
+// --- OpenCode (contract v3.40). The same rules again: an env allowlist, nothing of Claude Code or the office. The binary
+// is `opencode`. It keeps its own providers and logins (`opencode providers`, ~/.local/share/opencode/auth.json) and
+// works without any login: its free models (the `opencode/` provider) need none, and it picks one by itself.
+const OC = {
+  bin: 'opencode',
+};
+
+/**
+ * OpenCode's arguments for a start: the project's boss model first (`-m <provider/model>`, opencode.ai/docs/cli,
+ * contract v3.36), then `--continue` (the last session of the folder; with none it simply starts a new one, checked
+ * with opencode 1.18) when resuming, then (only when resuming and a prompt is given) `--prompt <prompt>`.
+ * @param {{ resume?: boolean, prompt?: string, model?: string | null }} [o]
+ */
+function ocArgs({ resume = false, prompt = '', model = null } = {}) {
+  const p = resume && prompt ? promptArg(prompt) : '';
+  return [...(model ? ['-m', model] : []), ...(resume ? ['--continue'] : []), ...(p ? ['--prompt', p] : [])];
+}
+
+/** OpenCode's launch line: drops any AGENT_OFFICE_* an rc file set (as AGY_COMMAND), then `opencode "$@"`. */
+const OC_COMMAND = launchLine(OC.bin, { claude: true }); // built from the binary, never by editing AGY_COMMAND (v3.40)
+
+// What OpenCode reads from the environment, passed only when the user has it: its own OPENCODE_* switches and the
+// API keys of the model providers it documents (opencode.ai/docs/providers), by exact name. Any other *_API_KEY in
+// the user's shell (STRIPE_API_KEY, a company key, ...) stays out. The deny rule still wins: an ANTHROPIC_* or CLAUDE*
+// variable never reaches it, and Anthropic's key is never on this list.
+const OC_ENV_PREFIXES = ['OPENCODE_'];
+const OC_PROVIDER_KEYS = [
+  'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GOOGLE_API_KEY', 'OPENROUTER_API_KEY',
+  'GROQ_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY', 'DEEPSEEK_API_KEY', 'TOGETHER_API_KEY', 'TOGETHER_AI_API_KEY',
+  'FIREWORKS_API_KEY', 'CEREBRAS_API_KEY', 'DEEPINFRA_API_KEY', 'PERPLEXITY_API_KEY', 'MOONSHOT_API_KEY',
+  'ZHIPU_API_KEY', 'AZURE_API_KEY', 'AZURE_RESOURCE_NAME',
+];
+// Set after the filter, so a user value can't unset them (contract v3.40): OpenCode's Claude Code compatibility
+// (opencode.ai/docs/rules, /docs/skills) would otherwise read CLAUDE.md, ~/.claude/CLAUDE.md and ~/.claude/skills.
+const OC_FORCED_ENV = {
+  OPENCODE_DISABLE_CLAUDE_CODE: '1',
+  OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1',
+  OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: '1',
+};
+
+/**
+ * The env OpenCode starts with: agyEnv's base allowlist (without agy's own names and families) plus OpenCode's own
+ * variables and provider API keys; the same deny rule (Claude, Anthropic, the office, MCP).
+ * @param {Record<string, string | undefined>} base @param {string} [platform]
+ * @returns {Record<string, string>}
+ */
+function ocEnv(base, platform = process.platform) {
+  const win = platform === 'win32';
+  const norm = (/** @type {string} */ n) => (win ? n.toUpperCase() : n);
+  const names = new Set([...AGY_ENV_NAMES.filter((n) => n !== 'AGY_ADC_AUTH'), ...OC_PROVIDER_KEYS, ...(win ? AGY_ENV_WINDOWS : [])].map(norm));
+  const prefixes = ['LC_', ...OC_ENV_PREFIXES];
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const [k, v] of Object.entries(base || {})) {
+    if (typeof v !== 'string' || AGY_ENV_DENY.test(k)) continue;
+    const key = norm(k);
+    if (names.has(key) || prefixes.some((p) => key.startsWith(p))) out[k] = v;
+  }
+  out.TERM = 'xterm-256color';
+  out.COLORTERM = 'truecolor';
+  // Windows names ignore case: a user `Opencode_Disable_Claude_Code=0` must not sit beside the forced value
+  for (const k of Object.keys(out)) if (norm(k) in OC_FORCED_ENV) delete out[k];
+  Object.assign(out, OC_FORCED_ENV);
+  return out;
+}
+
 module.exports = {
+  OC, ocArgs, OC_COMMAND, ocEnv, OC_ENV_PREFIXES, OC_PROVIDER_KEYS, OC_FORCED_ENV, launchLine,
   AGY_COMMAND, agyArgs, agyEnv, AGY_ENV_NAMES, AGY_ENV_WINDOWS, AGY_ENV_PREFIXES,
   CMD, cmdArgs, CMD_COMMAND, cmdEnv, CMD_ENV_NAMES, CMD_ENV_PREFIXES, CMD_MCP_OUTPUT_MAX,
 };
