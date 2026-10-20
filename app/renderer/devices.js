@@ -25,8 +25,10 @@ const hoClicked = new Set();
 /**
  * @param {HTMLElement} sidebarEl the #sidebar element (already mounted by sidebar.js)
  * @param {any} api window.agentOffice
+ * @param {{ onMachines?: () => void }} [o] onMachines: the Machines button (v3.32)
  */
-export function mountDevices(sidebarEl, api) {
+export function mountDevices(sidebarEl, api, { onMachines = () => {} } = {}) {
+  const watchers = new Set(); // v3.32 the Machines panel redraws on every view
   /** @type {any} */
   let view = { name: '', devices: [], remotes: [], outgoing: [], pairing: null, error: null };
   let joinState = /** @type {{ busy: boolean, error: string }} */ ({ busy: false, error: '' });
@@ -55,6 +57,14 @@ export function mountDevices(sidebarEl, api) {
       h('label', { class: 'sb-check sb-dev-allow' },
         h('input', { type: 'checkbox', class: 'sb-dev-handoff', checked: d.allowHandoff, onchange: (/** @type {Event} */ e) => apply(api.link.setAllowHandoff(d.id, /** @type {HTMLInputElement} */ (e.target).checked)) }),
         t('devices.allowHandoff')),
+      // v3.31 opt-ins, both off by default: the catalog (and later project actions), later account sign-in
+      h('label', { class: 'sb-check sb-dev-allow' },
+        h('input', { type: 'checkbox', class: 'sb-dev-manage', checked: d.allowManage, onchange: (/** @type {Event} */ e) => apply(api.link.setAllowManage(d.id, /** @type {HTMLInputElement} */ (e.target).checked)) }),
+        t('devices.allowManage')),
+      h('label', { class: 'sb-check sb-dev-allow' },
+        h('input', { type: 'checkbox', class: 'sb-dev-accounts', checked: d.allowAccounts, onchange: (/** @type {Event} */ e) => apply(api.link.setAllowAccounts(d.id, /** @type {HTMLInputElement} */ (e.target).checked)) }),
+        t('devices.allowAccounts')),
+      d.online && d.v === 1 ? h('div', { class: 'sb-note warn' }, t('devices.updateThere', { device: d.name })) : null,
     ));
     // v3.29 handoffs: offers waiting for an answer, transfers in progress, projects handed off from here
     const pct = (/** @type {number} */ a, /** @type {number} */ b) => (b ? Math.min(100, Math.floor((a / b) * 100)) : 0);
@@ -106,6 +116,7 @@ export function mountDevices(sidebarEl, api) {
       h('label', { class: 'sb-row' }, t('devices.thisDevice'),
         h('input', { class: 'sb-dev-name', value: view.name, maxlength: 40, onchange: (/** @type {Event} */ e) => apply(api.link.setName(val(e))) })),
       view.devices.length ? h('ul', { class: 'sb-list' }, list) : h('div', { class: 'sb-note' }, t('devices.none')),
+      view.devices.length ? h('button', { class: 'sb-x sb-machines', id: 'sb-machines', onclick: () => onMachines() }, t('devices.machines')) : null,
       ...incoming, ...outgoing,
       owners.length ? h('div', { class: 'sb-sub' }, t('devices.handedOffTitle')) : null, ...owners,
       pairing,
@@ -146,6 +157,7 @@ export function mountDevices(sidebarEl, api) {
   }
 
   function render() {
+    for (const cb of watchers) cb(view);
     // keep focus and typed text in a command box across live updates
     const focused = /** @type {HTMLInputElement | null} */ (document.activeElement);
     if (focused && remoteGroup.contains(focused) && focused.name === 'text') { renderDevices(); return; }
@@ -160,7 +172,7 @@ export function mountDevices(sidebarEl, api) {
   onLang(render);
   setInterval(() => { if (view.pairing) renderDevices(); }, 30000);
   render();
-  return { view: () => view };
+  return { view: () => view, /** @param {(v: any) => void} cb */ onView: (cb) => { watchers.add(cb); } };
 }
 
 /**

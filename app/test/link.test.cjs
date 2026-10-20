@@ -652,3 +652,150 @@ test('handoff: Keep it here unlocks a project whose handoff outcome is unknown (
   assert.match(log, /"outcome":"query:offline"/);
   assert.match(log, /"outcome":"kept-here"/);
 });
+
+// --- v3.31 capabilities, v3.32 res/catalog, amendment 4 (no remote typing before the first prompt)
+
+const GB = 2 ** 30;
+const RES = { at: 1000, mem: { total: 16 * GB, free: 4 * GB }, load1: 1.5, cpus: 8, tabs: 2, agents: 1, sleeping: 0, platform: 'darwin', app: '0.14.0' };
+
+test('v3.31/v3.32 schema: hello caps, res and catalog cleaned; bad ones dropped; opt-ins off by default', () => {
+  const hello = C.validateMessage({ t: 'hello', v: 2, name: 'Laptop', app: '0.14.0', caps: ['res', 'catalog', 'res', 'evil', 7] });
+  assert.deepEqual(hello, { t: 'hello', v: 2, name: 'Laptop', app: '0.14.0', caps: ['res', 'catalog'] });
+  assert.deepEqual(C.validateMessage({ t: 'hello', v: 1, name: 'Old' }), { t: 'hello', v: 1, name: 'Old' });   // a v1 hello
+  assert.equal(C.validateMessage({ t: 'hello', v: 2, name: 'x', app: 'a b;rm' }).app, undefined);
+  assert.deepEqual(C.validateMessage({ t: 'res', res: { ...RES, extra: 'x', platform: 'plan9' } }).res, { ...RES, platform: 'other' });
+  for (const bad of [{ ...RES, mem: { total: 1, free: 2 } }, { ...RES, cpus: 0 }, { ...RES, load1: -1 }, { ...RES, at: 'now' }, null]) assert.equal(C.validateMessage({ t: 'res', res: bad }), null);
+  const cat = C.validateMessage({ t: 'catalog', catalog: { projects: [{ id: 'p1', dirName: 'shop\x1b[31m', state: 'running', engine: 'claude', accountLabel: 'Work', dir: '/Users/me/shop', remote: 'https://u:tok@x/y.git', prompt: 'secret' }] } });
+  assert.deepEqual(cat.catalog, { projects: [{ id: 'p1', dirName: 'shop', state: 'running', engine: 'claude', accountLabel: 'Work' }], shared: true });   // display fields only
+  assert.equal(C.validateMessage({ t: 'catalog', catalog: { projects: [{ id: 'p1', dirName: 'x', state: 'gone' }] } }), null);
+  assert.equal(C.validateMessage({ t: 'catalog', catalog: { projects: Array(51).fill({ id: 'p', dirName: 'x', state: 'stopped' }) } }), null);
+  assert.equal(C.validateMessage({ t: 'catalog', catalog: { projects: [], shared: false } }).catalog.shared, false);
+  const [dev] = C.normalizeDevices([{ pub: 'ab'.repeat(32), name: 'L', allowCommands: true, allowManage: 'yes' }]);
+  assert.equal(dev.allowManage, false);
+  assert.equal(dev.allowAccounts, false);
+  const pub = 'cd'.repeat(32);
+  const secrets = { [pub]: 'ef'.repeat(32) };
+  assert.equal(C.mayManage([{ ...dev, pub, allowManage: true }], secrets, pub), true);
+  assert.equal(C.mayManage([{ ...dev, pub, allowManage: true }], {}, pub), false);   // removed (no secret): no rights
+  assert.equal(C.mayAccounts([{ ...dev, pub, allowAccounts: true }], secrets, pub), true);
+  // res: Windows load from CPU time samples; sent again only on a real change or after 30 s
+  const cpu = (busy, idle) => ({ times: { user: busy, nice: 0, sys: 0, irq: 0, idle } });
+  const r0 = C.resOf({ now: 1, total: 8 * GB, free: 2 * GB, loadavg: [0, 0, 0], cpus: [cpu(100, 100), cpu(100, 100)], platform: 'win32', app: '1.0.0', tabs: 1, agents: 0, sleeping: 0 });
+  const r1 = C.resOf({ now: 2, total: 8 * GB, free: 2 * GB, loadavg: [0, 0, 0], cpus: [cpu(175, 125), cpu(175, 125)], platform: 'win32', app: '1.0.0', tabs: 1, agents: 0, sleeping: 0, prev: r0.sample });
+  assert.equal(r1.res.load1, 1.5);   // 75 % busy on 2 CPUs
+  assert.equal(C.resChanged(RES, { ...RES, at: 2000 }), false);
+  assert.equal(C.resChanged(RES, { ...RES, at: 2000, tabs: 3 }), true);
+  assert.equal(C.resChanged(RES, { ...RES, at: 2000, mem: { ...RES.mem, free: 5 * GB } }), true);
+  assert.equal(C.resChanged(RES, { ...RES, at: 31000 }), true);
+  // amendment 4
+  assert.equal(C.typingReady({ sessionId: null, prompted: true }), false);
+  assert.equal(C.typingReady({ sessionId: '0f1e2d3c-aaaa-bbbb-cccc-0123456789ab', prompted: false }), false);
+  assert.equal(C.typingReady({ sessionId: '0f1e2d3c-aaaa-bbbb-cccc-0123456789ab', prompted: true }), true);
+});
+
+async function pairPair(t, opts = {}) {
+  const createTestnet = require('hyperdht/testnet');
+  const DHT = require('hyperdht');
+  const testnet = await createTestnet(3);
+  t.after(() => testnet.destroy());
+  const a = new Link({ keyPair: DHT.keyPair(), name: 'Studio', bootstrap: testnet.bootstrap, app: '0.14.0', heartbeatMs: opts.heartbeatMs });
+  const b = new Link({ keyPair: DHT.keyPair(), name: 'Laptop', bootstrap: testnet.bootstrap, app: '0.14.0', heartbeatMs: opts.heartbeatMs });
+  t.after(() => Promise.all([a.destroy(), b.destroy()]));
+  if (opts.v1) {
+    // b plays an Agent Office 0.13 (protocol 1): its hello has no caps; it counts every message type it receives
+    b.helloMsg = () => ({ t: 'hello', v: 1, name: b.name });
+  }
+  const got = [];
+  const orig = b.handle.bind(b);
+  b.handle = (conn, device, raw, onInvalid) => { got.push(raw?.t); return orig(conn, device, raw, onInvalid); };
+  const until = (fn, ms = 20000) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => { const v = fn(); if (v) return resolve(v); if (Date.now() - t0 > ms) return reject(new Error('timeout')); setTimeout(tick, 50); };
+    tick();
+  });
+  const { code } = await a.invite();
+  await b.join(code);
+  await until(() => a.view().devices[0]?.online && b.view().devices[0]?.online && a.view().devices[0].v && b.view().devices[0].v);
+  return { a, b, got, until };
+}
+const CATALOG = { projects: [{ id: 'p1', dirName: 'shop', state: 'running', engine: 'claude', accountLabel: 'Work' }] };
+
+test('integration v3.31: a v1 peer gets zero new message types and stays connected', { timeout: 60000 }, async (t) => {
+  const { a, b, got, until } = await pairPair(t, { v1: true, heartbeatMs: 300 });
+  assert.equal(a.view().devices[0].v, 1);
+  assert.deepEqual(a.view().devices[0].caps, []);
+  a.setAllowManage(b.pub, true);                    // even with the opt-in on
+  a.publishRes(RES);
+  a.publishCatalog(CATALOG);
+  a.publish({ projects: [], workers: [], delivered: 0 });
+  await until(() => got.includes('state'));
+  await new Promise((r) => setTimeout(r, 1500));   // > 3 heartbeats
+  const v1Types = new Set(['hello', 'ping', 'state', 'cmd', 'cmd-status', 'ho-offer', 'ho-answer', 'ho-chunk', 'ho-result', 'ho-query', 'ho-status']);
+  assert.deepEqual(got.filter((x) => !v1Types.has(x)), []);
+  assert.equal(a.view().devices[0].online, true);
+  assert.equal(b.view().devices[0].online, true);
+});
+
+test('integration v3.31/v3.32: caps negotiated; res to res peers; catalog only with allowManage; removal revokes', { timeout: 60000 }, async (t) => {
+  const { a, b, got, until } = await pairPair(t);
+  assert.deepEqual(b.view().devices[0].caps, ['res', 'catalog']);
+  assert.equal(b.view().devices[0].app, '0.14.0');
+  a.publishRes(RES);
+  a.publishCatalog(CATALOG);
+  await until(() => b.view().devices[0].res);
+  assert.deepEqual(b.view().devices[0].res, RES);
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(got.includes('catalog'), false);     // not without "Allow managing projects"
+  assert.equal(b.view().devices[0].catalog, null);
+  a.setAllowManage(b.pub, true);
+  await until(() => b.view().devices[0].catalog);
+  assert.deepEqual(b.view().devices[0].catalog, CATALOG.projects);
+  a.setAllowManage(b.pub, false);                   // off: b is told to forget at once
+  await until(() => b.view().devices[0].catalog === null);
+  a.setAllowManage(b.pub, true);
+  await until(() => b.view().devices[0].catalog);
+  await a.remove(b.pub);                            // removed: no rights, no connection
+  assert.equal(C.mayManage(a.devices, a.secrets, b.pub), false);
+  await until(() => !b.view().devices[0].online);
+  assert.equal(b.view().devices[0].catalog, null);
+  const n = got.length;
+  a.publishCatalog({ projects: [...CATALOG.projects, { id: 'p2', dirName: 'x', state: 'stopped', engine: 'claude', accountLabel: '' }] });
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(got.slice(n).includes('catalog'), false);
+});
+
+test('amendment 4: a remote command waits while the tab is starting (no first prompt), then is typed; removed device drops it', async (t) => {
+  const { setupLink } = require('../src/link-host.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-firstprompt-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(tmp, 'link'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'link', 'devices.json'), JSON.stringify({ name: 'Studio', devices: [] }));
+  let state = 'starting';
+  const typed = [];
+  const host = setupLink({
+    app: { getPath: () => tmp, getVersion: () => '0.14.0' },
+    safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'keychain', encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() },
+    ipcMain: { handle: () => {} }, send: () => {}, notify: () => {}, T: (k) => k,
+    projects: () => [{ id: 'p1', name: 'shop', engine: 'claude' }], tabState: () => state, type: (id, text) => typed.push([id, text]),
+  });
+  t.after(() => host.destroy());
+  const link = host.link();
+  const device = { pub: 'ab'.repeat(32), name: 'Laptop' };
+  link.devices = [{ ...device, addedAt: 0, allowCommands: true, allowHandoff: false, allowManage: false, allowAccounts: false }];
+  const replies = [];
+  const cmd = (id) => link.emit('command', { device, id, project: 'p1', text: 'run the tests', reply: (s, r) => replies.push([id, s, r]) });
+  cmd('c1');
+  host.pump(); host.pump();
+  assert.deepEqual(typed, []);                     // trust dialog may be up: nothing typed
+  assert.deepEqual(replies, [['c1', 'queued', undefined]]);
+  state = 'ready';
+  host.pump();
+  assert.equal(typed.length, 1);
+  assert.match(typed[0][1], /remote command from "Laptop"\] run the tests/);
+  state = 'starting';
+  cmd('c2');
+  link.devices = [];                               // removed meanwhile: its waiting command is dropped, never typed
+  state = 'ready';
+  host.pump();
+  assert.equal(typed.length, 1);
+});

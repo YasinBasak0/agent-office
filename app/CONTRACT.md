@@ -897,3 +897,38 @@ Prefs.showCmdAccount: boolean | null
 - **Log in** opens the login overlay on `login:cmd` with `commandcode login` (the docs' `cmd login` through the name `commandcode`, v3.25), started like a tab (`-l -i -c` + `CMD_COMMAND`, Windows `windowsCommandCode`, else `main.noCmd`), cwd the home folder. Hint (`login.cmdHint`): click Authorize in the browser and come back; the overlay closes after it exits with 0, else *Try again*. One `login:cmd` at a time; reopening replaces it silently.
 - **No leak.** The check and the login pty get `cmdEnv(process.env)` only (v3.25): nothing of Claude Code or the office.
 - **Not checked** against an installed `commandcode`: that `commandcode login` exits by itself after authorizing.
+
+## Link protocol 2: capabilities and the two new opt-ins (v3.31, P2P phase 3 step A)
+
+`PROTOCOL = 2` (`src/link-core.js`). The hello gains two optional fields; a 0.13 (protocol 1) peer ignores them and sends neither.
+
+```ts
+type Hello = { t: 'hello'; v: number; name: string; app?: string /* ≤20, [0-9A-Za-z.+-] */; caps?: Cap[] /* ≤16, unknown dropped */ }
+type Cap = 'res' | 'catalog' | 'manage' | 'accounts' | 'report'      // this build sends caps ['res', 'catalog']
+type Device = { …v3.29; allowManage: boolean; allowAccounts: boolean } // both false by default and for older devices.json
+agentOffice.link.setAllowManage(id, on) / setAllowAccounts(id, on): Promise<LinkView>   // IPC link:setAllowManage / link:setAllowAccounts
+LinkView.devices[i] += { allowManage, allowAccounts, v: number | null, app: string, caps: Cap[], res: Res | null, catalog: CatalogProject[] | null }
+LinkView.self = { app: string, res: Res | null, catalog: CatalogProject[] }
+```
+
+- **Never a new type to a peer that did not ask for it.** `Link` keeps per connection what the peer's hello said (`peers`, cleared on every new connection and on close). A message type introduced after protocol 1 is sent only after that peer's hello arrived with the matching cap (a v1 peer drops a session after 20 invalid messages). Test: a v1 peer receives zero new types and stays connected.
+- **Opt-ins** (Devices section, per device, under the v3.28/v3.29 ones): *Projelerin yönetimine izin ver / Allow managing projects* (`allowManage`: this device may see our project catalog; later phases add project actions under the same switch) and *Hesap girişine izin ver / Allow account sign-in* (`allowAccounts`: nothing uses it yet). `C.mayManage`, `C.mayAccounts` check them with the trust list on every use, so removing a device or turning a switch off revokes at once.
+- **Older device.** A connected device whose hello says `v: 1` shows *Update Agent Office on <device>* in the Devices section and on its Machines card.
+- **No remote typing before the first prompt (amendment 4, also for v3.28 commands).** `main.js linkTabState` answers `'starting'` until the tab's claude pid file names a session id **and** that session had its first prompt (its transcript `<id>.jsonl` exists and is not empty; `C.typingReady`). `'starting'` waits in the queue like `'busy'` (30 min TTL), so nothing is typed while Claude's folder trust dialog may be up.
+
+## Machines panel: resources and project catalog (v3.32, P2P phase 3 step A)
+
+```ts
+type Res = { at: number; mem: { total: number; free: number }; load1: number; cpus: number; tabs: number; agents: number; sleeping: number;
+             platform: 'darwin' | 'linux' | 'win32' | 'other'; app: string }
+type CatalogProject = { id: string; dirName: string /* folder name only, ≤80 */; state: 'running' | 'asleep' | 'stopped';
+                        engine: 'claude' | 'agy' | 'commandcode'; accountLabel: string /* ≤40 */ }
+{ t: 'res', res: Res }                                             // to peers with cap 'res'
+{ t: 'catalog', catalog: { projects: CatalogProject[] /* ≤50 */, shared?: false } }   // to peers with cap 'catalog' AND allowManage
+agentOffice.link.handOff(projectId, deviceId): Promise<boolean>   // IPC link:handOff: the v3.29 handoff (its confirm dialog) from the panel
+```
+
+- **res.** main computes it every 10 s (`machineData`, `C.resOf`: `os.totalmem/freemem`, `os.loadavg()[0]`; Windows has no load average, so the busy share of `os.cpus()` times since the previous sample × CPUs; tabs = running ptys, agents = workers without `doneAt`, sleeping = asleep tabs). `Link.publishRes` sends it only when `C.resChanged`: a count, the version or the CPU count changed, free memory moved > 2 % of total, load moved > 2 % of the CPU count, or 30 s passed.
+- **catalog** is display only: id, folder name, state (running pty / asleep / stopped), engine, account label. No paths, remotes, prompts or output. Sent only to a device we allow to manage (`allowManage`); turning that off sends `{ projects: [], shared: false }` once (the peer forgets it) and nothing more; a removed device's connection closes.
+- **Receiving.** `cleanRes` / `cleanCatalog` keep only the fields above (strings cleaned and cut); malformed ones are dropped as invalid messages.
+- **Panel** `renderer/machines.js` (`#machines-panel`, opened by **Makineler / Machines** in the Devices section; Esc or × closes): one card per machine, this one first, then paired devices (online first): name, online dot, RAM bar (*free of total*, *(approx.)* on macOS, which counts reclaimable memory as used), load on N CPUs, tabs · agents · sleeping, version (amber when it differs from this machine's). Under each card its projects (folder name, state, engine when not Claude, account). Actions in this step only: **Move ▸ <device>** on this machine's Claude Code projects (= v3.29 handoff) and, for a remote running Claude Code project in its snapshot, the v3.28 prompt box. A remote device without `allowManage` for us shows *Projects not shared*. Dev mock: `?machines[=n]`.

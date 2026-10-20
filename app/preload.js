@@ -107,10 +107,13 @@ contextBridge.exposeInMainWorld('agentOffice', {
     setAllow: (id, on) => ipcRenderer.invoke('link:setAllow', id, on),
     remove: (id) => ipcRenderer.invoke('link:remove', id),
     setAllowHandoff: (id, on) => ipcRenderer.invoke('link:setAllowHandoff', id, on),   // v3.29
+    setAllowManage: (id, on) => ipcRenderer.invoke('link:setAllowManage', id, on),     // v3.31: catalog, later project actions
+    setAllowAccounts: (id, on) => ipcRenderer.invoke('link:setAllowAccounts', id, on), // v3.31: later account sign-in
     handoffAnswer: (id, accept) => ipcRenderer.invoke('link:handoffAnswer', id, accept),
     handoffAsk: (dir) => ipcRenderer.invoke('link:handoffAsk', dir),     // outcome unknown: ask the receiver again
     handoffKeep: (dir) => ipcRenderer.invoke('link:handoffKeep', dir),   // outcome unknown: keep it here (confirm dialog)
     send: (id, project, text) => ipcRenderer.invoke('link:send', id, project, text),
+    handOff: (projectId, deviceId) => ipcRenderer.invoke('link:handOff', projectId, deviceId),   // v3.32 Machines panel Move ▸
     onChange: listen('link:changed'),
   },
   office: {

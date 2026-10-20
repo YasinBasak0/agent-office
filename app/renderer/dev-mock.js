@@ -14,6 +14,7 @@
 // "+" adds a fake tab without a worktree, ⇧⌘T one with a worktree; × closes without asking.
 // ?longDir → the first project's folder is a long path (title bar cuts it from the left, v3.18).
 // ?usage[=<n>] → opens project n's token usage panel (v3.13; default the first) after a moment.
+// ?machines[=<n>] → a fake device link (v3.31/v3.32) with n paired machines (default 2; one v1, one offline from n ≥ 3); opens the Machines panel.
 // ?theme=<name> → theme picker setting (v3.1; e.g. ?theme=sakura, ?theme=forest); default auto. The gallery is read from
 // ../../themes/*.json, so it is there under Electron's loadFile or a static server at the repo root (/app/renderer/index.html).
 import { galleryThemes, mergeThemes } from '../src/themes.mjs';
@@ -555,3 +556,40 @@ setInterval(() => {
 }, 500);
 
 export {};
+
+// ---- ?machines[=n]: a fake device link (contracts v3.28, v3.31, v3.32) for the Machines panel ----
+if (q.has('machines')) {
+  const n = Math.max(1, Math.min(6, Number(q.get('machines')) || 2));
+  const GB = 2 ** 30;
+  const res = (o) => ({ at: Date.now(), mem: { total: 16 * GB, free: 5.2 * GB }, load1: 2.4, cpus: 10, tabs: 3, agents: 2, sleeping: 1, platform: 'darwin', app: '0.14.0', ...o });
+  const names = ['Laptop', 'Build box', 'Old Mac', 'Studio 2', 'Mini', 'Linux VM'];
+  const lv = {
+    name: 'Studio', id: 'abcd1234', pairing: null, error: null, outgoing: [], handoffs: { out: [], in: [] }, owners: [],
+    self: { app: '0.14.0', res: res({}), catalog: [
+      { id: 'p1', dirName: 'agent-office', state: 'running', engine: 'claude', accountLabel: 'Varsayılan' },
+      { id: 'p2', dirName: 'shop', state: 'asleep', engine: 'claude', accountLabel: 'İş' },
+    ] },
+    devices: names.slice(0, n).map((name, i) => ({
+      id: String(i + 1).repeat(64).slice(0, 64), name, addedAt: Date.now() - 86400e3, allowCommands: i === 0, allowHandoff: i === 0, allowManage: i === 0, allowAccounts: false,
+      online: i !== 3, v: i === 2 ? 1 : i === 3 ? null : 2, app: i === 2 ? '' : i === 1 ? '0.13.0' : '0.14.0', caps: i === 2 || i === 3 ? [] : ['res', 'catalog'],
+      res: i === 0 ? res({ mem: { total: 32 * GB, free: 20 * GB }, load1: 0.8, cpus: 12, tabs: 2, agents: 0, sleeping: 0 })
+        : i === 1 ? res({ mem: { total: 64 * GB, free: 50 * GB }, load1: 7.9, cpus: 16, tabs: 1, agents: 4, sleeping: 0, platform: 'linux', app: '0.13.0' }) : null,
+      catalog: i === 0 ? [{ id: 'r1', dirName: 'website', state: 'running', engine: 'claude', accountLabel: 'Kişisel' }, { id: 'r2', dirName: 'notes', state: 'stopped', engine: 'agy', accountLabel: '' }] : null,
+    })),
+    remotes: [],
+  };
+  lv.remotes = [{ device: lv.devices[0].id, name: lv.devices[0].name, at: Date.now(), projects: [{ id: 'r1', name: 'website', engine: 'claude', status: 'idle', working: 0, delivered: 3, attention: null }], workers: [], delivered: 3 }];
+  const changed = listeners();
+  const view = () => structuredClone(lv);
+  const ok = () => Promise.resolve(view());
+  const setDev = (id, k, on) => { const d = lv.devices.find((x) => x.id === id); if (d) d[k] = on; return ok(); };
+  window.agentOffice.link = {
+    get: ok, invite: ok, join: () => Promise.resolve({ ok: false, error: 'bad-code', view: view() }), cancel: ok,
+    setName: (name) => { lv.name = name; return ok(); }, rename: (id, name) => setDev(id, 'name', name),
+    setAllow: (id, on) => setDev(id, 'allowCommands', on), setAllowHandoff: (id, on) => setDev(id, 'allowHandoff', on),
+    setAllowManage: (id, on) => setDev(id, 'allowManage', on), setAllowAccounts: (id, on) => setDev(id, 'allowAccounts', on),
+    remove: (id) => { lv.devices = lv.devices.filter((d) => d.id !== id); return ok(); },
+    handoffAnswer: ok, handoffAsk: ok, handoffKeep: ok, send: ok, handOff: () => Promise.resolve(true),
+    onChange: changed.add,
+  };
+}

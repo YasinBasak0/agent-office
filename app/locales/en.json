@@ -689,6 +689,37 @@
       "keepHere": "Keep it here",
       "askOffline": "The other device is offline"
     },
-    "handedOffUnknown": "Handoff outcome unknown: {project} → {device}"
+    "handedOffUnknown": "Handoff outcome unknown: {project} → {device}",
+    "allowManage": "Allow managing projects (shares the project list)",
+    "allowAccounts": "Allow account sign-in",
+    "updateThere": "Update Agent Office on {device} to see its machine and projects",
+    "machines": "Machines"
+  },
+  "machines": {
+    "title": "Machines",
+    "close": "Close",
+    "thisMachine": "this machine",
+    "none": "No paired devices: add one under Devices.",
+    "offline": "offline",
+    "noRes": "No resource data yet",
+    "update": "Update Agent Office on {device} to see its resources and projects",
+    "ram": "RAM",
+    "freeOf": "{free} free of {total}",
+    "freeOfApprox": "{free} free of {total} (approx.)",
+    "freeApprox": "macOS counts reclaimable memory as used: free is approximate",
+    "load": "Load",
+    "loadOf": "{load} on {cpus} CPUs",
+    "counts": "{tabs} tabs · {agents} agents · {sleeping} sleeping",
+    "version": "Agent Office {app}",
+    "versionDiffers": "This machine runs {app}",
+    "notShared": "Projects not shared: turn on \"Allow managing projects\" for this device on {device}",
+    "noProjects": "No projects",
+    "move": "Move",
+    "moveTo": "Move {project} to {device}",
+    "state": {
+      "running": "running",
+      "asleep": "asleep",
+      "stopped": "stopped"
+    }
   }
 }

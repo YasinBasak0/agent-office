@@ -787,7 +787,17 @@ try {
 }
 
 // v3.28: this user's other Agent Offices (renderer/devices.js): Devices section, remote projects, remote desks
-const devices = mountDevices($('sidebar'), api);
+let machines = null;
+const devices = mountDevices($('sidebar'), api, { onMachines: () => machines?.toggle() });
+// v3.32 Machines panel (renderer/machines.js): every machine's resources and projects, over the office like the others
+try {
+  const { mountMachines } = await import('./machines.js');
+  machines = mountMachines($('machines-panel'), { api, view: () => devices.view(), anchor: $('office'), onClose: () => focusActive() });
+  devices.onView(() => machines?.render());
+  if (new URLSearchParams(location.search).has('machines')) setTimeout(() => machines?.show(), 300);
+} catch (e) {
+  console.warn('Makineler paneli yüklenemedi:', e.message);
+}
 api.office.onData((local) => {
   const d = mergeRemote(local, devices.view());
   setStats(d);

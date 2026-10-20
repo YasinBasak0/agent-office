@@ -1,4 +1,4 @@
-// Device link (contract v3.28): Hyperswarm networking between this user's Agent Offices. No Electron: main.js
+// Device link (contract v3.28, v3.31/v3.32 capabilities and machine data): Hyperswarm networking between this user's Agent Offices. No Electron: main.js
 // gives it the key pair, the trust list and callbacks; tests run two of these on a local DHT testnet.
 'use strict';
 const crypto = require('crypto');
@@ -11,7 +11,7 @@ class Link extends EventEmitter {
   /**
    * @param {{ keyPair: { publicKey: Buffer, secretKey: Buffer }, name: string, devices?: C.Device[], secrets?: Record<string, string>,
    *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number,
-   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null }} o
+   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null, app?: string }} o
    */
   constructor(o) {
     super();
@@ -45,6 +45,15 @@ class Link extends EventEmitter {
     // delivered is sent when the sender is back, and the sender can ask again (ho-query) at any time.
     this.resultsFile = o.resultsFile || null;
     this.results = this.loadResults();
+    // v3.31/v3.32: what each connected peer said in its hello, and the machine data exchanged by capability
+    this.appVersion = /^[0-9A-Za-z.+-]{1,20}$/.test(String(o.app || '')) ? String(o.app) : '';
+    this.peers = new Map();       // pub → { v, app, caps: string[] } (from its hello on this connection)
+    this.res = null;              // this machine's resources (publishRes)
+    this.catalog = null;          // this machine's project catalog (publishCatalog)
+    this.sentRes = new Map();     // pub → json of the res last sent
+    this.sentCatalog = new Map(); // pub → json of the catalog last sent ('off' after a "not shared any more")
+    this.peerRes = new Map();     // pub → res received
+    this.peerCatalog = new Map(); // pub → catalog received
     this.destroyed = false;
   }
 
@@ -166,7 +175,7 @@ class Link extends EventEmitter {
   }
 
   addDevice(pub, name, secret) {
-    const device = { pub, name: C.deviceName(name), addedAt: this.now(), allowCommands: false, allowHandoff: false };   // both OFF by default
+    const device = { pub, name: C.deviceName(name), addedAt: this.now(), allowCommands: false, allowHandoff: false, allowManage: false, allowAccounts: false };   // all OFF by default
     this.devices = [...this.devices.filter((d) => d.pub !== pub), device];
     this.secrets[pub] = secret;
     this.swarm?.join(C.pairTopic(secret), { server: true, client: true });
@@ -182,6 +191,7 @@ class Link extends EventEmitter {
     if (old && old !== conn) old.destroy();
     this.conns.set(device.pub, conn);
     this.sentJson.delete(device.pub);
+    this.forgetPeer(device.pub);   // a new connection: no capability is known until its hello
     let invalid = 0;
     if (_why !== 'paired') this.reader(conn, (raw) => this.handle(conn, device, raw, () => { if (++invalid > 20) conn.destroy(); }));
     // heartbeat: ping every heartbeatMs; no data at all for HEARTBEAT_MISSES of them = the peer is gone
@@ -196,6 +206,7 @@ class Link extends EventEmitter {
       if (this.conns.get(device.pub) !== conn) return;
       this.conns.delete(device.pub);
       this.remotes.delete(device.pub);
+      this.forgetPeer(device.pub);
       // its answers came on this connection: a command still sent or queued will never hear its outcome
       for (const o of this.outgoing) if (o.pub === device.pub && (o.status === 'sent' || o.status === 'queued')) o.status = 'unknown';
       for (const h of this.handoffsOut.values()) if (h.pub === device.pub) h.finish?.({ ok: false, reason: 'offline' });
@@ -203,7 +214,7 @@ class Link extends EventEmitter {
       for (const h of [...this.handoffsIn.values()]) if (h.pub === device.pub && h.stage !== 'applying') this.dropIn(h, 'offline', false);
       this.emit('change');
     });
-    this.write(conn, { t: 'hello', v: C.PROTOCOL, name: this.name });
+    this.write(conn, this.helloMsg());
     let sent = false;
     for (const [id, r] of this.results) if (r.pub === device.pub && !r.sent && (r.status === 'applied' || r.status === 'not-applied')) {
       this.write(conn, this.resultMsg(id, r));
@@ -220,7 +231,17 @@ class Link extends EventEmitter {
     const m = C.validateMessage(raw);
     if (!m) return onInvalid();
     if (m.t === 'hello') {
-      if (m.name !== d.name && !d.renamed) { /* the local name wins; the remote name is only a default at pairing */ }
+      // the local name wins; the remote name is only a default at pairing. Its caps decide what it is sent (v3.31).
+      this.peers.set(d.pub, { v: m.v, app: m.app || '', caps: m.caps || [] });
+      this.flushRes(d.pub, conn);
+      this.flushCatalog(d.pub, conn);
+      this.emit('change');
+    } else if (m.t === 'res') {
+      this.peerRes.set(d.pub, m.res);
+      this.emit('change');
+    } else if (m.t === 'catalog') {
+      if (m.catalog.shared) this.peerCatalog.set(d.pub, m.catalog.projects); else this.peerCatalog.delete(d.pub);
+      this.emit('change');
     } else if (m.t === 'state') {
       const prev = this.remotes.get(d.pub)?.snap || null;
       this.remotes.set(d.pub, { snap: m.snap, at: this.now() });
@@ -477,14 +498,66 @@ class Link extends EventEmitter {
     this.write(conn, { t: 'state', seq: ++this.seq, snap: this.snap });
   }
 
+  // --- v3.31 capabilities, v3.32 machine resources and catalog
+
+  helloMsg() { return { t: 'hello', v: C.PROTOCOL, name: this.name, ...(this.appVersion ? { app: this.appVersion } : {}), caps: C.OUR_CAPS }; }
+  /** Did this peer's hello (on the current connection) name the capability? A v1 peer names none. */
+  peerHas(pub, cap) { return Boolean(this.peers.get(pub)?.caps.includes(cap)); }
+  forgetPeer(pub) {
+    for (const m of [this.peers, this.sentRes, this.sentCatalog, this.peerRes, this.peerCatalog]) m.delete(pub);
+  }
+  /** This machine's resources: sent to peers with 'res' when it changed enough (C.resChanged). */
+  publishRes(res) {
+    if (!res || !C.resChanged(this.res, res)) return;
+    this.res = res;
+    for (const [pub, conn] of this.conns) this.flushRes(pub, conn);
+  }
+  flushRes(pub, conn) {
+    if (!this.res || !this.peerHas(pub, 'res')) return;
+    const json = JSON.stringify(this.res);
+    if (this.sentRes.get(pub) === json) return;
+    this.sentRes.set(pub, json);
+    this.write(conn, { t: 'res', res: this.res });
+  }
+  /** This machine's project catalog (display only): sent only to peers with 'catalog' that we allow to manage. */
+  publishCatalog(catalog) {
+    const clean = C.cleanCatalog(catalog);
+    if (!clean) return;
+    this.catalog = clean.projects;
+    for (const [pub, conn] of this.conns) this.flushCatalog(pub, conn);
+  }
+  flushCatalog(pub, conn) {
+    if (!this.peerHas(pub, 'catalog')) return;
+    if (!C.mayManage(this.devices, this.secrets, pub)) {
+      // it was shared on this connection: tell it to forget (an empty message, no data)
+      if (this.sentCatalog.has(pub) && this.sentCatalog.get(pub) !== 'off') { this.sentCatalog.set(pub, 'off'); this.write(conn, { t: 'catalog', catalog: { projects: [], shared: false } }); }
+      return;
+    }
+    if (!this.catalog) return;
+    const json = JSON.stringify(this.catalog);
+    if (this.sentCatalog.get(pub) === json) return;
+    this.sentCatalog.set(pub, json);
+    this.write(conn, { t: 'catalog', catalog: { projects: this.catalog } });
+  }
+
   // --- the trust list
 
   rename(pub, name) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, name: C.deviceName(name, d.name) } : d)); this.persist(); this.emit('change'); }
   setAllow(pub, on) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowCommands: on === true } : d)); this.persist(); this.emit('change'); }
   setAllowHandoff(pub, on) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowHandoff: on === true } : d)); this.persist(); this.emit('change'); }
+  /** v3.31 "Allow managing projects": the catalog goes to that device (and stops at once when turned off). */
+  setAllowManage(pub, on) {
+    this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowManage: on === true } : d));
+    this.persist();
+    const conn = this.conns.get(pub);
+    if (conn) this.flushCatalog(pub, conn);
+    this.emit('change');
+  }
+  /** v3.31 "Allow account sign-in" (used by later phases; nothing is sent for it yet). */
+  setAllowAccounts(pub, on) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowAccounts: on === true } : d)); this.persist(); this.emit('change'); }
   setName(name) {
     this.name = C.deviceName(name, this.name);
-    for (const conn of this.conns.values()) this.write(conn, { t: 'hello', v: C.PROTOCOL, name: this.name });
+    for (const conn of this.conns.values()) this.write(conn, this.helloMsg());
     this.persist(); this.emit('change');
   }
   async remove(pub) {
@@ -494,6 +567,7 @@ class Link extends EventEmitter {
     this.conns.get(pub)?.destroy();
     this.conns.delete(pub);
     this.remotes.delete(pub);
+    this.forgetPeer(pub);
     this.persist();
     this.emit('change');
     if (secret) await this.swarm?.leave(C.pairTopic(secret)).catch(() => {});
@@ -507,7 +581,13 @@ class Link extends EventEmitter {
     return {
       name: this.name, id: this.pub.slice(0, 8),
       pairing: this.pairing ? { role: this.pairing.role, code: this.pairing.role === 'inviter' ? this.pairing.code : null, expiresAt: this.pairing.expiresAt } : null,
-      devices: this.devices.map((d) => ({ id: d.pub, name: d.name, addedAt: d.addedAt, allowCommands: d.allowCommands, allowHandoff: d.allowHandoff, online: this.conns.has(d.pub) })),
+      devices: this.devices.map((d) => {
+        const peer = this.peers.get(d.pub);
+        return { id: d.pub, name: d.name, addedAt: d.addedAt, allowCommands: d.allowCommands, allowHandoff: d.allowHandoff, allowManage: d.allowManage, allowAccounts: d.allowAccounts, online: this.conns.has(d.pub),
+          // v3.31/v3.32: null = no hello yet; v 1 = an older Agent Office there (no caps)
+          v: peer ? peer.v : null, app: peer?.app || '', caps: peer?.caps || [], res: this.peerRes.get(d.pub) || null, catalog: this.peerCatalog.get(d.pub) || null };
+      }),
+      self: { app: this.appVersion, res: this.res, catalog: this.catalog || [] },
       remotes: [...this.remotes].map(([pub, r]) => ({ device: pub, name: this.devices.find((d) => d.pub === pub)?.name || '?', at: r.at, ...r.snap })),
       outgoing: this.outgoing.map((o) => ({ ...o, deviceName: this.devices.find((d) => d.pub === o.pub)?.name || '?' })),
       handoffs: {

@@ -661,6 +661,37 @@
       "keepHere": "Burada tut",
       "askOffline": "Diğer cihaz çevrimdışı"
     },
-    "handedOffUnknown": "Devir sonucu bilinmiyor: {project} → {device}"
+    "handedOffUnknown": "Devir sonucu bilinmiyor: {project} → {device}",
+    "allowManage": "Projeleri yönetmeye izin ver (proje listesini paylaşır)",
+    "allowAccounts": "Hesap girişine izin ver",
+    "updateThere": "Makinesini ve projelerini görmek için {device} cihazında Agent Office'i güncelleyin",
+    "machines": "Makineler"
+  },
+  "machines": {
+    "title": "Makineler",
+    "close": "Kapat",
+    "thisMachine": "bu makine",
+    "none": "Eşleşmiş cihaz yok: Cihazlar bölümünden ekleyin.",
+    "offline": "çevrimdışı",
+    "noRes": "Henüz kaynak bilgisi yok",
+    "update": "Kaynaklarını ve projelerini görmek için {device} cihazında Agent Office'i güncelleyin",
+    "ram": "RAM",
+    "freeOf": "{total} içinde {free} boş",
+    "freeOfApprox": "{total} içinde {free} boş (yaklaşık)",
+    "freeApprox": "macOS geri alınabilir belleği kullanılmış sayar: boş değer yaklaşıktır",
+    "load": "Yük",
+    "loadOf": "{cpus} CPU üzerinde {load}",
+    "counts": "{tabs} sekme · {agents} ajan · {sleeping} uyuyan",
+    "version": "Agent Office {app}",
+    "versionDiffers": "Bu makinede {app} çalışıyor",
+    "notShared": "Projeler paylaşılmıyor: {device} üzerinde bu cihaz için \"Projeleri yönetmeye izin ver\"i açın",
+    "noProjects": "Proje yok",
+    "move": "Taşı",
+    "moveTo": "{project} projesini {device} cihazına taşı",
+    "state": {
+      "running": "çalışıyor",
+      "asleep": "uyuyor",
+      "stopped": "durdu"
+    }
   }
 }

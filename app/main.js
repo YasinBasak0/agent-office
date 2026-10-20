@@ -27,6 +27,7 @@ const AW = require('./src/agy-watch.js');
 const AG = require('./src/agy-auth.js');
 const CA = require('./src/cmd-auth.js');
 const LH = require('./src/link-host.js');
+const LC = require('./src/link-core.js');
 // dev only: a throwaway profile (two instances side by side for the device link, v3.28); never in the packaged app
 if (!app.isPackaged && process.env.AGENT_OFFICE_USER_DATA) {
   app.setPath('userData', path.resolve(process.env.AGENT_OFFICE_USER_DATA));
@@ -1171,12 +1172,39 @@ function linkTabState(projectId) {
   const t = terms.get(projectId);
   if (!p || !t) return 'gone';
   if (handoffLocks.has(projectId)) return 'busy';   // being handed off: remote commands wait (and fail once it left)
-  const claude = readJson(Z.claudePidFile(A.accountOf(state, p).configDir, app.getPath('home'), t.pid));
+  const { configDir } = A.accountOf(state, p);
+  const claude = readJson(Z.claudePidFile(configDir, app.getPath('home'), t.pid));
   const sid = validSid(claude?.sessionId);
+  // v3.31 (amendment 4): nothing is typed in from outside before the session is known and had its first prompt
+  if (claude && !LC.typingReady({ sessionId: sid, prompted: sessionPrompted(sid, configDir) })) return 'starting';
   if (!claude || R.isTurnBusy({ claude, office: sid ? office()?.readSession(sid) : undefined })) return 'busy';
   return activity.get(projectId)?.draft || attention.get(projectId) === 'permission' ? 'busy' : 'ready';
 }
+// sessions known to have had a first prompt: Claude Code writes the transcript (<id>.jsonl) with the first message
+const promptedSids = new Set();
+function sessionPrompted(sid, configDir) {
+  if (!sid) return false;
+  if (promptedSids.has(sid)) return true;
+  const hit = TIO.findSessionFiles(sid, configDir, app.getPath('home')).some((f) => { try { return fs.statSync(f).size > 0; } catch { return false; } });
+  if (hit) promptedSids.add(sid);
+  return hit;
+}
+// v3.32: this machine's resources every 10 s (sent only when changed enough) and its project catalog (display only)
+let resSample = null;
+let runningAgents = 0;
+function machineData() {
+  const os = require('os');
+  const r = LC.resOf({ now: Date.now(), total: os.totalmem(), free: os.freemem(), loadavg: os.loadavg(), cpus: os.cpus(), platform: process.platform, app: app.getVersion(),
+    tabs: terms.size, agents: runningAgents, sleeping: asleep.size, prev: resSample });
+  resSample = r.sample;
+  const catalog = { projects: state.projects.slice(0, 50).map((p) => ({ id: p.id, dirName: path.basename(p.dir), state: terms.has(p.id) ? 'running' : asleep.has(p.id) ? 'asleep' : 'stopped', engine: P.engineOf(p), accountLabel: A.accountOf(state, p).label || '' })) };
+  return { res: r.res, catalog };
+}
+let machineTimer = null;
 function startLink() {
+  clearInterval(machineTimer);
+  machineTimer = setInterval(() => { try { const m = machineData(); linkHost?.publishMachine(m.res, m.catalog); } catch (e) { console.error('link res:', e.message); } }, 10000);
+  machineTimer.unref?.();
   linkHost = LH.setupLink({
     app, safeStorage, ipcMain, send, T,
     notify: (title, body) => notify(title, body, null),
@@ -1284,6 +1312,12 @@ function handoffDeps() {
     },
   };
 }
+// v3.32 Machines panel: "Move ▸ <device>" on a project card = the same v3.29 handoff as the project menu
+ipcMain.handle('link:handOff', (_e, projectId, deviceId) => {
+  const dv = linkHost?.devices().find((x) => x.id === String(deviceId));
+  if (dv && dv.online) handOffProject(String(projectId), dv).catch((e) => console.error('handoff:', e.message));
+  return Boolean(dv && dv.online);
+});
 async function handOffProject(projectId, device) {
   const p = P.findProject(state, projectId);
   if (!p || !linkHost || !win) return;
@@ -1576,6 +1610,7 @@ function startPolling() {
       send('office:data', d);
       lastOffice = d.projects;
       updateAttention();
+      runningAgents = (d.workers || []).filter((w) => !w.doneAt).length;
       linkHost?.publish(state.projects.map((p) => ({ id: p.id, name: p.name, engine: P.engineOf(p) })), d, attention);
     } catch (e) { console.error('readOffice:', e.message); }
   }, 500);
