@@ -25,6 +25,7 @@ const FB = require('./src/fallback.js');
 const EN = require('./src/engine.js');
 const AW = require('./src/agy-watch.js');
 const AG = require('./src/agy-auth.js');
+const CA = require('./src/cmd-auth.js');
 const LH = require('./src/link-host.js');
 // dev only: a throwaway profile (two instances side by side for the device link, v3.28); never in the packaged app
 if (!app.isPackaged && process.env.AGENT_OFFICE_USER_DATA) {
@@ -463,6 +464,7 @@ function onFocus() {
   lastFocusCheck = Date.now();
   checkAllAuth();
   checkAgyAuth();
+  checkCmdAuth();
 }
 
 // `claude auth login` pty: same channel as the project ptys, id 'login:<accountId>'. One per account;
@@ -560,6 +562,61 @@ function startAgyLogin() {
     logins.delete(id);
     send('pty:exit', id, exitCode);
     checkAgyAuth();
+  });
+}
+
+// --- Command Code login (contract v3.30, src/cmd-auth.js): one login per user (`cmd login`, ~/.commandcode/auth.json).
+// The check and the login pty get only cmdEnv's allowlist: nothing of Claude Code or the office reaches Command Code.
+// Logged in = auth.json exists; the file holds the API key and is never read.
+const CMD_LOGIN = 'login:cmd';
+let cmdAuth = /** @type {any} */ ({ installed: false, state: 'checking' });
+let cmdChecking = null;
+const sendCmdAuth = () => send('cmd:auth', cmdAuth);
+function cmdStatus(env) {
+  if (IS_WIN) return Promise.resolve({ path: OS.findCommandCode(env, isFile) });
+  return new Promise((resolve) => {
+    const child = execFile(shell(), ['-l', '-i', '-c', CA.CMD_STATUS_COMMAND], { env, timeout: 15000, cwd: app.getPath('home') },
+      (_err, stdout) => resolve(CA.parseCmdStatus(String(stdout || ''))));
+    try { child.stdin?.end(); } catch {}
+  });
+}
+function checkCmdAuth() {
+  if (cmdChecking) return cmdChecking;
+  cmdChecking = (async () => {
+    const env = EN.cmdEnv(process.env);
+    const status = await cmdStatus(env);
+    cmdAuth = CA.cmdAuthState(status, env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.existsSync(f));
+    sendCmdAuth();
+  })().catch((e) => console.error('cmd auth:', e.message)).finally(() => { cmdChecking = null; });
+  return cmdChecking;
+}
+// "Giriş yap": `commandcode login` in a login pty (it opens the browser to authorize). Same channel and replace rules as agy's.
+function startCmdLogin() {
+  if (!win) return;
+  const id = CMD_LOGIN;
+  const old = logins.get(id);
+  if (old) { logins.delete(id); try { old.kill(); } catch {} }
+  const { cols, rows } = sizes.get(id) || lastSize;
+  const env = EN.cmdEnv(process.env);
+  let t;
+  try {
+    const win32 = IS_WIN ? windowsCommandCode(CA.CMD_LOGIN_ARGS, env) : null;
+    if (IS_WIN && !win32) return sendNoCommandCode(id);
+    t = pty.spawn(win32 ? win32.file : shell(), win32 ? ptyArgs(win32) : ['-l', '-i', '-c', EN.CMD_COMMAND, EN.CMD.bin, ...CA.CMD_LOGIN_ARGS], {
+      name: 'xterm-256color', cols, rows, cwd: app.getPath('home'), env,
+    });
+  } catch (e) {
+    console.error('cmd login pty:', e.message);
+    send('pty:exit', id, -1);
+    return;
+  }
+  logins.set(id, t);
+  t.onData((d) => { if (logins.get(id) === t) send('pty:data', id, d); });
+  t.onExit(({ exitCode }) => {
+    if (logins.get(id) !== t) return;
+    logins.delete(id);
+    send('pty:exit', id, exitCode);
+    checkCmdAuth();
   });
 }
 
@@ -1595,6 +1652,8 @@ ipcMain.handle('accounts:refreshAuth', async (_e, id) => {
 ipcMain.handle('accounts:login', (_e, id) => { startLogin(id); });
 ipcMain.handle('agy:auth', async (_e, refresh) => { if (refresh) await checkAgyAuth(); return agyAuth; });
 ipcMain.handle('agy:login', () => { startAgyLogin(); });
+ipcMain.handle('cmd:auth', async (_e, refresh) => { if (refresh) await checkCmdAuth(); return cmdAuth; });
+ipcMain.handle('cmd:login', () => { startCmdLogin(); });
 ipcMain.handle('accounts:logout', async (_e, id) => {
   const account = accountById(id);
   // the default account is the user's normal Claude Code login: the app does not log out of it
@@ -2246,9 +2305,11 @@ function buildMenu() {
 // resumeWork = at startup, tabs interrupted mid-turn carry on by themselves (needs resume; see src/resume.js);
 // shareMcp = each session also gets the other office projects' MCP servers (contract v3.9), for sessions started afterwards;
 // reloadMcp = an idle running tab whose MCP servers changed restarts in its session (contract v3.11);
-// fallback = a project at the usage limit moves to its backup account and back after the reset (contract v3.17)
+// fallback = a project at the usage limit moves to its backup account and back after the reset (contract v3.17);
+// showAgyAccount / showCmdAccount = the Antigravity / Command Code row in Accounts: true (added via Add account),
+// false (removed), null (the old rule: shown when installed or a project runs it) (contract v3.30)
 const themeSetting = (v) => (TH ? TH.normalizeThemeSetting(v) : 'auto');
-const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, shareMcp: state.shareMcp !== false, reloadMcp: state.reloadMcp !== false, fallback: state.fallback !== false, sleepMinutes: sleepMinutes() });
+const prefs = () => ({ resume: state.resume !== false, resumeWork: state.resumeWork !== false, theme: themeSetting(state.theme), manager: state.manager !== false, shareMcp: state.shareMcp !== false, reloadMcp: state.reloadMcp !== false, fallback: state.fallback !== false, sleepMinutes: sleepMinutes(), showAgyAccount: typeof state.showAgyAccount === 'boolean' ? state.showAgyAccount : null, showCmdAccount: typeof state.showCmdAccount === 'boolean' ? state.showCmdAccount : null });
 ipcMain.handle('prefs:get', () => prefs());
 ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.resume === 'boolean' && p.resume !== prefs().resume) commit({ ...state, resume: p.resume });
@@ -2257,6 +2318,7 @@ ipcMain.handle('prefs:set', (_e, p) => {
   if (p && typeof p.shareMcp === 'boolean' && p.shareMcp !== prefs().shareMcp) commit({ ...state, shareMcp: p.shareMcp });
   if (p && typeof p.reloadMcp === 'boolean' && p.reloadMcp !== prefs().reloadMcp) commit({ ...state, reloadMcp: p.reloadMcp });
   if (p && typeof p.fallback === 'boolean' && p.fallback !== prefs().fallback) commit({ ...state, fallback: p.fallback });
+  for (const k of ['showAgyAccount', 'showCmdAccount']) if (p && typeof p[k] === 'boolean' && p[k] !== prefs()[k]) commit({ ...state, [k]: p[k] });
   if (p && typeof p.theme === 'string' && themeSetting(p.theme) !== prefs().theme) commit({ ...state, theme: themeSetting(p.theme) });
   if (p && Z.SLEEP_CHOICES.includes(p.sleepMinutes) && p.sleepMinutes !== prefs().sleepMinutes) {
     commit({ ...state, sleepMinutes: p.sleepMinutes });
@@ -2311,6 +2373,7 @@ if (!isSecondInstance) app.whenReady().then(async () => {
   lastFocusCheck = Date.now();
   checkAllAuth();
   checkAgyAuth();
+  checkCmdAuth();
   startLink();
   // in the packaged app the icon comes from the .icns; under npm start set it on the Dock by hand (Linux has no app.dock)
   if (!app.isPackaged) try { app.dock?.setIcon(path.join(__dirname, 'build', 'icon.png')); } catch {}

@@ -3511,3 +3511,53 @@ test('müdür modeli: kenar çubuğunda yalnız Claude motorunda, Ajan modelinde
     for (const k of ['bossModel', 'bossModelTitle', 'bossModelAuto', 'bossModelSonnet', 'bossModelOpus', 'bossModelHaiku']) assert.ok(j[k], `${lang}.${k}`);
   }
 });
+
+// --- Command Code login in the Accounts section (contract v3.30)
+test('cmd-auth: giriş = yalnız ~/.commandcode/auth.json var mı (içeriği okunmaz), geçici HOME ile (v3.30)', () => {
+  const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+  const CA = require('../src/cmd-auth.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-cmd-home-'));
+  try {
+    const status = { path: '/usr/local/bin/commandcode' };
+    assert.equal(CA.cmdAuthFile(home), path.join(home, '.commandcode', 'auth.json'));
+    assert.deepEqual(CA.cmdAuthState(status, home, (f) => fs.existsSync(f)), { installed: true, state: 'out' });
+    fs.mkdirSync(path.join(home, '.commandcode'));
+    fs.writeFileSync(path.join(home, '.commandcode', 'auth.json'), '{"apiKey":"secret-value"}');
+    const real = fs.readFileSync;
+    let reads = 0;
+    fs.readFileSync = (...a) => { reads++; return real(...a); };
+    try {
+      const st = CA.cmdAuthState(status, home, (f) => fs.existsSync(f));
+      assert.deepEqual(st, { installed: true, state: 'in' });
+      assert.equal(JSON.stringify(st).includes('secret'), false);
+    } finally { fs.readFileSync = real; }
+    assert.equal(reads, 0);
+    assert.deepEqual(CA.cmdAuthState({ path: null }, home, () => true), { installed: false, state: 'missing' });
+    assert.deepEqual(CA.cmdAuthState(status, home, () => { throw new Error('x'); }), { installed: true, state: 'out' });
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('cmd-auth: durum çıktısı ve kurulum satırı (v3.30)', () => {
+  const CA = require('../src/cmd-auth.js');
+  assert.deepEqual(CA.parseCmdStatus('rc noise\n/opt/homebrew/bin/commandcode\n'), { path: '/opt/homebrew/bin/commandcode' });
+  assert.deepEqual(CA.parseCmdStatus('commandcode not found\n'), { path: null });
+  assert.equal(CA.parseCmdStatus('C:\\npm\\commandcode.cmd').path, 'C:\\npm\\commandcode.cmd');
+  assert.equal(CA.CMD_INSTALL, 'npm i -g command-code');
+  assert.deepEqual(CA.CMD_LOGIN_ARGS, ['login']);
+  assert.doesNotMatch(CA.CMD_STATUS_COMMAND, /auth\.json|cat |\$[A-Z]/);
+});
+
+test('checkCmdAuth / startCmdLogin: ortam yalnız cmdEnv; auth.json okunmaz, Claude/ofis yok (v3.30)', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  for (const name of ['function checkCmdAuth(', 'function startCmdLogin(', 'function cmdStatus(']) {
+    const start = src.indexOf(name);
+    assert.ok(start > 0, name);
+    const body = src.slice(start, src.indexOf('\n}\n', start)).replace(/\/\/.*$/gm, '');
+    if (name !== 'function cmdStatus(') assert.match(body, /const env = EN\.cmdEnv\(process\.env\);/, name);
+    for (const banned of ['sessionEnv', 'ptyEnv', 'agyEnv', 'officeDirectoryFile', 'sharedConfig', 'pluginDir', 'usageStatusLine', 'AGENT_OFFICE_', 'CLAUDE_', 'readFileSync', 'process.env.', 'env[']) {
+      assert.equal(body.includes(banned), false, `${name} uses ${banned}`);
+    }
+  }
+  assert.match(src, /EN\.CMD_COMMAND, EN\.CMD\.bin, \.\.\.CA\.CMD_LOGIN_ARGS/);
+  assert.match(src, /const CMD_LOGIN = 'login:cmd';/);
+});

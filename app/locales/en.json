@@ -205,7 +205,22 @@
     "agyAdc": "Google ADC",
     "agyKeyNote": "agy uses an API key or ADC, not a login: /logout does nothing. To stop, remove GEMINI_API_KEY (or unset AGY_ADC_AUTH).",
     "agyUnknown": "login kept by agy",
-    "agyUnknownTitle": "agy keeps its login in the system keychain, which the app does not read. Log in signs in if needed; Log out opens agy for /logout."
+    "agyUnknownTitle": "agy keeps its login in the system keychain, which the app does not read. Log in signs in if needed; Log out opens agy for /logout.",
+    "addAccountTitle": "Add an account: Claude, Google Antigravity or Command Code",
+    "addClaude": "Claude",
+    "addAgy": "Google Antigravity",
+    "addAgyTitle": "Show the Antigravity CLI (agy) login here and sign in. One login for every Antigravity project.",
+    "addCmd": "Command Code",
+    "addCmdTitle": "Show the Command Code login here and sign in. One login for every Command Code project.",
+    "hideEngineRow": "Remove from the list (does not log out; use Log out for that)",
+    "checkAgain": "Check again",
+    "checkAgainTitle": "Look for it again after installing it in a terminal",
+    "cmdTitle": "Command Code (commandcode): one login for every Command Code project, kept in ~/.commandcode.",
+    "cmdMissing": "commandcode not installed",
+    "cmdMissingTitle": "A Command Code project needs the Command Code CLI (Node.js 22 or newer). Install it in a terminal, then press Check again.",
+    "cmdInstallTitle": "Install command from commandcode.ai/docs (run it yourself in a terminal)",
+    "cmdInTitle": "Command Code has a saved login (~/.commandcode/auth.json). The app only checks that the file exists.",
+    "cmdLoginTitle": "Run commandcode login here (a browser opens to authorize)"
   },
   "panel": {
     "types": {
@@ -311,7 +326,8 @@
     "agyLogoutTitle": "Log out of Antigravity",
     "checking": "checking login…",
     "agyHint": "Sign in with Google in the browser that opens (over SSH, paste the code here). When agy's prompt appears you are logged in: type /exit.",
-    "agyLogoutHint": "Type /logout and press Enter to sign out of Antigravity, then /exit."
+    "agyLogoutHint": "Type /logout and press Enter to sign out of Antigravity, then /exit.",
+    "cmdHint": "Click Authorize in the browser that opens, then come back here. When it says the API key is stored, you are logged in and this window closes."
   },
   "terminal": {
     "exited": "— Claude exited — press Enter to restart —",

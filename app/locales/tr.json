@@ -204,7 +204,22 @@
     "agyAdc": "Google ADC",
     "agyKeyNote": "agy giriş yerine API anahtarı ya da ADC kullanıyor: /logout bir şey yapmaz. Bırakmak için GEMINI_API_KEY'i kaldır (ya da AGY_ADC_AUTH'u sil).",
     "agyUnknown": "giriş agy'de",
-    "agyUnknownTitle": "agy girişini sistem anahtar zincirinde tutar, uygulama onu okumaz. Giriş yap gerekirse giriş yaptırır; Çıkış yap /logout için agy'yi açar."
+    "agyUnknownTitle": "agy girişini sistem anahtar zincirinde tutar, uygulama onu okumaz. Giriş yap gerekirse giriş yaptırır; Çıkış yap /logout için agy'yi açar.",
+    "addAccountTitle": "Hesap ekle: Claude, Google Antigravity veya Command Code",
+    "addClaude": "Claude",
+    "addAgy": "Google Antigravity",
+    "addAgyTitle": "Antigravity CLI (agy) girişini burada göster ve giriş yap. Tüm Antigravity projeleri için tek giriş.",
+    "addCmd": "Command Code",
+    "addCmdTitle": "Command Code girişini burada göster ve giriş yap. Tüm Command Code projeleri için tek giriş.",
+    "hideEngineRow": "Listeden kaldır (çıkış yapmaz; bunun için Çıkış yap)",
+    "checkAgain": "Tekrar kontrol et",
+    "checkAgainTitle": "Bir terminalde kurduktan sonra yeniden ara",
+    "cmdTitle": "Command Code (commandcode): tüm Command Code projeleri için tek giriş, ~/.commandcode içinde saklanır.",
+    "cmdMissing": "commandcode kurulu değil",
+    "cmdMissingTitle": "Command Code projesi için Command Code CLI gerekir (Node.js 22 veya üstü). Bir terminalde kurun, sonra Tekrar kontrol et'e basın.",
+    "cmdInstallTitle": "commandcode.ai/docs kurulum komutu (bir terminalde kendiniz çalıştırın)",
+    "cmdInTitle": "Command Code'un kayıtlı bir girişi var (~/.commandcode/auth.json). Uygulama yalnızca dosyanın var olduğuna bakar.",
+    "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)"
   },
   "panel": {
     "types": {
@@ -301,7 +316,8 @@
     "agyLogoutTitle": "Antigravity'den çıkış",
     "checking": "giriş denetleniyor…",
     "agyHint": "Açılan tarayıcıda Google ile giriş yap (SSH'te kodu buraya yapıştır). agy'nin istemi gelince giriş tamamdır: /exit yaz.",
-    "agyLogoutHint": "Antigravity'den çıkmak için /logout yazıp Enter'a bas, sonra /exit."
+    "agyLogoutHint": "Antigravity'den çıkmak için /logout yazıp Enter'a bas, sonra /exit.",
+    "cmdHint": "Açılan tarayıcıda Authorize'a tıklayın, sonra buraya dönün. API anahtarının kaydedildiğini yazınca giriş yapılmıştır ve bu pencere kapanır."
   },
   "terminal": {
     "exited": "— Claude kapandı — yeniden başlatmak için Enter —",
