@@ -932,3 +932,25 @@ agentOffice.link.handOff(projectId, deviceId): Promise<boolean>   // IPC link:ha
 - **catalog** is display only: id, folder name, state (running pty / asleep / stopped), engine, account label. No paths, remotes, prompts or output. Sent only to a device we allow to manage (`allowManage`); turning that off sends `{ projects: [], shared: false }` once (the peer forgets it) and nothing more; a removed device's connection closes.
 - **Receiving.** `cleanRes` / `cleanCatalog` keep only the fields above (strings cleaned and cut); malformed ones are dropped as invalid messages.
 - **Panel** `renderer/machines.js` (`#machines-panel`, opened by **Makineler / Machines** in the Devices section; Esc or × closes): one card per machine, this one first, then paired devices (online first): name, online dot, RAM bar (*free of total*, *(approx.)* on macOS, which counts reclaimable memory as used), load on N CPUs, tabs · agents · sleeping, version (amber when it differs from this machine's). Under each card its projects (folder name, state, engine when not Claude, account). Actions in this step only: **Move ▸ <device>** on this machine's Claude Code projects (= v3.29 handoff) and, for a remote running Claude Code project in its snapshot, the v3.28 prompt box. A remote device without `allowManage` for us shows *Projects not shared*. Dev mock: `?machines[=n]`.
+
+## One boss: dispatch and reports (v3.35, P2P phase 3 step B)
+
+```ts
+// --mcp-config server of a manager-mode boss tab (main tab only), added in prepareShared after mcpPlan (extra):
+{ 'agent-office': { type: 'stdio', command: process.execPath, args: ['<app>/src/office-mcp.js'],
+  env: { ELECTRON_RUN_AS_NODE: '1', AGENT_OFFICE_SOCKET: string, AGENT_OFFICE_TOKEN: string /* per tab start */ } } }
+office_machines() → { machines: [{ machine, thisMachine?, online, reports?, projects: [{ id, name, engine?|status?, state? }] }] }
+office_dispatch({ machine?, project, task /* ≤8 KB */ }) → { id, status: 'queued'|'sent'|'rejected', reason? }
+office_reports({ id? }) → { note, reports: [{ id, machine, project, status, reason?, at, report?: Report }] }   // newest 10
+{ t: 'cmd', …v3.28, report?: true }                                  // only to a peer with cap 'report'
+{ t: 'cmd-report', id, ok, partial, summary /* ≤16 KB */, commits /* ≤12 {hash, subject} */, at }   // only to a peer with cap 'report'
+inbox row (dispatcher): { at, kind: 'report-ready', id, machine /* ≤64 */, project /* ≤64 */ }   // never report text
+```
+
+- **Socket and token.** The app listens on `userData/link/office.sock` (0600; folder 0700), or `<tmp>/ao-<hash>/o.sock` when that path is over 100 bytes; a named pipe on Windows. Each boss tab start gets a fresh token, kept only in the server's `env` inside the tab's 0600 `--mcp-config` file (never in the pty env); it stops working when the tab's MCP file is removed. A wrong token gets `unauthorized`. The server is excluded from the MCP fingerprint (v3.11: `mcpFingerprint` reads `mcpPlan` only) and from the office directory.
+- **Consent.** `mcp__agent-office__office_dispatch` is never auto-allowed: Claude Code's permission prompt is the per-dispatch consent. Nothing is auto-allowed in this step.
+- **Dispatch.** This machine: the v3.28 queue (`link-host dispatchLocal`, device `self`). A paired device: `cmd` with `report: true` (v3.28 rules: its `allowCommands`, rate limit, queue, amendment 4 typing guard). Refusals: `offline` (nothing queued here), `unknown-machine`, `unknown-project`, `engine`, `queue-full`, `logged-out` (the project's account is logged out there), `not-allowed`, `no-report` (a peer without cap `report`), `too-large`, `expired`.
+- **The running side.** The task is typed as `[Agent Office: remote task #<id> from "<machine>"] <text>`. The plugin (`hooks/reports.ts`) opens a task on that marker and, on a main `turn.complete` with no worker of the session running, writes `<data dir>/reports/<id>.json` (answer redacted with the journal's rules, ≤16 KB; commits since the task arrived). A new marker closes an open task as partial. `link-host` polls the folder every 5 s, sends `cmd-report` (kept in `userData/link/reports-out.json`, 0600, newest 50, resent on the next hello with cap `report`) and deletes the file. A removed device's owed reports are dropped.
+- **The dispatcher.** Reports are kept in `userData/link/dispatches.json` (0600, newest 50) for `office_reports`, only for ids it dispatched and from the machine it sent them to. The boss's inbox gets only the fixed row above; the plugin submits it with its own wrapper ("Remote task #id on <project>@<machine> finished; read it with office_reports."), not the task wrapper. No session: a notification (`main.reportReady`).
+- **Prompt.** Section `agent-office:machines` (fixed text) for the manager loop only with `AGENT_OFFICE_REMOTE=1`, set at pty start when the boss tab has the server and at least one device is paired. `MANAGER_TEMPLATE` is unchanged.
+- **Not done here.** Reports shown in the Machines view; auto-allowing office_machines/office_reports; a local task's report after an app restart (its id is in memory only; the file is deleted after a day).

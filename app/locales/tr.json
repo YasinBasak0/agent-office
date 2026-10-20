@@ -513,7 +513,8 @@
     "handoffKeepGo": "Burada tut",
     "handoffKeepConfirm": "{project} bu bilgisayarda kalsın mı?",
     "handoffKeepDetail": "{device} projeyi devralmış olabilir. Devraldıysa iki bilgisayar da sahip olur ve çalışmalar ayrışabilir. Bunu yalnızca {device} yanıt veremiyorsa kullanın.",
-    "handoffStillUnknown": "{device}, {project} projesini devralıp almadığını bilmiyor"
+    "handoffStillUnknown": "{device}, {project} projesini devralıp almadığını bilmiyor",
+    "reportReady": "Rapor hazır: {project} ({machine})"
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",

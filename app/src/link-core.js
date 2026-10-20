@@ -8,7 +8,7 @@ const PROTOCOL = 2;
 // what a peer may say it understands (hello.caps); unknown names are dropped
 const CAPS = ['res', 'catalog', 'manage', 'accounts', 'report'];
 // what this build sends and understands (v3.32: res and catalog)
-const OUR_CAPS = ['res', 'catalog'];
+const OUR_CAPS = ['res', 'catalog', 'report'];   // v3.35 adds 'report'
 // a trusted session pings every HEARTBEAT_MS; HEARTBEAT_MISSES intervals without any data from the peer close it
 // (a quit or crash may never close the stream: UDX alone took ~17 s to notice)
 const HEARTBEAT_MS = 5000;
@@ -112,6 +112,21 @@ function sanitizeCommand(text) {
 /** What the owning device types: marked with the sender's name so the person sees where it came from. */
 const markedCommand = (deviceName, text) => `[Agent Office: remote command from "${cleanLine(deviceName, MAX_NAME).replace(/"/g, "'")}"] ${text}`;
 
+/** v3.35 a dispatched task (office_dispatch): marked with its id so the owning side's plugin can report on it. */
+const markedTask = (id, fromName, text) => `[Agent Office: remote task #${id} from "${cleanLine(fromName, MAX_NAME).replace(/"/g, "'")}"] ${text}`;
+
+const REPORT_MAX = 16 * 1024;   // a report's summary (characters)
+const REPORT_COMMITS = 12;
+/** A task report as it may cross the link: { ok, partial, summary ≤16 KB, commits ≤12 { hash, subject }, at }, or null. */
+function cleanReport(r) {
+  if (!r || typeof r !== 'object' || typeof r.summary !== 'string' || r.summary.length > REPORT_MAX * 2) return null;
+  const summary = r.summary.replace(ESCAPES, '').replace(CONTROLS, ' ').slice(0, REPORT_MAX);
+  const commits = (Array.isArray(r.commits) ? r.commits : []).slice(0, REPORT_COMMITS)
+    .filter((c) => c && typeof c.hash === 'string' && /^[0-9a-f]{4,40}$/.test(c.hash))
+    .map((c) => ({ hash: c.hash, subject: cleanLine(c.subject, 120) }));
+  return { ok: r.ok !== false, partial: r.partial === true, summary, commits, at: isInt(r.at) ? r.at : 0 };
+}
+
 /** A device name: one clean line, 1-40 chars, else the fallback. */
 const deviceName = (s, fallback = 'Device') => cleanLine(s, MAX_NAME) || fallback;
 
@@ -135,7 +150,7 @@ class RateLimiter {
 
 const STATUS = ['working', 'idle', 'approval'];
 const CMD_STATUS = ['queued', 'delivered', 'rejected'];
-const REASONS = ['not-allowed', 'unknown-project', 'engine', 'not-running', 'too-large', 'empty', 'not-text', 'rate-limited', 'queue-full', 'expired', 'removed'];
+const REASONS = ['not-allowed', 'unknown-project', 'engine', 'not-running', 'too-large', 'empty', 'not-text', 'rate-limited', 'queue-full', 'expired', 'removed', 'logged-out', 'offline', 'no-report'];
 const isStr = (v, max) => typeof v === 'string' && v.length <= max;
 const isInt = (v, max = Number.MAX_SAFE_INTEGER) => Number.isInteger(v) && v >= 0 && v <= max;
 const isId = (v) => typeof v === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(v);
@@ -266,7 +281,11 @@ function validateMessage(m) {
       return isInt(m.seq) && snap ? { t: 'state', seq: m.seq, snap } : null;
     }
     case 'cmd':
-      return isId(m.id) && isId(m.project) && typeof m.text === 'string' && m.text.length <= MAX_COMMAND * 4 ? { t: 'cmd', id: m.id, project: m.project, text: m.text } : null;
+      return isId(m.id) && isId(m.project) && typeof m.text === 'string' && m.text.length <= MAX_COMMAND * 4 ? { t: 'cmd', id: m.id, project: m.project, text: m.text, ...(m.report === true ? { report: true } : {}) } : null;
+    case 'cmd-report': {   // v3.35, only to a peer with cap 'report'
+      const report = cleanReport(m);
+      return isId(m.id) && report ? { t: 'cmd-report', id: m.id, ...report } : null;
+    }
     case 'cmd-status':
       return isId(m.id) && CMD_STATUS.includes(m.status) && (m.reason == null || REASONS.includes(m.reason))
         ? { t: 'cmd-status', id: m.id, status: m.status, ...(m.reason ? { reason: m.reason } : {}) } : null;
@@ -387,7 +406,7 @@ module.exports = {
   PROTOCOL, CAPS, OUR_CAPS, HEARTBEAT_MS, HEARTBEAT_MISSES, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
   MAX_BUNDLE, MAX_PACK, CHUNK, HANDOFF_REASONS, HANDOFF_STATUS,
   makeCode, normalizeCode, pairSecrets, pairProof, proofOk, pairTopic, hex, isHex,
-  cleanLine, sanitizeCommand, markedCommand, deviceName, RateLimiter,
+  cleanLine, sanitizeCommand, markedCommand, markedTask, cleanReport, REPORT_MAX, deviceName, RateLimiter,
   cleanSnapshot, validateMessage, validatePair, LineReader, encode,
   normalizeDevices, trusted, mayCommand, mayHandoff, mayManage, mayAccounts, snapshotOf, logEntry,
   cleanRes, cleanCatalog, resOf, resChanged, typingReady,

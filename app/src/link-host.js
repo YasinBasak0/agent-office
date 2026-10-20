@@ -10,12 +10,16 @@ const H = require('./handoff.js');
 
 const QUEUE_MAX = 5;                    // waiting commands per project
 const QUEUE_TTL_MS = 30 * 60 * 1000;    // a command that waited this long is dropped ('expired')
+const SELF = 'self';                    // v3.35 the device of a task dispatched to a project of this machine
+const REPORT_POLL_MS = 5000;
 
 /**
  * @param {{ app: any, safeStorage: any, ipcMain: any, send: (ch: string, ...a: any[]) => void,
  *   notify: (title: string, body: string) => void, T: (k: string, v?: any) => string,
  *   projects: () => { id: string, name: string, engine: string }[],
  *   tabState: (projectId: string) => 'ready' | 'busy' | 'starting' | 'gone', type: (projectId: string, text: string) => void,
+ *   loginOf?: (projectId: string) => 'in' | 'out' | 'unknown', reportsDir?: string,
+ *   onReport?: (r: { id: string, machine: string, pub: string, report: any }) => void,
  *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
  *     confirmPush: (project: string, url: string) => Promise<boolean>, confirmKeep: (project: string, device: string) => Promise<boolean>,
  *     target: (dir: string) => { root: string, memoryDir: string, factsFile: string, accountId?: string },
@@ -64,12 +68,13 @@ function setupLink(d) {
     try {
       const keys = loadKeys();
       const saved = readJson(devicesFile) || {};
-      link = new C_Link({ keyPair: { publicKey: keys.publicKey, secretKey: keys.secretKey }, name: saved.name || os.hostname().replace(/\.local$/, ''), devices: saved.devices, secrets: keys.secrets, resultsFile, app: typeof d.app.getVersion === 'function' ? d.app.getVersion() : '' });
+      link = new C_Link({ keyPair: { publicKey: keys.publicKey, secretKey: keys.secretKey }, name: saved.name || os.hostname().replace(/\.local$/, ''), devices: saved.devices, secrets: keys.secrets, resultsFile, reportsFile: path.join(dir, 'reports-out.json'), app: typeof d.app.getVersion === 'function' ? d.app.getVersion() : '' });
       link.on('persist', save);
       if (keys.fresh) link.persist();
       link.on('change', push);
       link.on('remote', onRemote);
       link.on('command', onCommand);
+      link.on('report', ({ device, id, report }) => d.onReport?.({ id, machine: device.name, pub: device.pub, report }));
       link.on('handoff-offer', onHandoffOffer);
       link.on('handoff-refused', ({ device, offer, reason }) => hlog({ dir: 'in', device: device.name, project: offer.name, outcome: `refused:${reason}` }));
       link.on('handoff-failed', ({ offer, reason }) => { targets.delete(offer.id); defaults.delete(offer.id); answered.delete(offer.id); hlog({ dir: 'in', project: offer.name, outcome: `failed:${reason}` }); });
@@ -276,14 +281,15 @@ function setupLink(d) {
   }
 
   // Claude Code projects only: their busy state is known (pid file) and their prompt takes a bracketed paste.
-  function onCommand({ device, id, project, text, reply }) {
+  function onCommand({ device, id, project, text, reply, report = false }) {
     const p = d.projects().find((x) => x.id === project);
-    const done = (status, reason) => { log(device.name, p?.name || project, text, reason ? `${status}:${reason}` : status); reply(status, reason); };
+    const done = (status, reason) => { log(device.name, p?.name || project, text, `${report ? 'task:' : ''}${reason ? `${status}:${reason}` : status}`); reply(status, reason); };
     if (!p) return done('rejected', 'unknown-project');
     if (p.engine !== 'claude') return done('rejected', 'engine');
+    if (report && d.loginOf?.(project) === 'out') return done('rejected', 'logged-out');   // v3.35
     const q = queue.get(project) || [];
     if (q.length >= QUEUE_MAX) return done('rejected', 'queue-full');
-    q.push({ id, device, text, at: Date.now(), reply });
+    q.push({ id, device, text, at: Date.now(), reply, report });
     queue.set(project, q);
     done('queued');
     pump();
@@ -293,14 +299,18 @@ function setupLink(d) {
     for (const [project, q] of queue) {
       while (q.length) {
         const c = q[0];
-        if (!link?.devices.some((x) => x.pub === c.device.pub)) { q.shift(); continue; }                 // removed meanwhile
+        if (c.device.pub !== SELF && !link?.devices.some((x) => x.pub === c.device.pub)) { q.shift(); continue; }   // removed meanwhile
         if (now - c.at > QUEUE_TTL_MS) { q.shift(); c.reply('rejected', 'expired'); continue; }
         const s = d.tabState(project);
         if (s === 'gone') { q.shift(); c.reply('rejected', 'not-running'); continue; }
         // 'busy' and 'starting' (no session id or no first prompt yet: the trust dialog may be up, v3.31) wait
         if (s !== 'ready') break;
         q.shift();
-        d.type(project, C.markedCommand(c.device.name, c.text));
+        if (c.report) {
+          // v3.35: the plugin reports on the marked task (hooks/reports.ts); its report is owed to the dispatcher
+          if (c.device.pub === SELF) localTasks.add(c.id); else link?.expectReport(c.id, c.device.pub);
+          d.type(project, C.markedTask(c.id, c.device.name, c.text));
+        } else d.type(project, C.markedCommand(c.device.name, c.text));
         c.reply('delivered');
         break;                                     // one per project per tick: the tab is busy after a prompt
       }
@@ -309,6 +319,46 @@ function setupLink(d) {
   }
   const pumpTimer = setInterval(pump, 1500);
   pumpTimer.unref?.();
+
+  // --- v3.35 one boss: dispatch (office_dispatch) and the reports of dispatched tasks
+  const localTasks = new Set();            // ids of tasks dispatched to a project of this machine (until reported)
+  const newId = () => require('crypto').randomBytes(8).toString('hex');
+  /** A task for a project of this machine: the same queue and checks as a remote one. → { id, status, reason? } */
+  function dispatchLocal(projectId, text, fromName) {
+    const s = C.sanitizeCommand(text);
+    const id = newId();
+    if (!s.ok) return { id, status: 'rejected', reason: s.reason };
+    /** @type {any} */ let out = null;   // the first answer (queued or rejected); 'delivered' may follow at once
+    onCommand({ device: { pub: SELF, name: fromName }, id, project: projectId, text: s.text, report: true, reply: (status, reason) => { if (!out) out = { id, status, ...(reason ? { reason } : {}) }; } });
+    return out || { id, status: 'queued' };
+  }
+  /** A task for a project of a paired device (cmd with report, cap 'report'). Offline: refused, nothing queued. */
+  function dispatchRemote(pub, projectId, text) {
+    const l = link;
+    if (!l || !l.devices.some((x) => x.pub === pub)) return { id: '', status: 'rejected', reason: 'unknown-machine' };
+    const rec = l.sendCommand(pub, projectId, text, { report: true });
+    return { id: rec.id, status: rec.status, ...(rec.reason ? { reason: rec.reason } : {}) };
+  }
+  /** The reports the plugin wrote (<data dir>/reports/<id>.json): sent to the dispatcher, or handed to main. */
+  function scanReports() {
+    const rdir = d.reportsDir;
+    if (!rdir) return;
+    let names = [];
+    try { names = fs.readdirSync(rdir).filter((n) => /^[A-Za-z0-9_.:-]{1,64}\.json$/.test(n)); } catch { return; }
+    for (const n of names) {
+      const f = path.join(rdir, n);
+      const id = n.slice(0, -5);
+      const report = readJson(f);
+      let used = false;
+      if (report && localTasks.has(id)) { localTasks.delete(id); d.onReport?.({ id, machine: '', pub: SELF, report: C.cleanReport(report) }); used = true; }
+      else if (report && link?.owesReport(id)) used = link.sendReport(id, report);
+      let old = false;
+      try { old = Date.now() - fs.statSync(f).mtimeMs > 24 * 3600 * 1000; } catch { /* gone */ }
+      if (used || old || !report) fs.rmSync(f, { force: true });
+    }
+  }
+  const reportTimer = setInterval(scanReports, REPORT_POLL_MS);
+  reportTimer.unref?.();
 
   const ipc = (ch, fn) => d.ipcMain.handle(ch, async (_e, ...a) => { const l = start(); if (!l) return view(); await fn(l, ...a); return view(); });
   d.ipcMain.handle('link:get', () => { start(); return view(); });
@@ -338,13 +388,13 @@ function setupLink(d) {
     publish(projects, office, attention) { if (link) link.publish(C.snapshotOf(projects, office, attention)); },
     /** v3.32: this machine's resources (C.resOf) and project catalog; the link sends them by capability and opt-in. */
     publishMachine(res, catalog) { if (link) { link.publishRes(res); link.publishCatalog(catalog); } },
-    pump,
+    pump, dispatchLocal, dispatchRemote, scanReports,
     /** The Link (tests; null while off). */
     link: () => link,
     /** Paired devices a project can be handed to (online ones first). */
     devices() { const l = start(); return l ? l.devices.map((x) => ({ id: x.pub, name: x.name, online: l.conns.has(x.pub) })) : []; },
     handOff, unknownFor, askAgain, keepHere,
-    destroy() { clearInterval(pumpTimer); return link?.destroy(); },
+    destroy() { clearInterval(pumpTimer); clearInterval(reportTimer); return link?.destroy(); },
   };
 }
 

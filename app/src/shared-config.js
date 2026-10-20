@@ -494,8 +494,10 @@ const mcpFingerprint = (plan) =>
  * Off (or Default) for Default's set: removes what the app made in the account folder. No server to add: no file.
  * → { pluginDirs: string[], mcpConfig: string | null, mcpNames: { [projectDir]: string[] } } (mcpNames: each
  * project's servers by the names this session sees; the current project's own ones under `current`)
+ * extra (contract v3.35): servers the app adds itself (the boss tab's `agent-office` server), after mcpPlan: never part
+ * of the MCP fingerprint (mcpFingerprint reads mcpPlan only) and never in the office directory.
  */
-function prepareShared({ account, home, cwd, stageRoot, mcpFile, office = null, platform = process.platform }) {
+function prepareShared({ account, home, cwd, stageRoot, mcpFile, office = null, platform = process.platform, extra = null }) {
   const configDir = account?.configDir;
   const claudeDir = path.join(home, '.claude');
   const isDefault = !configDir || samePath(configDir, claudeDir);
@@ -505,7 +507,8 @@ function prepareShared({ account, home, cwd, stageRoot, mcpFile, office = null, 
     syncLinks(configDir, on ? linkPlan(listClaudeDir(claudeDir), claudeDir) : [], { platform });
     if (on) pluginDirs = sharedPluginDirs({ claudeDir, configDir, stageRoot, platform });
   }
-  const { servers, mcpNames } = mcpPlan({ account, home, cwd, office });
+  const { servers: planned, mcpNames } = mcpPlan({ account, home, cwd, office });
+  const servers = { ...planned, ...(extra || {}) };
   let mcpConfig = null;
   try {
     if (Object.keys(servers).length) {
