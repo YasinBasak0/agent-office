@@ -568,7 +568,7 @@ function checkAgyAuth() {
     const status = await agyStatus(env);
     if (status.path) status.keychain = await agyKeychain();
     // logs (v3.39) only where they can be used: macOS with the keychain saying the item is there; the first 64 KB of each
-    const head = (f) => { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(AG.LOG_HEAD_BYTES); return b.toString('utf8', 0, fs.readSync(fd, b, 0, b.length, 0)); } finally { fs.closeSync(fd); } };
+    const head = (f) => { const fd = fs.openSync(f, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK); try { if (!fs.fstatSync(fd).isFile()) return ''; const b = Buffer.alloc(AG.LOG_HEAD_BYTES); return b.toString('utf8', 0, fs.readSync(fd, b, 0, b.length, 0)); } finally { fs.closeSync(fd); } };
     const files = AG.readAgyFiles(env.HOME || env.USERPROFILE || app.getPath('home'), (f) => fs.readFileSync(f, 'utf8'),
       status.keychain === true ? (d) => fs.readdirSync(d) : undefined, head);
     agyAuth = AG.agyAuthState(status, files);

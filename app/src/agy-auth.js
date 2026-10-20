@@ -78,14 +78,14 @@ function readAgyFiles(home, readFile, readDir, readHead = readFile) {
   }
   let logEmail = null;
   if (readDir) {
-    try {
-      const dir = path.join(agyDir(home), 'log');
-      // names carry the start time (cli-YYYYMMDD_HHMMSS.log): the newest log that names an account wins
-      for (const name of readDir(dir).filter((n) => /^cli-\d{8}_\d{6}\.log$/.test(n)).sort().reverse().slice(0, LOG_FILES)) {
-        logEmail = parseAgyLogEmail(String(readHead(path.join(dir, name))).slice(0, LOG_HEAD_BYTES));
-        if (logEmail) break;
-      }
-    } catch { /* no logs: no hint */ }
+    const dir = path.join(agyDir(home), 'log');
+    let names = [];
+    try { names = readDir(dir); } catch { /* no logs: no hint */ }
+    // names carry the start time (cli-YYYYMMDD_HHMMSS.log): the newest log that names an account wins
+    for (const name of names.filter((n) => /^cli-\d{8}_\d{6}\.log$/.test(n)).sort().reverse().slice(0, LOG_FILES)) {
+      try { logEmail = parseAgyLogEmail(String(readHead(path.join(dir, name))).slice(0, LOG_HEAD_BYTES)); } catch { /* unreadable: try the next */ }
+      if (logEmail) break;
+    }
   }
   return { modelProvider, account, logEmail };
 }
