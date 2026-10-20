@@ -136,7 +136,7 @@ export function mountMachines(el, { api, view, anchor, onClose }) {
           m.self ? h('span', { class: 'mc-sub' }, t('machines.thisMachine')) : null),
         stats(m, selfApp),
         projects(m, devices)))),
-      devices.length ? null : h('div', { class: 'mc-note' }, t('machines.none')));
+      ...(devices.length ? [] : [h('div', { class: 'mc-note' }, t('machines.none'))]));   // replaceChildren would print a null
     place();
   }
   function show() { el.hidden = false; render(); place(); }

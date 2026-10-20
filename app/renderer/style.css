@@ -986,3 +986,4 @@ label.sb-langrow { cursor: pointer; }
 .mc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; }
 .mc-move { opacity: .7; }
 .sb-machines { margin: 4px 6px; }
+.machines-panel { overflow-y: auto; }
