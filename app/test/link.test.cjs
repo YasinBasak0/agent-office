@@ -738,7 +738,7 @@ test('integration v3.31: a v1 peer gets zero new message types and stays connect
 
 test('integration v3.31/v3.32: caps negotiated; res to res peers; catalog only with allowManage; removal revokes', { timeout: 60000 }, async (t) => {
   const { a, b, got, until } = await pairPair(t);
-  assert.deepEqual(b.view().devices[0].caps, ['res', 'catalog']);
+  assert.deepEqual(b.view().devices[0].caps, ['res', 'catalog', 'report']);
   assert.equal(b.view().devices[0].app, '0.14.0');
   a.publishRes(RES);
   a.publishCatalog(CATALOG);
@@ -798,4 +798,160 @@ test('amendment 4: a remote command waits while the tab is starting (no first pr
   state = 'ready';
   host.pump();
   assert.equal(typed.length, 1);
+});
+
+// ---- v3.35 one boss: dispatched tasks and their reports
+
+test('integration v3.35: cmd with report round trip; the report reaches the dispatcher', { timeout: 60000 }, async (t) => {
+  const { a, b, got, until } = await pairPair(t);
+  b.setAllow(a.pub, true);
+  const reports = [];
+  a.on('report', (r) => reports.push(r));
+  b.on('command', ({ id, report, reply }) => {
+    assert.equal(report, true);
+    reply('queued');
+    b.expectReport(id, a.pub);
+    b.sendReport(id, { ok: true, partial: false, summary: 'All tests pass\nsk-free', commits: [{ hash: 'abc1234', subject: 'Fix flaky test' }], at: 5 });
+  });
+  const rec = a.sendCommand(b.pub, 'p1', 'run the tests', { report: true });
+  assert.equal(rec.report, true);
+  await until(() => reports.length);
+  assert.ok(got.includes('cmd'));
+  assert.equal(reports[0].id, rec.id);
+  assert.equal(reports[0].device.pub, b.pub);
+  assert.deepEqual(reports[0].report, { ok: true, partial: false, summary: 'All tests pass\nsk-free', commits: [{ hash: 'abc1234', subject: 'Fix flaky test' }], at: 5 });
+  assert.equal(a.outgoing.find((o) => o.id === rec.id).status, 'reported');
+});
+
+function fakeLink(t, file) {
+  const kp = { publicKey: Buffer.alloc(32, 7), secretKey: Buffer.alloc(64, 7) };
+  const l = new Link({ keyPair: kp, name: 'Laptop', reportsFile: file, swarmFactory: () => ({ join: () => ({ flushed: async () => {}, refresh: async () => {} }), on: () => {}, leave: async () => {}, destroy: async () => {} }) });
+  l.devices = [{ pub: pubA, name: 'Studio', addedAt: 0, allowCommands: true, allowHandoff: false, allowManage: false, allowAccounts: false }];
+  l.secrets = { [pubA]: 'ab'.repeat(32) };
+  t.after(() => l.destroy());
+  return l;
+}
+const fakeConn = () => { const out = []; return { out, destroyed: false, write(line) { out.push(JSON.parse(line)); return true; }, destroy() { this.destroyed = true; } }; };
+const REPORT = { ok: true, partial: true, summary: 'half done', commits: [], at: 9 };
+
+test('v3.35: a report made while apart is persisted and resent after reconnect (also after a restart)', (t) => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-rep-')), 'link', 'reports-out.json');
+  t.after(() => fs.rmSync(path.dirname(path.dirname(file)), { recursive: true, force: true }));
+  const b = fakeLink(t, file);
+  b.expectReport('t1', pubA);
+  assert.equal(b.owesReport('t1'), true);
+  assert.equal(b.sendReport('t1', REPORT), true);          // nobody connected: kept
+  assert.equal(b.sendReport('t1', REPORT), false);         // only once
+  assert.equal((fs.statSync(file).mode & 0o777).toString(8), '600');
+  const b2 = fakeLink(t, file);                            // restart
+  const conn = fakeConn();
+  b2.conns.set(pubA, conn);
+  b2.handle(conn, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['res', 'catalog', 'report'] });
+  const sent = conn.out.filter((m) => m.t === 'cmd-report');
+  assert.deepEqual(sent, [{ t: 'cmd-report', id: 't1', ...REPORT }]);
+  b2.handle(conn, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
+  assert.equal(conn.out.filter((m) => m.t === 'cmd-report').length, 1);   // once per connection
+  // no ack yet: a new connection resends it (also after a restart), until the dispatcher acks
+  const conn2 = fakeConn();
+  b2.conns.set(pubA, conn2);
+  b2.handle(conn2, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
+  assert.equal(conn2.out.filter((m) => m.t === 'cmd-report').length, 1);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).t1.sent, false);
+  b2.handle(conn2, { pub: pubB }, { t: 'cmd-report-ack', id: 't1' });   // another device's ack does nothing
+  assert.equal(b2.reportsOut.get('t1').sent, false);
+  b2.handle(conn2, { pub: pubA }, { t: 'cmd-report-ack', id: 't1' });
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).t1.sent, true);
+  const conn3 = fakeConn();
+  b2.conns.set(pubA, conn3);
+  b2.handle(conn3, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
+  assert.equal(conn3.out.filter((m) => m.t === 'cmd-report').length, 0);
+  // the dispatcher's side: every cmd-report is acked (a repeat too); the host drops repeats
+  const a = fakeLink(t, null);
+  const ca = fakeConn();
+  a.conns.set(pubA, ca);
+  a.handle(ca, { pub: pubA }, { t: 'hello', v: 2, name: 'Studio', caps: ['report'] });
+  const heard = [];
+  a.on('report', (r) => heard.push(r.id));
+  a.handle(ca, { pub: pubA }, { t: 'cmd-report', id: 't1', ...REPORT });
+  a.handle(ca, { pub: pubA }, { t: 'cmd-report', id: 't1', ...REPORT });
+  assert.deepEqual(ca.out.filter((m) => m.t === 'cmd-report-ack'), [{ t: 'cmd-report-ack', id: 't1' }, { t: 'cmd-report-ack', id: 't1' }]);
+  assert.deepEqual(heard, ['t1', 't1']);
+  assert.deepEqual(C.validateMessage({ t: 'cmd-report-ack', id: 't1' }), { t: 'cmd-report-ack', id: 't1' });
+});
+
+test('v3.35: a removed device\'s reports are dropped; a v1 peer gets no report fields', async (t) => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-rep-')), 'reports-out.json');
+  t.after(() => fs.rmSync(path.dirname(file), { recursive: true, force: true }));
+  const b = fakeLink(t, file);
+  b.expectReport('t2', pubA);
+  await b.remove(pubA);
+  assert.equal(b.owesReport('t2'), false);
+  assert.equal(b.sendReport('t2', REPORT), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), {});
+  // a v1 peer (hello without caps): no cmd-report, no report:true on cmd, its cmd never asks for one
+  const v1 = fakeLink(t, null);
+  const conn = fakeConn();
+  v1.conns.set(pubA, conn);
+  v1.handle(conn, { pub: pubA }, { t: 'hello', v: 1, name: 'Studio' });
+  v1.expectReport('t3', pubA);
+  v1.sendReport('t3', REPORT);
+  const rec = v1.sendCommand(pubA, 'p1', 'run', { report: true });
+  assert.deepEqual([rec.status, rec.reason], ['rejected', 'no-report']);
+  v1.sendCommand(pubA, 'p1', 'run');
+  assert.deepEqual(conn.out.map((m) => m.t), ['cmd']);
+  assert.equal('report' in conn.out[0], false);
+  const seen = [];
+  v1.on('command', (c) => seen.push(c.report));
+  v1.handle(conn, { pub: pubA }, { t: 'cmd', id: 'c9', project: 'p1', text: 'hi', report: true });
+  assert.deepEqual(seen, [false]);
+  assert.equal(C.validateMessage({ t: 'cmd-report', id: 'x', summary: 'a'.repeat(C.REPORT_MAX * 2 + 1) }), null);
+});
+
+test('v3.35 host: local dispatch typed as a marked task, report file handed over; logged-out refused', async (t) => {
+  const { setupLink } = require('../src/link-host.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-dispatch-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const reportsDir = path.join(tmp, 'reports');
+  fs.mkdirSync(reportsDir);
+  const typed = [];
+  const got = [];
+  let login = 'in';
+  let lockType = false;
+  const host = setupLink({
+    app: { getPath: () => tmp, getVersion: () => '0.14.0' },
+    safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'keychain', encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() },
+    ipcMain: { handle: () => {} }, send: () => {}, notify: () => {}, T: (k) => k,
+    projects: () => [{ id: 'p1', name: 'shop', engine: 'claude' }, { id: 'p2', name: 'web', engine: 'agy' }], tabState: () => 'ready', type: (id, text, o) => (lockType ? false : typed.push([id, text, o])),
+    loginOf: () => login, reportsDir, onReport: (r) => got.push(r),
+  });
+  t.after(() => host.destroy());
+  const r = host.dispatchLocal('p1', 'run the tests', 'Studio');
+  assert.equal(r.status, 'delivered');   // the latest status at return (queued, then typed at once)
+  assert.match(typed[0][1], new RegExp(`^\\[Agent Office: remote task #${r.id} from "Studio"\\] run the tests$`));
+  assert.deepEqual(host.dispatchLocal('p2', 'x', 'Studio').reason, 'engine');
+  assert.deepEqual(host.dispatchLocal('nope', 'x', 'Studio').reason, 'unknown-project');
+  login = 'out';
+  assert.deepEqual(host.dispatchLocal('p1', 'x', 'Studio').reason, 'logged-out');
+  fs.writeFileSync(path.join(reportsDir, `${r.id}.json`), JSON.stringify(REPORT));
+  host.scanReports();
+  assert.equal(got.length, 1);
+  assert.equal(got[0].id, r.id);
+  assert.equal(got[0].report.summary, 'half done');
+  assert.equal(fs.existsSync(path.join(reportsDir, `${r.id}.json`)), false);
+  assert.equal(host.dispatchRemote('cd'.repeat(32), 'p1', 'x').reason, 'unknown-machine');
+  // every status reaches the caller's record (queued → delivered), and a handoff-locked tab is 'locked', not delivered
+  login = 'in';
+  const seen = [];
+  const r2 = host.dispatchLocal('p1', 'again', 'Studio', (id, status, reason) => seen.push([id, status, reason]));
+  assert.deepEqual(seen.map((x) => x[1]), ['queued', 'delivered']);
+  assert.equal(r2.status, 'delivered');
+  assert.equal(typed.at(-1)[2].taskId, r2.id);
+  lockType = true;
+  const seen3 = [];
+  const r3 = host.dispatchLocal('p1', 'locked one', 'Studio', (id, status, reason) => seen3.push([status, reason]));
+  assert.deepEqual(seen3, [['queued', undefined], ['rejected', 'locked']]);
+  assert.deepEqual([r3.status, r3.reason], ['rejected', 'locked']);
+  fs.writeFileSync(path.join(reportsDir, `${r3.id}.json`), JSON.stringify(REPORT));
+  host.scanReports();
+  assert.equal(got.length, 1);   // no report is taken for a task that was never typed
 });

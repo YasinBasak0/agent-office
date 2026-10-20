@@ -11,7 +11,7 @@ class Link extends EventEmitter {
   /**
    * @param {{ keyPair: { publicKey: Buffer, secretKey: Buffer }, name: string, devices?: C.Device[], secrets?: Record<string, string>,
    *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number,
-   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null, app?: string }} o
+   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null, reportsFile?: string | null, app?: string }} o
    */
   constructor(o) {
     super();
@@ -54,6 +54,10 @@ class Link extends EventEmitter {
     this.sentCatalog = new Map(); // pub → json of the catalog last sent ('off' after a "not shared any more")
     this.peerRes = new Map();     // pub → res received
     this.peerCatalog = new Map(); // pub → catalog received
+    // v3.35 reports of dispatched tasks this device ran: id → { pub, report: null (still running) | Report, sent, at }.
+    // Kept in reportsFile (userData/link/reports-out.json, 0600, newest 50) so one not yet delivered is sent on reconnect.
+    this.reportsFile = o.reportsFile || null;
+    this.reportsOut = this.loadReports();
     this.destroyed = false;
   }
 
@@ -235,6 +239,7 @@ class Link extends EventEmitter {
       this.peers.set(d.pub, { v: m.v, app: m.app || '', caps: m.caps || [] });
       this.flushRes(d.pub, conn);
       this.flushCatalog(d.pub, conn);
+      this.flushReports(d.pub, conn);
       this.emit('change');
     } else if (m.t === 'res') {
       this.peerRes.set(d.pub, m.res);
@@ -252,6 +257,19 @@ class Link extends EventEmitter {
     } else if (m.t === 'cmd-status') {
       const o = this.outgoing.find((x) => x.id === m.id && x.pub === d.pub);
       if (o) { o.status = m.status; o.reason = m.reason; this.emit('change'); }
+    } else if (m.t === 'cmd-report') {
+      // v3.35 the report of a task we dispatched there; the host keeps only ids it dispatched
+      const o = this.outgoing.find((x) => x.id === m.id && x.pub === d.pub);
+      if (o) { o.status = 'reported'; }
+      const { t: _t, id, ...report } = m;
+      // acknowledged every time (the sender resends until it hears this); a repeat is dropped by the host (main)
+      if (this.peerHas(d.pub, 'report')) this.write(conn, { t: 'cmd-report-ack', id });
+      this.emit('report', { device: d, id, report });
+      this.emit('change');
+    } else if (m.t === 'cmd-report-ack') {
+      // v3.35 the dispatcher has the report: it is no longer resent
+      const r = this.reportsOut.get(m.id);
+      if (r && r.pub === d.pub && r.report && !r.sent) { r.sent = true; this.saveReports(); }
     } else if (m.t === 'ho-offer') {
       this.receiveOffer(conn, d, m);
     } else if (m.t === 'ho-chunk') {
@@ -459,21 +477,66 @@ class Link extends EventEmitter {
     const s = C.sanitizeCommand(m.text);
     if (!s.ok) return reply('rejected', s.reason);
     // main decides (project, engine, busy tab) and answers through reply()
-    this.emit('command', { device: d, id: m.id, project: m.project, text: s.text, reply });
+    this.emit('command', { device: d, id: m.id, project: m.project, text: s.text, reply, report: m.report === true && this.peerHas(d.pub, 'report') });
   }
 
   /** Sends a prompt to a remote project's boss tab. Returns the command's local record. */
-  sendCommand(pub, project, text) {
+  sendCommand(pub, project, text, { report = false } = {}) {
     const conn = this.conns.get(pub);
     const s = C.sanitizeCommand(text);
     const snap = this.remotes.get(pub)?.snap;
     const rec = { id: crypto.randomBytes(8).toString('hex'), pub, project, projectName: snap?.projects.find((p) => p.id === project)?.name || project, firstLine: C.cleanLine(String(text).split('\n')[0], 80), status: 'sent', at: this.now() };
     if (!s.ok) Object.assign(rec, { status: 'rejected', reason: s.reason });
-    else if (!conn) Object.assign(rec, { status: 'rejected', reason: 'not-running' });
-    else this.write(conn, { t: 'cmd', id: rec.id, project, text: s.text });
+    else if (!conn) Object.assign(rec, { status: 'rejected', reason: report ? 'offline' : 'not-running' });
+    else if (report && !this.peerHas(pub, 'report')) Object.assign(rec, { status: 'rejected', reason: 'no-report' });
+    else this.write(conn, { t: 'cmd', id: rec.id, project, text: s.text, ...(report ? { report: true } : {}) });
+    if (report) rec.report = true;
     this.outgoing = [rec, ...this.outgoing].slice(0, 20);
     this.emit('change');
     return rec;
+  }
+
+  // --- v3.35 reports of dispatched tasks (this device ran them)
+
+  loadReports() {
+    const out = new Map();
+    let raw = null;
+    try { raw = this.reportsFile && JSON.parse(fs.readFileSync(this.reportsFile, 'utf8')); } catch { return out; }
+    for (const [id, r] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+      if (r && typeof r.pub === 'string' && (r.report === null || C.cleanReport(r.report))) out.set(id, { pub: r.pub, report: r.report && C.cleanReport(r.report), sent: r.sent === true, at: Number(r.at) || 0 });
+    }
+    return out;
+  }
+  saveReports() {
+    const keep = [...this.reportsOut].sort((x, y) => y[1].at - x[1].at).slice(0, 50);
+    this.reportsOut = new Map(keep);
+    if (!this.reportsFile) return;
+    try {
+      fs.mkdirSync(path.dirname(this.reportsFile), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.reportsFile, JSON.stringify(Object.fromEntries(keep.map(([id, r]) => [id, { pub: r.pub, report: r.report, sent: r.sent, at: r.at }]))), { mode: 0o600 });
+    } catch { /* best effort */ }
+  }
+  /** A task from that device was typed with report: its report is owed to it. */
+  expectReport(id, pub) { this.reportsOut.set(id, { pub, report: null, sent: false, at: this.now() }); this.saveReports(); }
+  owesReport(id) { const r = this.reportsOut.get(id); return Boolean(r && r.report === null); }
+  /** The report of a task that device dispatched: sent now when it is connected, else on its next hello. */
+  sendReport(id, report) {
+    const r = this.reportsOut.get(id);
+    const clean = C.cleanReport(report);
+    if (!r || r.report || !clean || !C.trusted(this.devices, this.secrets, r.pub)) return false;
+    Object.assign(r, { report: clean, at: this.now() });
+    const conn = this.conns.get(r.pub);
+    if (conn) this.flushReports(r.pub, conn);
+    this.saveReports();
+    return true;
+  }
+  flushReports(pub, conn) {
+    if (!this.peerHas(pub, 'report') || !C.trusted(this.devices, this.secrets, pub)) return;
+    // `sent` turns true only on the dispatcher's cmd-report-ack: until then each new connection (hello) resends it
+    for (const [id, r] of this.reportsOut) if (r.pub === pub && r.report && !r.sent && r.wroteOn !== conn && !conn.destroyed) {
+      this.write(conn, { t: 'cmd-report', id, ...r.report });
+      r.wroteOn = conn;   // not persisted: once per connection
+    }
   }
 
   // --- the published snapshot: at most once a second, only when it changed
@@ -568,6 +631,8 @@ class Link extends EventEmitter {
     this.conns.delete(pub);
     this.remotes.delete(pub);
     this.forgetPeer(pub);
+    for (const [id, r] of this.reportsOut) if (r.pub === pub) this.reportsOut.delete(id);   // its reports go with it
+    this.saveReports();
     this.persist();
     this.emit('change');
     if (secret) await this.swarm?.leave(C.pairTopic(secret)).catch(() => {});

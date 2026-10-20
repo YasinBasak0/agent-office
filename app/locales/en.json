@@ -532,7 +532,9 @@
     "handoffKeepGo": "Keep it here",
     "handoffKeepConfirm": "Keep {project} on this computer?",
     "handoffKeepDetail": "{device} may have taken over the project already. If it did, both computers will own it and work can diverge. Use this only when {device} cannot answer.",
-    "handoffStillUnknown": "{device} does not know whether it took over {project}"
+    "handoffStillUnknown": "{device} does not know whether it took over {project}",
+    "reportReady": "Report ready: {project} on {machine}",
+    "officeUnavailable": "Agent Office tools are off for boss tabs: the office socket could not be opened"
   },
   "auth": {
     "unreadable": "could not read the login status",
