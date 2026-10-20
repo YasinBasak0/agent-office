@@ -738,7 +738,7 @@ test('integration v3.31: a v1 peer gets zero new message types and stays connect
 
 test('integration v3.31/v3.32: caps negotiated; res to res peers; catalog only with allowManage; removal revokes', { timeout: 60000 }, async (t) => {
   const { a, b, got, until } = await pairPair(t);
-  assert.deepEqual(b.view().devices[0].caps, ['res', 'catalog', 'report']);
+  assert.deepEqual(b.view().devices[0].caps, ['res', 'catalog', 'report', 'manage']);
   assert.equal(b.view().devices[0].app, '0.14.0');
   a.publishRes(RES);
   a.publishCatalog(CATALOG);
@@ -954,4 +954,93 @@ test('v3.35 host: local dispatch typed as a marked task, report file handed over
   fs.writeFileSync(path.join(reportsDir, `${r3.id}.json`), JSON.stringify(REPORT));
   host.scanReports();
   assert.equal(got.length, 1);   // no report is taken for a task that was never typed
+});
+
+// ---- v3.33 project actions (proj-op)
+
+test('v3.33 schema: proj-op and proj-op-status cleaned; bad ones dropped', () => {
+  assert.deepEqual(C.validateMessage({ t: 'proj-op', id: 'o1', op: 'sleep', project: 'p1', extra: 1 }), { t: 'proj-op', id: 'o1', op: 'sleep', project: 'p1' });
+  assert.equal(C.validateMessage({ t: 'proj-op', id: 'o1', op: 'open', project: 'p1' }), null);   // no open/clone
+  assert.equal(C.validateMessage({ t: 'proj-op', id: 'o1', op: 'start', project: '../x' }), null);
+  assert.equal(C.validateMessage({ t: 'proj-op', id: 'o1', op: 'start' }), null);
+  assert.deepEqual(C.validateMessage({ t: 'proj-op-status', id: 'o1', ok: false, reason: 'busy' }), { t: 'proj-op-status', id: 'o1', ok: false, reason: 'busy' });
+  assert.deepEqual(C.validateMessage({ t: 'proj-op-status', id: 'o1', ok: true, reason: 'busy' }), { t: 'proj-op-status', id: 'o1', ok: true });
+  assert.equal(C.validateMessage({ t: 'proj-op-status', id: 'o1', ok: false, reason: 'evil' }), null);
+  assert.equal(C.validateMessage({ t: 'proj-op-status', id: 'o1', ok: 'yes' }), null);
+  assert.ok(C.OUR_CAPS.includes('manage'));
+});
+
+test('integration v3.33: proj-op refused without allowManage, busy refused, shared rate limit, removal answers removed', { timeout: 60000 }, async (t) => {
+  const { a, b, got } = await pairPair(t);
+  const ops = [];
+  let busy = false;
+  b.on('proj-op', ({ op, project, reply }) => { ops.push([op, project]); reply(!(busy && (op === 'sleep' || op === 'stop')), busy ? 'busy' : undefined); });
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'start'), { ok: false, reason: 'not-allowed' });
+  assert.deepEqual(ops, []);
+  b.setAllowManage(a.pub, true);
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'start'), { ok: true });
+  busy = true;
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'sleep'), { ok: false, reason: 'busy' });
+  assert.deepEqual(ops, [['start', 'p1'], ['sleep', 'p1']]);
+  assert.ok(got.includes('proj-op-status') === false);   // b only receives proj-op
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'start'), { ok: true });   // the third token (a refusal for not-allowed took none)
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'start'), { ok: false, reason: 'rate-limited' });   // burst of 3 used
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'open'), { ok: false, reason: 'failed' });
+  b.removeAllListeners('proj-op');
+  b.on('proj-op', () => {});                         // never answers: removing the device ends the wait
+  b.limiter.b.clear();
+  const waiting = a.sendProjOp(b.pub, 'p1', 'wake');
+  await new Promise((r) => setTimeout(r, 300));
+  await a.remove(b.pub);
+  assert.deepEqual(await waiting, { ok: false, reason: 'removed' });
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'wake'), { ok: false, reason: 'removed' });
+});
+
+test('integration v3.33: a v1 peer (no manage cap) gets no proj-op', { timeout: 60000 }, async (t) => {
+  const { a, b, got } = await pairPair(t, { v1: true });
+  a.setAllowManage(b.pub, true);
+  assert.deepEqual(await a.sendProjOp(b.pub, 'p1', 'start'), { ok: false, reason: 'no-manage' });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(got.includes('proj-op'), false);
+});
+
+test('v3.33 host: ops run in order, logged to manage.log; a removed device\'s queued op is dropped', async (t) => {
+  const { setupLink } = require('../src/link-host.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-projop-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(tmp, 'link'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'link', 'devices.json'), JSON.stringify({ name: 'Studio', devices: [] }));
+  const ran = [];
+  const notices = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const host = setupLink({
+    app: { getPath: () => tmp, getVersion: () => '0.14.0' },
+    safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'keychain', encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() },
+    ipcMain: { handle: () => {} }, send: () => {}, notify: (title) => notices.push(title), T: (k, v) => (v ? `${k}:${JSON.stringify(v)}` : k),
+    projects: () => [{ id: 'p1', name: 'shop', engine: 'claude' }], tabState: () => 'ready', type: () => true,
+    manage: async (op, id) => { ran.push([op, id]); if (op === 'start') await gate; return op === 'stop' ? { ok: false, reason: 'busy' } : { ok: true }; },
+  });
+  t.after(() => host.destroy());
+  const link = host.link();
+  const dev = (pub, name) => ({ pub, name, addedAt: 0, allowCommands: false, allowHandoff: false, allowManage: true, allowAccounts: false });
+  const laptop = { pub: 'ab'.repeat(32), name: 'Laptop' };
+  const old = { pub: 'cd'.repeat(32), name: 'Old' };
+  link.devices = [dev(laptop.pub, 'Laptop'), dev(old.pub, 'Old')];
+  const replies = [];
+  const op = (device, id, o, project = 'p1') => link.emit('proj-op', { device, id, op: o, project, reply: (ok, reason) => replies.push([id, ok, reason]) });
+  op(laptop, 'o1', 'start');                        // runs, waits on the gate
+  op(old, 'o2', 'sleep');                           // queued behind it
+  op(laptop, 'o3', 'stop');
+  op(laptop, 'o4', 'wake', 'nope');
+  link.devices = [dev(laptop.pub, 'Laptop')];       // Old removed while its op waits
+  release();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(ran, [['start', 'p1'], ['stop', 'p1']]);
+  assert.deepEqual(replies, [['o1', true, undefined], ['o3', false, 'busy'], ['o4', false, 'unknown-project']]);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /main\.projOpNotice/);
+  const log = fs.readFileSync(path.join(tmp, 'link', 'manage.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(log.map((e) => [e.device, e.op, e.outcome]), [['Laptop', 'start', 'ok'], ['Old', 'sleep', 'dropped:removed'], ['Laptop', 'stop', 'rejected:busy'], ['Laptop', 'wake', 'rejected:unknown-project']]);
+  assert.equal((fs.statSync(path.join(tmp, 'link', 'manage.log')).mode & 0o777), 0o600);
 });

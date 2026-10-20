@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld('agentOffice', {
     handoffKeep: (dir) => ipcRenderer.invoke('link:handoffKeep', dir),   // outcome unknown: keep it here (confirm dialog)
     send: (id, project, text) => ipcRenderer.invoke('link:send', id, project, text),
     handOff: (projectId, deviceId) => ipcRenderer.invoke('link:handOff', projectId, deviceId),   // v3.32 Machines panel Move ▸
+    projOp: (deviceId, projectId, op) => ipcRenderer.invoke('link:projOp', deviceId, projectId, op),   // v3.33 start/wake/sleep/stop there
     onChange: listen('link:changed'),
   },
   office: {

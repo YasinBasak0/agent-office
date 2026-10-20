@@ -933,6 +933,21 @@ agentOffice.link.handOff(projectId, deviceId): Promise<boolean>   // IPC link:ha
 - **Receiving.** `cleanRes` / `cleanCatalog` keep only the fields above (strings cleaned and cut); malformed ones are dropped as invalid messages.
 - **Panel** `renderer/machines.js` (`#machines-panel`, opened by **Makineler / Machines** in the Devices section; Esc or × closes): one card per machine, this one first, then paired devices (online first): name, online dot, RAM bar (*free of total*, *(approx.)* on macOS, which counts reclaimable memory as used), load on N CPUs, tabs · agents · sleeping, version (amber when it differs from this machine's). Under each card its projects (folder name, state, engine when not Claude, account). Actions in this step only: **Move ▸ <device>** on this machine's Claude Code projects (= v3.29 handoff) and, for a remote running Claude Code project in its snapshot, the v3.28 prompt box. A remote device without `allowManage` for us shows *Projects not shared*. Dev mock: `?machines[=n]`.
 
+## Run a project on another machine: start, wake, sleep, stop (v3.33, P2P phase 3 step C)
+
+Wire (cap `manage`; sent only to a peer whose hello listed it, so a v1 or older peer never sees these types):
+```
+proj-op        { id, op: 'start'|'wake'|'sleep'|'stop', project }   // asker → owning device
+proj-op-status { id, ok, reason? }                                 // owning device → asker
+reasons: not-allowed, unknown-project, engine, busy, locked, rate-limited, removed, offline, no-manage, timeout, failed
+```
+- **Consent.** The owning device acts only for a device with **Allow managing projects** (`allowManage`) on; otherwise `not-allowed`. The token bucket is the one remote commands use (shared per device, burst 3, one per 10 s): `rate-limited`. A peer without cap `manage` that sends `proj-op` gets no answer.
+- **Owning side** (`link-host.js` `onProjOp` → main `projectOp`): ops run one at a time; an op whose device was removed before it ran is dropped (logged `dropped:removed`, no answer), and a removed device never hears an answer. Every op is appended to `userData/link/manage.log` (`{ at, device, project, op, outcome }`, 0600, no prompts or paths); a successful one shows a notification on the owning machine (`main.projOpNotice`). Acts on the project's main (boss) tab: **start**/**wake** start it (a sleeping one resumes its session, a stopped one starts like at launch; already running = ok); **sleep** ends an idle Claude Code tab like auto-sleep (non-Claude: `engine`); **stop** ends it (asleep or stopped = ok). **sleep** and **stop** refuse a busy tab (`busy`: a turn, a dialog, a draft, a permission prompt, the same check as remote commands). A project being handed off: `locked`.
+- **Asking side.** `Link.sendProjOp` resolves `{ ok, reason? }`: `offline` (nothing queued), `no-manage` (the peer lacks the cap), `timeout` after 12 s, `removed` when the device is removed while it waits. The view's `projOps` (`<device>/<project>` → `{ op, state: sent|ok|failed, reason? }`) feeds the Machines panel.
+- **Machines panel.** On a remote device's project rows (online, cap `manage`, catalog shared): **Start** (stopped), **Wake**/**Stop** (asleep), **Sleep**/**Stop** (running); a refusal shows next to them.
+- **One boss.** The `agent-office` MCP server gains `office_project({ machine?, project, op }) → { ok, reason? }` (this machine, or a paired device by name; project by name, folder name or id; `self` for sleep/stop of the boss's own tab). Never auto-allowed: Claude Code's permission prompt is the per-call consent. `office_machines` adds `manage` per device.
+- **Not done here.** Opening or cloning a project on another machine (Move = v3.29 handoff), two-owner flags, extra tabs.
+
 ## One boss: dispatch and reports (v3.35, P2P phase 3 step B)
 
 ```ts

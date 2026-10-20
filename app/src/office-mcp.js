@@ -1,5 +1,5 @@
 // "One boss" (contract v3.35): the `agent-office` MCP server of a manager-mode boss tab, and the app's side of it.
-// Run as a script (ELECTRON_RUN_AS_NODE=1, stdio, newline-delimited JSON-RPC, no dependencies) it offers three tools
+// Run as a script (ELECTRON_RUN_AS_NODE=1, stdio, newline-delimited JSON-RPC, no dependencies) it offers four tools
 // and forwards each call over a local socket to the app, with the tab's token. The token lives only in the server's
 // `env` inside the tab's 0600 --mcp-config file, never in the pty env; a call with a wrong token is refused.
 // The app side (createOfficeSocket) maps each token to its tab and answers through `handle`.
@@ -33,6 +33,20 @@ const TOOLS = [
         task: { type: 'string', description: 'What to do, self-contained (at most 8 KB).' },
       },
       required: ['project', 'task'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'office_project',
+    description: 'Starts, wakes, puts to sleep or stops the boss tab of a project on this machine or on a paired device that allows managing its projects (v3.33). sleep and stop are refused while that tab is busy. Returns { ok, reason? } (reasons: not-allowed, no-manage, offline, busy, locked, engine, unknown-machine, unknown-project, rate-limited, timeout, self: the boss own tab).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        machine: { type: 'string', description: 'Machine name from office_machines; leave out for this machine.' },
+        project: { type: 'string', description: 'Project name, folder name or id on that machine.' },
+        op: { type: 'string', enum: ['start', 'wake', 'sleep', 'stop'] },
+      },
+      required: ['project', 'op'],
       additionalProperties: false,
     },
   },
