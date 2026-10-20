@@ -3700,3 +3700,147 @@ test('login relay: parser finds the allowlisted URL and the code prompt in a stu
   assert.deepEqual(LC.validateMessage({ t: 'acct-view', accounts: [{ id: 'work', label: 'Work\x1b[31m', state: 'out', email: 'me@example.com', token: 'sk-ant-x', configDir: '/Users/me/.claude-work' }] }),
     { t: 'acct-view', accounts: [{ id: 'work', label: 'Work', state: 'out', email: 'me@example.com' }], shared: true });   // labels, state, email only
 });
+
+// --- opt-in project files (contract v3.38, src/project-files.js)
+{
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { execFileSync } = require('child_process');
+  const PF = require('../src/project-files.js');
+  const repo = () => {
+    const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-pf-')));
+    fs.mkdirSync(path.join(d, '.git', 'info'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.git', 'info', 'exclude'), '# git ls-files --others --exclude-from=.git/info/exclude\n*.log\n');
+    return d;
+  };
+  const list = (d) => {
+    const out = [];
+    const walk = (rel) => {
+      for (const e of fs.readdirSync(path.join(d, rel), { withFileTypes: true })) {
+        const r = rel ? `${rel}/${e.name}` : e.name;
+        if (r === '.git') continue;
+        if (e.isDirectory()) walk(r); else out.push(r);
+      }
+    };
+    walk('');
+    return out.sort();
+  };
+  const mcp = { mcpServers: {
+    db: { command: 'npx', args: ['db-mcp'], env: { DB: 'x' }, cwd: '.' },
+    web: { type: 'http', url: 'https://example.com/mcp', headers: { A: 'b' } },
+    nope: { command: 'evil' },
+  } };
+  const all = { engine: 'agy', enabled: true, manager: true, agentModel: 'opus', projectMcp: mcp, approved: ['db', 'web'] };
+
+  test('project files: off writes nothing; agy on writes exactly our files, marked, and excludes them', () => {
+    assert.deepEqual(PF.desiredFiles({ ...all, enabled: false }), []);
+    assert.deepEqual(PF.desiredFiles({ engine: 'claude', enabled: true, manager: true, agentModel: 'opus' }), []);
+    const d = repo();
+    const r = PF.syncProjectFiles(d, PF.desiredFiles(all));
+    const ours = ['.agents/agents/ao-worker.md', '.agents/hooks.json', '.agents/mcp_config.json', '.agents/rules/agent-office-manager.md'];
+    assert.deepEqual(r.written.sort(), ours);
+    assert.deepEqual(list(d), [...ours.slice(0, 2), '.agents/.agent-office-files.json', ...ours.slice(2)].sort());
+    const rule = fs.readFileSync(path.join(d, ours[3]), 'utf8');
+    assert.match(rule, /^---\ntrigger: always_on\n/); // docs/rules: the frontmatter comes first
+    assert.match(rule, new RegExp(PF.MARKER));
+    assert.match(fs.readFileSync(path.join(d, ours[0]), 'utf8'), /\nname: ao-worker\n[\s\S]*\nmodel: pro\n/);
+    const hooks = JSON.parse(fs.readFileSync(path.join(d, ours[1]), 'utf8'));
+    assert.deepEqual(Object.keys(hooks), [PF.HOOK_NAME]);
+    assert.equal(hooks[PF.HOOK_NAME].Stop[0].type, 'command');
+    const ex = fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8');
+    assert.match(ex, /^# git ls-files[^\n]*\n\*\.log\n/); // the user's lines stay
+    for (const f of [...ours, '.agents/.agent-office-files.json']) assert.ok(ex.includes(`\n/${f}\n`), f);
+    const out = execFileSync('git', ['-C', d, 'init', '-q'], { encoding: 'utf8' }) + execFileSync('git', ['-C', d, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' });
+    assert.equal(out.trim(), ''); // git sees none of them
+    // the same again changes nothing
+    assert.deepEqual(PF.syncProjectFiles(d, PF.desiredFiles(all)), { written: [], removed: [], refused: [] });
+    // off: exactly our files go, the exclude block too, the user's lines stay
+    const off = PF.syncProjectFiles(d, []);
+    assert.deepEqual(off.removed.sort(), ours);
+    assert.deepEqual(list(d), []);
+    assert.equal(fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8'), '# git ls-files --others --exclude-from=.git/info/exclude\n*.log\n');
+  });
+
+  test('project files: a user file of the same name is never overwritten or removed; nor ours once the user edits it', () => {
+    const d = repo();
+    fs.mkdirSync(path.join(d, '.agents', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.agents', 'rules', 'agent-office-manager.md'), 'mine');
+    fs.writeFileSync(path.join(d, '.agents', 'mcp_config.json'), '{"mcpServers":{}}');
+    fs.writeFileSync(path.join(d, '.agents', 'rules', 'style.md'), 'keep');
+    const r = PF.syncProjectFiles(d, PF.desiredFiles(all));
+    assert.deepEqual(r.refused.sort(), ['.agents/mcp_config.json', '.agents/rules/agent-office-manager.md']);
+    assert.equal(fs.readFileSync(path.join(d, '.agents', 'rules', 'agent-office-manager.md'), 'utf8'), 'mine');
+    assert.equal(fs.readFileSync(path.join(d, '.agents', 'mcp_config.json'), 'utf8'), '{"mcpServers":{}}');
+    assert.ok(!fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8').includes('mcp_config.json')); // not ours: not excluded
+    fs.writeFileSync(path.join(d, '.agents', 'hooks.json'), '{"edited":{}}'); // the user edits ours
+    const off = PF.syncProjectFiles(d, []);
+    assert.deepEqual(off.removed, ['.agents/agents/ao-worker.md']);
+    assert.ok(off.refused.includes('.agents/hooks.json'));
+    assert.deepEqual(list(d), ['.agents/hooks.json', '.agents/mcp_config.json', '.agents/rules/agent-office-manager.md', '.agents/rules/style.md']);
+  });
+
+  test('project files: MCP comes only from the project\'s own approved .mcp.json, translated to agy\'s schema', () => {
+    assert.deepEqual(PF.agyMcpServers(mcp, ['db', 'web']), {
+      db: { command: 'npx', args: ['db-mcp'], env: { DB: 'x' }, cwd: '.' },
+      web: { serverUrl: 'https://example.com/mcp', headers: { A: 'b' } },
+    });
+    assert.deepEqual(PF.agyMcpServers(mcp, []), {}); // nothing approved: nothing goes
+    assert.deepEqual(PF.agyMcpServers(null, ['db']), {});
+    const files = PF.desiredFiles({ ...all, approved: ['db'] });
+    const m = files.find((f) => f.rel === '.agents/mcp_config.json');
+    assert.deepEqual(JSON.parse(m.content), { mcpServers: { db: mcp.mcpServers.db } });
+    assert.ok(!PF.desiredFiles({ ...all, approved: [] }).some((f) => f.rel.endsWith('mcp_config.json')));
+    // no leak: nothing of Claude Code's or the office's setup in any file
+    for (const f of files) assert.doesNotMatch(f.content, /CLAUDE_|AGENT_OFFICE_|office-mcp|office\.json|\.claude|userData|journal/i, f.rel);
+    // manager off: no brief, no Stop gate; Auto agent model: no worker
+    assert.deepEqual(PF.desiredFiles({ ...all, manager: false, agentModel: null, approved: [] }), []);
+  });
+
+  test('project files: Command Code gets only the worker agent; switching engine swaps the files', () => {
+    const cc = PF.desiredFiles({ engine: 'commandcode', enabled: true, manager: true, agentModel: 'haiku', projectMcp: mcp, approved: ['db'] });
+    assert.deepEqual(cc.map((f) => f.rel), ['.commandcode/agents/ao-worker.md']);
+    assert.match(cc[0].content, /\nmodel: claude-haiku-5-5\ntools: "\*"\n/);
+    const d = repo();
+    PF.syncProjectFiles(d, PF.desiredFiles(all));
+    const r = PF.syncProjectFiles(d, cc);
+    assert.deepEqual(r.written, ['.commandcode/agents/ao-worker.md']);
+    assert.equal(r.removed.length, 4);
+    assert.deepEqual(list(d), ['.commandcode/.agent-office-files.json', '.commandcode/agents/ao-worker.md']);
+  });
+
+  test('project files: a project inside a repository or a worktree gets its exclude entries in the common git dir', () => {
+    const d = repo();
+    const sub = path.join(d, 'pkg');
+    fs.mkdirSync(sub);
+    PF.syncProjectFiles(sub, PF.desiredFiles({ engine: 'commandcode', enabled: true, agentModel: 'opus' }));
+    assert.ok(fs.readFileSync(path.join(d, '.git', 'info', 'exclude'), 'utf8').includes('\n/pkg/.commandcode/agents/ao-worker.md\n'));
+    const wt = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-wt-')));
+    fs.mkdirSync(path.join(d, '.git', 'worktrees', 'w'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.git', 'worktrees', 'w', 'commondir'), '../..\n');
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(d, '.git', 'worktrees', 'w')}\n`);
+    assert.equal(PF.gitExclude(wt).file, path.join(d, '.git', 'info', 'exclude'));
+  });
+
+  test('project files: the Stop gate sends the agent back once per execution (docs/hooks Stop output)', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-stop-'));
+    const run = (n) => JSON.parse(execFileSync('sh', ['-c', PF.STOP_COMMAND], {
+      input: JSON.stringify({ executionNum: n, conversationId: 'c-1', fullyIdle: true }, null, 2), env: { PATH: process.env.PATH, TMPDIR: tmp }, encoding: 'utf8',
+    }));
+    assert.deepEqual(run(1), { decision: 'continue', reason: PF.STOP_REASON });
+    assert.equal(run(1).decision, 'stop');
+    assert.equal(run(2).decision, 'continue');
+    assert.equal(run(3).decision, 'stop');
+    assert.equal(JSON.parse(execFileSync('sh', ['-c', PF.STOP_COMMAND], { input: '{}', encoding: 'utf8' })).decision, 'stop');
+  });
+
+  test('project files toggle: off by default, only true is stored', () => {
+    const s = { projects: [{ id: 'a', dir: '/a', engine: 'agy' }], accounts: [] };
+    assert.equal(P.projectFilesOf(P.findProject(s, 'a')), false);
+    assert.equal(P.setProjectFiles(s, 'a', false), s);
+    const on = P.setProjectFiles(s, 'a', true);
+    assert.equal(P.findProject(on, 'a').projectFiles, true);
+    assert.equal('projectFiles' in P.findProject(P.setProjectFiles(on, 'a', false), 'a'), false);
+    assert.deepEqual(P.normalizeState({ projects: [{ dir: '/x', projectFiles: true }, { dir: '/y', projectFiles: 'yes' }] }).projects.map((p) => p.projectFiles ?? null), [true, null]);
+  });
+}

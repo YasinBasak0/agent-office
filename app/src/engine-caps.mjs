@@ -5,18 +5,17 @@
 export const ENGINES = ['claude', 'agy', 'commandcode'];
 
 /** The features of a project row, in the order the sidebar shows them. */
-export const FEATURES = ['account', 'login', 'manager', 'bossModel', 'agentModel', 'contextCap', 'savings', 'backup', 'workers', 'approvals', 'cost'];
+export const FEATURES = ['account', 'login', 'manager', 'bossModel', 'agentModel', 'contextCap', 'savings', 'backup', 'workers', 'approvals', 'cost', 'projectFiles'];
 
 const OK = Object.freeze({ ok: true });
 const no = (reason) => Object.freeze({ ok: false, reason });
 
 // Command Code: manager mode, context cap, savings, workers and approvals arrive with its launch config and mod
-// (contract v3.37). Antigravity: what it can't take without files in the project or ~/.gemini stays off (v3.36).
+// (contract v3.37). Antigravity: what it can't take without files in the project or ~/.gemini stays off (v3.36), except
+// what the opt-in project files bring (WITH_FILES, v3.38).
 const TABLE = {
-  claude: {},
+  claude: { projectFiles: no('claudeProjectFiles') },
   agy: {
-    manager: no('agyManager'),
-    agentModel: no('agyAgentModel'),
     contextCap: no('agyContextCap'),
     savings: no('agySavings'),
     backup: no('agyBackup'),
@@ -24,21 +23,29 @@ const TABLE = {
     cost: no('agyCost'),
   },
   commandcode: {
-    agentModel: no('cmdAgentModel'),
     backup: no('cmdBackup'),
   },
 };
 
+// With the project's "Let Agent Office add its files" toggle on (contract v3.38, src/project-files.js) these come from
+// files in the project; off, they are disabled with the reason "turn on Agent Office files".
+const WITH_FILES = { agy: ['manager', 'agentModel'], commandcode: ['agentModel'] };
+
 const engineOf = (e) => (ENGINES.includes(e) ? e : 'claude');
 
-/** The engine's capabilities: { [feature]: { ok: true } | { ok: false, reason } } for every feature. */
-export function caps(engine) {
-  const row = TABLE[engineOf(engine)];
-  return Object.fromEntries(FEATURES.map((f) => [f, row[f] || OK]));
+/**
+ * The engine's capabilities: { [feature]: { ok: true } | { ok: false, reason } } for every feature.
+ * opts.projectFiles: the project's opt-in toggle (contract v3.38).
+ */
+export function caps(engine, { projectFiles = false } = {}) {
+  const e = engineOf(engine);
+  const row = TABLE[e];
+  const files = WITH_FILES[e] || [];
+  return Object.fromEntries(FEATURES.map((f) => [f, files.includes(f) ? (projectFiles ? OK : no('filesOff')) : row[f] || OK]));
 }
 
-/** One feature of one engine. */
-export const cap = (engine, feature) => caps(engine)[feature] || OK;
+/** One feature of one engine (opts as caps). */
+export const cap = (engine, feature, opts) => caps(engine, opts)[feature] || OK;
 
 // The boss model choices per engine (contract v3.27, v3.36): value + label. Auto ('auto', stored as nothing) comes
 // first everywhere. Claude: claude's aliases (the sidebar shows their locale strings). Antigravity: its documented model tiers

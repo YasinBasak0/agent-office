@@ -234,7 +234,7 @@ export function mountSidebar(el, on) {
    * is disabled, its reason in the title and in a small line shown on hover or focus.
    */
   function control(p, feature, label, sel, extraClass = '') {
-    const c = cap(engineOfRow(p), feature);
+    const c = cap(engineOfRow(p), feature, { projectFiles: p.projectFiles === true }); // v3.38: some need the toggle
     const reason = c.ok ? '' : t(`sidebar.na.${c.reason}`);
     if (reason) { sel.disabled = true; sel.title = reason; }
     return h('label', {
@@ -319,6 +319,16 @@ export function mountSidebar(el, on) {
     },
     opt('auto', t('sidebar.bossModelAuto')), ...choices.map((c) => opt(c.value, claudeModelLabel(c.value) || c.label)));
     return control(p, 'bossModel', t('sidebar.bossModel'), sel);
+  }
+
+  // "Let Agent Office add its files to this project" (contract v3.38): off by default; Antigravity and Command Code only.
+  function projectFilesToggle(p) {
+    const box = h('input', {
+      type: 'checkbox', class: 'sb-files', checked: p.projectFiles === true, title: t('sidebar.projectFilesTitle'),
+      onclick: (e) => e.stopPropagation(),
+      onchange: (e) => on.setProjectFiles?.(p.id, e.target.checked),
+    });
+    return control(p, 'projectFiles', t('sidebar.projectFiles'), box);
   }
 
   // The model the project's agents run on (contract v3.14): Auto (the boss picks per agent) or one pinned model.
@@ -454,6 +464,7 @@ export function mountSidebar(el, on) {
           managerSelect(p),
           bossModelSelect(p),
           agentModelSelect(p),
+          projectFilesToggle(p),
           contextCapSelect(p),
           savingsSelect(p),
           backupSelect(p),

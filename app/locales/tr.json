@@ -122,6 +122,8 @@
     "agentModelSonnet": "Sonnet",
     "agentModelHaiku": "Haiku",
     "agentModelOpus": "Opus",
+    "projectFiles": "Agent Office dosyaları",
+    "projectFilesTitle": "Agent Office kendi dosyalarını bu projeye eklesin: yönetici notu, ajan modelinde bir işçi ajan, bitirmeden önce kontrol kapısı ve projenin kendi onaylı MCP sunucuları (Antigravity: .agents/, Command Code: .commandcode/agents/). .git/info/exclude ile git dışında tutulur; kapatınca tam olarak bu dosyalar silinir.",
     "contextCap": "Bağlam sınırı",
     "contextCapTitle": "Bu projedeki konuşmaların (müdür ve ajanları için) Claude onları özetlemeden (otomatik sıkıştırma) önce ne kadar büyüyebileceği. Her adım bütün konuşmayı yeniden okur; sınır düşükse Claude daha erken özetler, her adım daha az okur ve iş daha ucuza gelir. Bedeli: önceki işin ayrıntıları yalnızca özet olarak kalır. Otomatik, Claude Code'un kendi sınırını kullanır (1M modelde 1M token'a kadar). Projenin Claude'u bir sonraki açılışında geçerli olur (boştaki sekmeler hemen yeniden başlar).",
     "contextCapAuto": "Otomatik",
@@ -221,15 +223,14 @@
     "cmdInTitle": "Command Code'un kayıtlı bir girişi var (~/.commandcode/auth.json). Uygulama yalnızca dosyanın var olduğuna bakar.",
     "cmdLoginTitle": "commandcode login burada çalışır (yetki vermek için bir tarayıcı açılır)",
     "na": {
-      "agyManager": "Antigravity talimatı yalnız projedeki ya da ~/.gemini'deki dosyalardan alır; Agent Office bunları yazmaz.",
-      "agyAgentModel": "Antigravity alt ajan modelini yalnız kendi ajan dosyalarında sabitler; Agent Office bunları yazmaz.",
       "agyContextCap": "Antigravity konuşmasını kendisi özetler; boyut ayarı yok.",
       "agySavings": "Antigravity'nin belgelenmiş bir çıktı sınırı ya da adım bütçesi yok.",
       "agyBackup": "Antigravity'de kullanıcı başına tek giriş var; geçilecek ikinci hesap yok.",
       "agyWorkers": "Antigravity alt ajan olaylarını başka programlara bildirmez.",
       "agyCost": "Antigravity, Agent Office'in okuyabileceği token sayısı yazmaz.",
-      "cmdAgentModel": "Command Code'un yerleşik alt ajanları dışarıdan bir modele sabitlenemez.",
-      "cmdBackup": "Command Code'da tek giriş var; geçilecek ikinci hesap yok."
+      "cmdBackup": "Command Code'da tek giriş var; geçilecek ikinci hesap yok.",
+      "filesOff": "Projenin dosyalarını gerektirir: bu proje için Agent Office dosyalarını açın.",
+      "claudeProjectFiles": "Claude Code, Agent Office ayarlarını başlarken alır; projeye hiçbir şey yazılmaz."
     }
   },
   "panel": {
@@ -551,7 +552,8 @@
     "officeUnavailable": "Boss sekmeleri için Agent Office araçları kapalı: ofis soketi açılamadı",
     "projOpNotice": "{device}: {project} → {op}",
     "loginRelayTitle": "Uzaktan giriş",
-    "loginRelayBody": "{device}, bu makinede {label} hesabına giriş yapıyor."
+    "loginRelayBody": "{device}, bu makinede {label} hesabına giriş yapıyor.",
+    "projectFilesRefused": "Agent Office, “{name}” içindeki bazı dosyalara dokunmadı: kendisinin yazmadığı (ya da yazdıktan sonra değiştirilmiş) aynı adlı bir dosyanın üzerine asla yazılmaz, silinmez."
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",

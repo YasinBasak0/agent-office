@@ -29,6 +29,7 @@ function normalizeState(raw, { id = newId } = {}) {
       ...withContextCap(p.contextCap),
       ...withSavings(p.savings),
       ...withEngine(p.engine),
+      ...withProjectFiles(p.projectFiles),
       ...withBackup(p.backupAccount, known),
       ...withHome(p.homeAccount, known, known.has(p.accountId) ? p.accountId : DEFAULT_ID),
       ...withTabs(normalizeTabs(p.tabs)),
@@ -347,6 +348,27 @@ function setProjectEngine(state, id, value) {
 /** The program the project's tabs run: 'claude' | 'agy' | 'commandcode'. */
 const engineOf = (project) => engineValue(project?.engine) || 'claude';
 
+// --- opt-in project files (contract v3.38, src/project-files.js)
+// Project.projectFiles: true lets Agent Office write its files into the project folder for Antigravity / Command Code
+// (manager brief, worker agent, Stop gate, the project's own MCP servers). Absent = off (the default). Never written for off.
+/** @type {(v: unknown) => { projectFiles?: true }} */
+const withProjectFiles = (v) => (v === true ? { projectFiles: true } : {});
+
+/** value: true | false. Same state when nothing changes. */
+function setProjectFiles(state, id, value) {
+  const p = findProject(state, id);
+  const v = value === true;
+  if (!p || (p.projectFiles === true) === v) return state;
+  return { ...state, projects: state.projects.map((x) => {
+    if (x.id !== id) return x;
+    const { projectFiles: _, ...rest } = x;
+    return v ? { ...rest, projectFiles: true } : rest;
+  }) };
+}
+
+/** Whether the project lets Agent Office add its files. */
+const projectFilesOf = (project) => project?.projectFiles === true;
+
 // --- backup account at the usage limit (contract v3.17, src/fallback.js)
 // Project.backupAccount: 'auto' (any other logged-in account not at its limit) or an account id; absent = none.
 // Project.homeAccount: the account the project was on before an automatic move to a backup; it goes back there once
@@ -408,5 +430,6 @@ module.exports = {
   CONTEXT_CAPS, setProjectContextCap, contextCapOf,
   setProjectSavings, savingsOf,
   ENGINES, setProjectEngine, engineOf,
+  setProjectFiles, projectFilesOf,
   setProjectBackup, backupOf, fallbackTo, returnHome,
 };
