@@ -77,7 +77,13 @@ export function mountDevices(sidebarEl, api) {
     const outgoing = ho.out.map((/** @type {any} */ x) => h('div', { class: `sb-note ho-${x.stage}` },
       `${t('devices.handoff.out', { project: x.name, device: x.deviceName })} — `,
       x.stage === 'sending' ? t('devices.handoff.sending', { pct: pct(x.sent, x.total) }) : x.stage === 'failed' ? t('devices.handoff.failed', { reason: t(`main.handoffReason.${x.reason}`) }) : t(`devices.handoff.${x.stage}`)));
-    const owners = (view.owners || []).map((/** @type {any} */ o) => h('div', { class: 'sb-note', title: o.dir }, t(o.unknown ? 'devices.handedOffUnknown' : 'devices.handedOff', { project: o.project, device: o.deviceName })));
+    const owners = (view.owners || []).map((/** @type {any} */ o) => o.unknown
+      ? h('div', { class: 'sb-handoff' },
+        h('div', { class: 'sb-note warn', title: o.dir }, t('devices.handedOffUnknown', { project: o.project, device: o.deviceName })),
+        h('div', { class: 'sb-row' },
+          h('button', { class: 'sb-x', disabled: !o.online, title: o.online ? '' : t('devices.handoff.askOffline'), onclick: () => apply(api.link.handoffAsk(o.dir)) }, t('devices.handoff.askAgain')),
+          h('button', { class: 'sb-x', onclick: () => apply(api.link.handoffKeep(o.dir)) }, t('devices.handoff.keepHere'))))
+      : h('div', { class: 'sb-note', title: o.dir }, t('devices.handedOff', { project: o.project, device: o.deviceName })));
     const p = view.pairing;
     const pairing = p?.code
       ? h('div', { class: 'sb-pair' },

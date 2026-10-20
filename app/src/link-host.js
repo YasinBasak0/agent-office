@@ -17,7 +17,7 @@ const QUEUE_TTL_MS = 30 * 60 * 1000;    // a command that waited this long is dr
  *   projects: () => { id: string, name: string, engine: string }[],
  *   tabState: (projectId: string) => 'ready' | 'busy' | 'gone', type: (projectId: string, text: string) => void,
  *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
- *     confirmPush: (project: string, url: string) => Promise<boolean>,
+ *     confirmPush: (project: string, url: string) => Promise<boolean>, confirmKeep: (project: string, device: string) => Promise<boolean>,
  *     target: (dir: string) => { root: string, memoryDir: string, factsFile: string, accountId?: string },
  *     adopt: (o: { dir: string, settings: any, sessionIds: string[], accountId?: string }) => void, pickFolder: (defaultPath: string) => Promise<string | null> } }} d
  */
@@ -28,6 +28,7 @@ function setupLink(d) {
   const logFile = path.join(dir, 'commands.log');
   const handoffLog = path.join(dir, 'handoff.log');
   const ownersFile = path.join(dir, 'owners.json');
+  const resultsFile = path.join(dir, 'handoff-results.json');   // the receiver's handoff outcomes (no secrets)
   const targets = new Map();             // incoming handoff id → the folder chosen for it
   const defaults = new Map();            // incoming handoff id → the folder used without asking ('' = the person picks)
   const answered = new Set();            // incoming handoff ids already answered (a second click does nothing)
@@ -63,7 +64,7 @@ function setupLink(d) {
     try {
       const keys = loadKeys();
       const saved = readJson(devicesFile) || {};
-      link = new C_Link({ keyPair: { publicKey: keys.publicKey, secretKey: keys.secretKey }, name: saved.name || os.hostname().replace(/\.local$/, ''), devices: saved.devices, secrets: keys.secrets });
+      link = new C_Link({ keyPair: { publicKey: keys.publicKey, secretKey: keys.secretKey }, name: saved.name || os.hostname().replace(/\.local$/, ''), devices: saved.devices, secrets: keys.secrets, resultsFile });
       link.on('persist', save);
       if (keys.fresh) link.persist();
       link.on('change', push);
@@ -74,6 +75,7 @@ function setupLink(d) {
       link.on('handoff-failed', ({ offer, reason }) => { targets.delete(offer.id); defaults.delete(offer.id); answered.delete(offer.id); hlog({ dir: 'in', project: offer.name, outcome: `failed:${reason}` }); });
       link.on('handoff-data', (x) => { applyHandoff(x).catch(() => {}); });
       link.on('handoff-late-result', onLateResult);
+      link.on('handoff-status', onStatus);
       // a handoff whose outcome is still unknown keeps its project locked across restarts
       for (const v of Object.values(readOwners())) if (v?.owner === 'unknown' && v.projectId) d.handoff?.lock(v.projectId, true);
       if (link.devices.length) link.ensureSwarm();
@@ -122,10 +124,10 @@ function setupLink(d) {
     else o[folder] = { owner, ownerName, project, at: Date.now(), ...extra };
     try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); fs.writeFileSync(ownersFile, JSON.stringify(o, null, 2), { mode: 0o600 }); } catch { /* best effort */ }
   }
-  const ownersView = () => Object.entries(readOwners()).filter(([, v]) => v && v.owner && v.owner !== 'self').map(([folder, v]) => ({ dir: folder, project: String(v.project || ''), deviceName: String(v.ownerName || '?'), at: Number(v.at) || 0, unknown: v.owner === 'unknown' }));
+  const ownersView = () => Object.entries(readOwners()).filter(([, v]) => v && v.owner && v.owner !== 'self').map(([folder, v]) => ({ dir: folder, project: String(v.project || ''), deviceName: String(v.ownerName || '?'), at: Number(v.at) || 0, unknown: v.owner === 'unknown', online: Boolean(v.pub && link?.conns.has(v.pub)) }));
 
   /** The receiver's result for a handoff this side had marked unknown (it applied, or not, while we were apart). */
-  function onLateResult({ device, id, ok, applied }) {
+  function onLateResult({ device, id, ok, applied, reason: _reason }) {
     const hit = Object.entries(readOwners()).find(([, v]) => v?.owner === 'unknown' && v.handoffId === id && v.pub === device.pub);
     if (!hit) return;
     const [folder, v] = hit;
@@ -139,6 +141,39 @@ function setupLink(d) {
       if (v.projectId) d.handoff?.lock(v.projectId, false);
     }
     push();
+  }
+
+  /** The answer to "Ask again": applied / not-applied resolve it like a late result; unknown leaves it locked. */
+  function onStatus({ device, id, status, applied, reason }) {
+    if (status === 'applied' || status === 'not-applied') return onLateResult({ device, id, ok: status === 'applied', applied, reason });
+    const hit = Object.values(readOwners()).find((v) => v?.owner === 'unknown' && v.handoffId === id && v.pub === device.pub);
+    if (hit) { hlog({ dir: 'out', device: device.name, project: hit.project, outcome: 'query:unknown' }); d.notify(d.T('main.handoffStillUnknown', { project: hit.project, device: device.name }), ''); }
+  }
+  const unknownEntry = (folder) => { const v = readOwners()[folder]; return v?.owner === 'unknown' ? v : null; };
+  /** The owners.json folder of a project whose handoff outcome is unknown, or null. */
+  function unknownFor(projectId) {
+    const hit = Object.entries(readOwners()).find(([, v]) => v?.owner === 'unknown' && v.projectId === projectId);
+    return hit ? { dir: hit[0], project: String(hit[1].project || ''), deviceName: String(hit[1].ownerName || '?'), online: Boolean(link?.conns.has(hit[1].pub)) } : null;
+  }
+  /** "Ask again": re-queries the receiver (ho-query). Returns false when it is offline. */
+  function askAgain(folder) {
+    const v = unknownEntry(folder);
+    if (!v || !link || !v.handoffId || !v.pub) return false;
+    const ok = link.queryHandoff(v.pub, v.handoffId);
+    hlog({ dir: 'out', device: v.ownerName, project: v.project, outcome: ok ? 'query' : 'query:offline' });
+    return ok;
+  }
+  /** "Keep it here": after a warning that both machines may then own it, unlocks the project here and forgets the handoff. */
+  async function keepHere(folder) {
+    const v = unknownEntry(folder);
+    if (!v || !d.handoff) return false;
+    if (!(await d.handoff.confirmKeep(String(v.project || ''), String(v.ownerName || '?')))) return false;
+    if (!unknownEntry(folder)) return false;   // resolved meanwhile
+    setOwner(folder, null);
+    if (v.projectId) d.handoff.lock(v.projectId, false);
+    hlog({ dir: 'out', device: v.ownerName, project: v.project, outcome: 'kept-here', handoffId: v.handoffId });
+    push();
+    return true;
   }
 
   /** Hands a local project to a paired device. Resolves with the outcome; on success the project leaves this office. */
@@ -289,6 +324,8 @@ function setupLink(d) {
   ipc('link:remove', (l, id) => l.remove(String(id)));
   ipc('link:setAllowHandoff', (l, id, on) => l.setAllowHandoff(String(id), on === true));
   ipc('link:handoffAnswer', (l, id, accept) => answerHandoff(l, String(id), accept === true));
+  ipc('link:handoffAsk', (_l, folder) => askAgain(String(folder)));
+  ipc('link:handoffKeep', (_l, folder) => keepHere(String(folder)));
   ipc('link:send', (l, id, project, text) => l.sendCommand(String(id), String(project), String(text ?? '')));
 
   // Start at launch only when something is paired: a user who never pairs never touches the DHT.
@@ -298,7 +335,7 @@ function setupLink(d) {
     publish(projects, office, attention) { if (link) link.publish(C.snapshotOf(projects, office, attention)); },
     /** Paired devices a project can be handed to (online ones first). */
     devices() { const l = start(); return l ? l.devices.map((x) => ({ id: x.pub, name: x.name, online: l.conns.has(x.pub) })) : []; },
-    handOff,
+    handOff, unknownFor, askAgain, keepHere,
     destroy() { clearInterval(pumpTimer); return link?.destroy(); },
   };
 }

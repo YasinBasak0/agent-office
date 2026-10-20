@@ -19,6 +19,7 @@ const MAX_PACK = 100 * 1024 * 1024;       // the session data (transcripts, memo
 const CHUNK = 32 * 1024;                  // bytes per ho-chunk (base64 keeps the line under MAX_FRAME)
 const HANDOFF_REASONS = ['declined', 'not-allowed', 'busy', 'engine', 'not-git', 'offline', 'too-large', 'bad-data', 'checksum', 'apply-failed', 'timeout', 'in-progress', 'cancelled', 'unknown-project', 'changed', 'subfolder', 'push-declined', 'push-failed'];
 const APPLIED = ['restored', 'branch-only'];
+const HANDOFF_STATUS = ['applied', 'not-applied', 'unknown'];
 
 // 256 short, distinct, easy-to-type English words: a code word is one byte.
 const WORDS = (
@@ -202,6 +203,12 @@ function validateMessage(m) {
     case 'ho-result':
       return isId(m.id) && typeof m.ok === 'boolean' && (m.reason == null || HANDOFF_REASONS.includes(m.reason)) && (m.applied == null || APPLIED.includes(m.applied))
         ? { t: 'ho-result', id: m.id, ok: m.ok, ...(m.reason ? { reason: m.reason } : {}), ...(m.applied ? { applied: m.applied } : {}) } : null;
+    // v3.29 the sender asks again for an outcome it never heard; the receiver answers from its persisted record
+    case 'ho-query':
+      return isId(m.id) ? { t: 'ho-query', id: m.id } : null;
+    case 'ho-status':
+      return isId(m.id) && HANDOFF_STATUS.includes(m.status) && (m.reason == null || HANDOFF_REASONS.includes(m.reason)) && (m.applied == null || APPLIED.includes(m.applied))
+        ? { t: 'ho-status', id: m.id, status: m.status, ...(m.reason ? { reason: m.reason } : {}), ...(m.applied ? { applied: m.applied } : {}) } : null;
     default:
       return null;
   }
@@ -285,7 +292,7 @@ const logEntry = (at, device, project, text, outcome) => ({ at: new Date(at).toI
 
 module.exports = {
   PROTOCOL, HEARTBEAT_MS, HEARTBEAT_MISSES, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
-  MAX_BUNDLE, MAX_PACK, CHUNK, HANDOFF_REASONS,
+  MAX_BUNDLE, MAX_PACK, CHUNK, HANDOFF_REASONS, HANDOFF_STATUS,
   makeCode, normalizeCode, pairSecrets, pairProof, proofOk, pairTopic, hex, isHex,
   cleanLine, sanitizeCommand, markedCommand, deviceName, RateLimiter,
   cleanSnapshot, validateMessage, validatePair, LineReader, encode,

@@ -554,3 +554,101 @@ test('integration: handoff timeouts reach the receiver, busy/changed aborts, a d
   assert.equal(lr.ok, false);
   assert.equal(b.handoffsIn.size, 0);
 });
+
+test('integration: a persisted handoff result survives a Link restart and answers ho-query', { timeout: 90000 }, async (t) => {
+  const createTestnet = require('hyperdht/testnet');
+  const DHT = require('hyperdht');
+  const testnet = await createTestnet(3);
+  t.after(() => testnet.destroy());
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-hores-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const resultsFile = path.join(tmp, 'link', 'handoff-results.json');
+  const a = new Link({ keyPair: DHT.keyPair(), name: 'Studio', bootstrap: testnet.bootstrap });
+  let b = new Link({ keyPair: DHT.keyPair(), name: 'Laptop', bootstrap: testnet.bootstrap, resultsFile });
+  t.after(() => Promise.all([a.destroy(), b.destroy()]));
+  const until = (fn, ms = 30000) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => { const v = fn(); if (v) return resolve(v); if (Date.now() - t0 > ms) return reject(new Error('timeout')); setTimeout(tick, 20); };
+    tick();
+  });
+  const { code } = await a.invite();
+  await b.join(code);
+  await until(() => a.view().devices[0]?.online && b.view().devices[0]?.online);
+  b.setAllowHandoff(a.pub, true);
+  b.on('handoff-offer', ({ offer: o }) => b.answerHandoff(o.id, true));
+  let pending = null;
+  b.on('handoff-data', (x) => { pending = x; });
+  const pack = Buffer.from(JSON.stringify({ v: 1, dir: '/x/p', settings: {}, sessionIds: [], files: [] }));
+  const offer = { name: 'p', dir: '/x/p', git: { mode: 'remote', wip: 'agent-office/handoff-20261020100000123', base: 'b'.repeat(40), root: 'c'.repeat(40), branch: 'main', remote: 'https://example.com/r.git' } };
+  const r = await a.offerHandoff(b.pub, offer, { pack }, { resultMs: 500 });
+  assert.equal(r.unknown, true);
+  await until(() => pending);
+  // the apply started and is on disk; the receiver dies before it finishes (no result was ever sent)
+  assert.equal(JSON.parse(fs.readFileSync(resultsFile, 'utf8'))[r.id].status, 'applying');
+  const restart = async () => {
+    const keep = { keyPair: b.keyPair, devices: b.devices, secrets: b.secrets };
+    await b.destroy();
+    b = new Link({ ...keep, name: 'Laptop', bootstrap: testnet.bootstrap, resultsFile });
+    b.ensureSwarm();
+    await until(() => a.view().devices[0]?.online && b.view().devices[0]?.online);
+  };
+  const ask = (id) => { const p = new Promise((resolve) => a.once('handoff-status', resolve)); assert.equal(a.queryHandoff(b.pub, id), true); return p; };
+  await restart();
+  assert.equal(b.results.get(r.id).status, 'unknown');
+  const s1 = await ask(r.id);
+  assert.deepEqual([s1.id, s1.status], [r.id, 'unknown']);
+  assert.equal((await ask('0123456789abcdef')).status, 'not-applied');   // never got as far as applying
+  assert.equal(C.validateMessage({ t: 'ho-status', id: 'x', status: 'maybe' }), null);
+  assert.equal(C.validateMessage({ t: 'ho-query', id: '../x' }), null);
+
+  // an outcome decided while the sender was away is kept on disk, sent once it is back (also after a restart),
+  // and still answers ho-query afterwards
+  const late = new Promise((resolve) => a.once('handoff-late-result', resolve));
+  b.setResult(r.id, a.pub, 'applied', { applied: 'restored' });
+  assert.equal(b.results.get(r.id).sent, false);
+  await restart();
+  const lr = await late;
+  assert.deepEqual([lr.id, lr.ok, lr.applied], [r.id, true, 'restored']);
+  await until(() => b.results.get(r.id)?.sent === true);
+  const s2 = await ask(r.id);
+  assert.deepEqual([s2.status, s2.applied], ['applied', 'restored']);
+  const rec = JSON.parse(fs.readFileSync(resultsFile, 'utf8'))[r.id];
+  assert.deepEqual(Object.keys(rec).sort(), ['applied', 'at', 'pub', 'sent', 'status']);   // nothing secret
+});
+
+test('handoff: Keep it here unlocks a project whose handoff outcome is unknown (after the warning)', async (t) => {
+  const { setupLink } = require('../src/link-host.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-hokeep-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const dir = path.join(tmp, 'link');
+  fs.mkdirSync(dir, { recursive: true });
+  const folder = path.join(tmp, 'proj');
+  const pub = 'ab'.repeat(32);
+  fs.writeFileSync(path.join(dir, 'owners.json'), JSON.stringify({ [folder]: { owner: 'unknown', ownerName: 'Laptop', project: 'proj', at: 1, handoffId: '0123456789abcdef', pub, projectId: 'p1' } }));
+  fs.writeFileSync(path.join(dir, 'devices.json'), JSON.stringify({ name: 'Studio', devices: [] }));
+  const handlers = {};
+  const locks = [];
+  let answer = false;
+  const host = setupLink({
+    app: { getPath: () => tmp },
+    safeStorage: { isEncryptionAvailable: () => true, getSelectedStorageBackend: () => 'keychain', encryptString: (s) => Buffer.from(s), decryptString: (b) => b.toString() },
+    ipcMain: { handle: (ch, fn) => { handlers[ch] = fn; } },
+    send: () => {}, notify: () => {}, T: (k) => k, projects: () => [], tabState: () => 'gone', type: () => {},
+    handoff: { lock: (id, on) => locks.push([id, on]), release: () => {}, describe: () => null, confirmPush: async () => false, confirmKeep: async () => answer, target: () => ({}), adopt: () => {}, pickFolder: async () => null },
+  });
+  t.after(() => host.destroy());
+  assert.deepEqual(locks, [['p1', true]]);                          // re-locked at start
+  assert.deepEqual(host.unknownFor('p1'), { dir: folder, project: 'proj', deviceName: 'Laptop', online: false });
+  assert.equal(host.askAgain(folder), false);                        // the receiver is offline
+  const v0 = await handlers['link:handoffKeep'](null, folder);       // the person said Cancel
+  assert.equal(v0.owners[0].unknown, true);
+  assert.deepEqual(locks, [['p1', true]]);
+  answer = true;
+  const v1 = await handlers['link:handoffKeep'](null, folder);
+  assert.deepEqual(v1.owners, []);
+  assert.deepEqual(locks.at(-1), ['p1', false]);
+  assert.equal(host.unknownFor('p1'), null);
+  const log = fs.readFileSync(path.join(dir, 'handoff.log'), 'utf8');
+  assert.match(log, /"outcome":"query:offline"/);
+  assert.match(log, /"outcome":"kept-here"/);
+});

@@ -1219,6 +1219,11 @@ function handoffDeps() {
       const r = await dialog.showMessageBox(win, { type: 'question', buttons: [T('main.handoffPushGo'), T('main.cancel')], defaultId: 1, cancelId: 1, message: T('main.handoffPushConfirm', { project, remote: url }), detail: T('main.handoffPushDetail') });
       return r.response === 0;
     },
+    async confirmKeep(project, device) {
+      if (!win) return false;
+      const r = await dialog.showMessageBox(win, { type: 'warning', buttons: [T('main.handoffKeepGo'), T('main.cancel')], defaultId: 1, cancelId: 1, message: T('main.handoffKeepConfirm', { project, device }), detail: T('main.handoffKeepDetail', { device }) });
+      return r.response === 0;
+    },
     describe(projectId) {
       const p = P.findProject(state, projectId);
       if (!p) return null;
@@ -2108,6 +2113,17 @@ ipcMain.handle('work:resumeUnfinished', () => resumeUnfinished());
 
 // "Hand off to <device>" (v3.29): Claude Code projects only; paired devices, offline ones disabled
 function handoffMenu(p) {
+  // a handoff whose outcome is unknown (the project is locked): ask the receiver again, or keep it here
+  const u = linkHost?.unknownFor(p.id);
+  if (u) {
+    return [{
+      label: T('main.handoffUnknown', { device: u.deviceName }),
+      submenu: [
+        { label: T('main.handoffAskAgain'), enabled: u.online, click: () => { linkHost?.askAgain(u.dir); } },
+        { label: T('main.handoffKeepHere'), click: () => { linkHost?.keepHere(u.dir).catch((e) => console.error('handoff:', e.message)); } },
+      ],
+    }];
+  }
   const devices = linkHost?.devices() || [];
   if (!devices.length) return [];
   const claude = P.engineOf(p) === 'claude';

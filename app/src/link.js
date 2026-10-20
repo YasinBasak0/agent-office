@@ -2,6 +2,8 @@
 // gives it the key pair, the trust list and callbacks; tests run two of these on a local DHT testnet.
 'use strict';
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 const C = require('./link-core.js');
 
@@ -9,7 +11,7 @@ class Link extends EventEmitter {
   /**
    * @param {{ keyPair: { publicKey: Buffer, secretKey: Buffer }, name: string, devices?: C.Device[], secrets?: Record<string, string>,
    *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number,
-   *   handoffAskMs?: number, handoffIdleMs?: number }} o
+   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null }} o
    */
   constructor(o) {
     super();
@@ -38,7 +40,11 @@ class Link extends EventEmitter {
     this.handoffsIn = new Map();  // projects offered to this device: id → record
     this.handoffAskMs = o.handoffAskMs || 10 * 60 * 1000;   // an offer nobody answers is dropped after this
     this.handoffIdleMs = o.handoffIdleMs || 2 * 60 * 1000;  // an accepted transfer with no chunk for this long is dropped
-    this.lateResults = new Map(); // device pub → ho-result lines to send when it is back (applied while it was away)
+    // v3.29 the receiver's record of each handoff it applied (or tried to): id → { pub, status, applied?, reason?, sent, at }.
+    // Kept in resultsFile (userData/link/handoff-results.json, no secrets) so a result survives a restart: one not yet
+    // delivered is sent when the sender is back, and the sender can ask again (ho-query) at any time.
+    this.resultsFile = o.resultsFile || null;
+    this.results = this.loadResults();
     this.destroyed = false;
   }
 
@@ -198,8 +204,12 @@ class Link extends EventEmitter {
       this.emit('change');
     });
     this.write(conn, { t: 'hello', v: C.PROTOCOL, name: this.name });
-    for (const m of this.lateResults.get(device.pub) || []) this.write(conn, m);
-    this.lateResults.delete(device.pub);
+    let sent = false;
+    for (const [id, r] of this.results) if (r.pub === device.pub && !r.sent && (r.status === 'applied' || r.status === 'not-applied')) {
+      this.write(conn, this.resultMsg(id, r));
+      r.sent = sent = true;
+    }
+    if (sent) this.saveResults();
     this.flushTo(device.pub, conn);
     this.emit('change');
   }
@@ -234,7 +244,58 @@ class Link extends EventEmitter {
         if (hin.stage === 'applying') hin.cancelled = true;
         else this.dropIn(hin, m.reason || 'cancelled', false);
       } else if (m.t === 'ho-result' && (!h || h.pub === d.pub)) this.emit('handoff-late-result', { device: d, id: m.id, ok: m.ok, applied: m.applied, reason: m.reason });
+    } else if (m.t === 'ho-query') {
+      this.write(conn, { t: 'ho-status', id: m.id, ...this.statusOf(d.pub, m.id) });
+    } else if (m.t === 'ho-status') {
+      this.emit('handoff-status', { device: d, id: m.id, status: m.status, applied: m.applied, reason: m.reason });
     }
+  }
+
+  // --- persisted handoff results (receiver) and the sender's "ask again"
+
+  loadResults() {
+    const out = new Map();
+    if (!this.resultsFile) return out;
+    let raw = null;
+    try { raw = JSON.parse(fs.readFileSync(this.resultsFile, 'utf8')); } catch { return out; }
+    for (const [id, r] of Object.entries(raw && typeof raw === 'object' ? raw : {})) {
+      if (!r || typeof r !== 'object' || typeof r.pub !== 'string') continue;
+      // an apply cut off by a restart: what landed on disk is not known
+      const status = r.status === 'applying' ? 'unknown' : r.status;
+      if (['applied', 'not-applied', 'unknown'].includes(status)) out.set(id, { pub: r.pub, status, applied: r.applied, reason: r.reason, sent: r.sent === true, at: Number(r.at) || 0 });
+    }
+    return out;
+  }
+  saveResults() {
+    if (!this.resultsFile) return;
+    const keep = [...this.results].sort((x, y) => y[1].at - x[1].at).slice(0, 50);   // the newest 50 are plenty
+    this.results = new Map(keep);
+    try {
+      fs.mkdirSync(path.dirname(this.resultsFile), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(this.resultsFile, JSON.stringify(Object.fromEntries(keep), null, 2), { mode: 0o600 });
+    } catch { /* best effort */ }
+  }
+  setResult(id, pub, status, extra = {}) {
+    this.results.set(id, { pub, status, sent: false, at: this.now(), ...extra });
+    this.saveResults();
+  }
+  resultMsg(id, r) {
+    return { t: 'ho-result', id, ok: r.status === 'applied', ...(r.reason ? { reason: r.reason } : {}), ...(r.applied ? { applied: r.applied } : {}) };
+  }
+  /** The answer to ho-query: from the record, else still applying = unknown, else it never got that far = not-applied. */
+  statusOf(pub, id) {
+    const r = this.results.get(id);
+    if (r && r.pub === pub) return { status: r.status, ...(r.applied ? { applied: r.applied } : {}), ...(r.reason ? { reason: r.reason } : {}) };
+    const h = this.handoffsIn.get(id);
+    if (h && h.pub === pub && h.stage === 'applying') return { status: 'unknown' };
+    return { status: 'not-applied' };
+  }
+  /** Sender: asks a device again for the outcome of a handoff ('handoff-status' answers). False when it is offline. */
+  queryHandoff(pub, id) {
+    const conn = this.conns.get(pub);
+    if (!conn || conn.destroyed || !C.validateMessage({ t: 'ho-query', id })) return false;
+    this.write(conn, { t: 'ho-query', id });
+    return true;
   }
 
   // --- project handoff (v3.29): offer → answer → chunks (pack, then bundle) → result
@@ -351,13 +412,17 @@ class Link extends EventEmitter {
     clearTimeout(h.timer);
     h.stage = 'applying';
     h.parts = null;
+    this.setResult(h.id, h.pub, 'applying');   // a restart from here on answers ho-query with 'unknown'
     this.emit('change');
     const done = (/** @type {{ ok: boolean, reason?: string, applied?: string }} */ r) => {
       if (this.handoffsIn.get(h.id) !== h) return;
       const msg = { t: 'ho-result', id: h.id, ok: r.ok === true, ...(r.reason ? { reason: r.reason } : {}), ...(r.applied ? { applied: r.applied } : {}) };
       const conn = this.conns.get(h.pub);
-      if (conn && !conn.destroyed) this.write(conn, msg);
-      else this.lateResults.set(h.pub, [...(this.lateResults.get(h.pub) || []), msg].slice(-10));   // sent when it is back
+      const live = Boolean(conn && !conn.destroyed);
+      if (live) this.write(conn, msg);
+      // kept on disk: sent when the sender is back (also after a restart) and the answer to its ho-query
+      this.setResult(h.id, h.pub, msg.ok ? 'applied' : 'not-applied', { ...(msg.reason ? { reason: msg.reason } : {}), ...(msg.applied ? { applied: msg.applied } : {}) });
+      if (live) { this.results.get(h.id).sent = true; this.saveResults(); }
       this.handoffsIn.delete(h.id);
       this.emit('change');
     };

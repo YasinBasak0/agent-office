@@ -108,6 +108,8 @@ contextBridge.exposeInMainWorld('agentOffice', {
     remove: (id) => ipcRenderer.invoke('link:remove', id),
     setAllowHandoff: (id, on) => ipcRenderer.invoke('link:setAllowHandoff', id, on),   // v3.29
     handoffAnswer: (id, accept) => ipcRenderer.invoke('link:handoffAnswer', id, accept),
+    handoffAsk: (dir) => ipcRenderer.invoke('link:handoffAsk', dir),     // outcome unknown: ask the receiver again
+    handoffKeep: (dir) => ipcRenderer.invoke('link:handoffKeep', dir),   // outcome unknown: keep it here (confirm dialog)
     send: (id, project, text) => ipcRenderer.invoke('link:send', id, project, text),
     onChange: listen('link:changed'),
   },
