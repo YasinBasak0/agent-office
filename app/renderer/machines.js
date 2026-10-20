@@ -102,6 +102,7 @@ export function mountMachines(el, { api, view, anchor, onClose }) {
           ? h('div', { class: 'mc-actions' }, h('span', { class: 'mc-sub' }, t('machines.move')),
             targets.map((d) => h('button', { class: 'sb-x mc-move', title: t('machines.moveTo', { project: p.dirName, device: d.name }), onclick: () => api.link?.handOff?.(p.id, d.id) }, `▸ ${d.name}`)))
           : null,
+        manageButtons(m, p),
         canPrompt
           ? h('form', { class: 'sb-rcmd', onsubmit: (/** @type {Event} */ e) => {
             e.preventDefault();
@@ -115,6 +116,19 @@ export function mountMachines(el, { api, view, anchor, onClose }) {
           h('button', { class: 'sb-x', type: 'submit' }, t('devices.send')))
           : null);
     }));
+  }
+
+  // v3.33 Start / Wake / Sleep / Stop on a remote device that allows us to manage its projects (cap 'manage')
+  const OPS = { stopped: ['start'], asleep: ['wake', 'stop'], running: ['sleep', 'stop'] };
+  function manageButtons(/** @type {any} */ m, /** @type {any} */ p) {
+    if (m.self || !m.online || !m.caps?.includes('manage') || !m.catalog) return null;
+    const ops = (/** @type {Record<string, string[]>} */ (OPS))[p.state] || [];
+    const st = view().projOps?.[`${m.id}/${p.id}`];
+    const note = !st ? '' : st.state === 'sent' ? t('machines.opSent', { op: t(`machines.op.${st.op}`) })
+      : st.state === 'failed' ? t('machines.opFailed', { op: t(`machines.op.${st.op}`), reason: st.reason || '?' }) : '';
+    return h('div', { class: 'mc-actions mc-ops' },
+      ops.map((op) => h('button', { class: 'sb-x mc-op', title: t('machines.opTitle', { op: t(`machines.op.${op}`), project: p.dirName, device: m.name }), disabled: st?.state === 'sent', onclick: () => api.link?.projOp?.(m.id, p.id, op) }, t(`machines.op.${op}`))),
+      note ? h('span', { class: `mc-sub${st.state === 'failed' ? ' mc-amber' : ''}` }, note) : null);
   }
 
   function render() {

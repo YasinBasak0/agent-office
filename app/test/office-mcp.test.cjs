@@ -45,7 +45,7 @@ test('office-mcp: initialize, tools/list and tools/call over stdio; a wrong toke
   assert.ok(init.result.capabilities.tools);
   c.notify('notifications/initialized');
   const list = await c.call('tools/list', {});
-  assert.deepEqual(list.result.tools.map((x) => x.name), ['office_machines', 'office_dispatch', 'office_reports']);
+  assert.deepEqual(list.result.tools.map((x) => x.name), ['office_machines', 'office_dispatch', 'office_project', 'office_reports']);
   const r = await c.call('tools/call', { name: 'office_dispatch', arguments: { machine: 'Laptop', project: 'shop', task: 'run the tests' } });
   assert.deepEqual(JSON.parse(r.result.content[0].text), { id: 'abc', status: 'queued' });
   assert.deepEqual(calls, [['p1', 'office_dispatch', { machine: 'Laptop', project: 'shop', task: 'run the tests' }]]);

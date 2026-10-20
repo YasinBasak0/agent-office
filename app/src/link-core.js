@@ -1,4 +1,4 @@
-// Device link (contract v3.28, v3.31 capabilities, v3.32 res/catalog): the pure parts. Pairing codes, topics, message schema, command sanitizing, rate
+// Device link (contract v3.28, v3.31 capabilities, v3.32 res/catalog, v3.33 proj-op): the pure parts. Pairing codes, topics, message schema, command sanitizing, rate
 // limits and trust checks. No Electron, no network; src/link.js does the networking, main.js the glue.
 'use strict';
 const crypto = require('crypto');
@@ -8,7 +8,10 @@ const PROTOCOL = 2;
 // what a peer may say it understands (hello.caps); unknown names are dropped
 const CAPS = ['res', 'catalog', 'manage', 'accounts', 'report'];
 // what this build sends and understands (v3.32: res and catalog)
-const OUR_CAPS = ['res', 'catalog', 'report'];   // v3.35 adds 'report'
+const OUR_CAPS = ['res', 'catalog', 'report', 'manage'];   // v3.35 adds 'report', v3.33 'manage' (proj-op)
+// v3.33 what a device allowed to manage may do to a project's boss tab here (proj-op), and why it may be refused
+const PROJ_OPS = ['start', 'wake', 'sleep', 'stop'];
+const PROJ_OP_REASONS = ['not-allowed', 'unknown-project', 'engine', 'busy', 'locked', 'rate-limited', 'removed', 'offline', 'no-manage', 'timeout', 'failed'];
 // a trusted session pings every HEARTBEAT_MS; HEARTBEAT_MISSES intervals without any data from the peer close it
 // (a quit or crash may never close the stream: UDX alone took ~17 s to notice)
 const HEARTBEAT_MS = 5000;
@@ -288,6 +291,11 @@ function validateMessage(m) {
     }
     case 'cmd-report-ack':   // v3.35, only to a peer with cap 'report'
       return isId(m.id) ? { t: 'cmd-report-ack', id: m.id } : null;
+    case 'proj-op':          // v3.33, only to a peer with cap 'manage'
+      return isId(m.id) && isId(m.project) && PROJ_OPS.includes(m.op) ? { t: 'proj-op', id: m.id, op: m.op, project: m.project } : null;
+    case 'proj-op-status':   // v3.33, only to a peer with cap 'manage'
+      return isId(m.id) && typeof m.ok === 'boolean' && (m.reason == null || PROJ_OP_REASONS.includes(m.reason))
+        ? { t: 'proj-op-status', id: m.id, ok: m.ok, ...(m.reason && !m.ok ? { reason: m.reason } : {}) } : null;
     case 'cmd-status':
       return isId(m.id) && CMD_STATUS.includes(m.status) && (m.reason == null || REASONS.includes(m.reason))
         ? { t: 'cmd-status', id: m.id, status: m.status, ...(m.reason ? { reason: m.reason } : {}) } : null;
@@ -406,7 +414,7 @@ const logEntry = (at, device, project, text, outcome) => ({ at: new Date(at).toI
 
 module.exports = {
   PROTOCOL, CAPS, OUR_CAPS, HEARTBEAT_MS, HEARTBEAT_MISSES, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
-  MAX_BUNDLE, MAX_PACK, CHUNK, HANDOFF_REASONS, HANDOFF_STATUS,
+  MAX_BUNDLE, MAX_PACK, CHUNK, HANDOFF_REASONS, HANDOFF_STATUS, PROJ_OPS, PROJ_OP_REASONS,
   makeCode, normalizeCode, pairSecrets, pairProof, proofOk, pairTopic, hex, isHex,
   cleanLine, sanitizeCommand, markedCommand, markedTask, cleanReport, REPORT_MAX, deviceName, RateLimiter,
   cleanSnapshot, validateMessage, validatePair, LineReader, encode,

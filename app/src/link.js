@@ -11,7 +11,7 @@ class Link extends EventEmitter {
   /**
    * @param {{ keyPair: { publicKey: Buffer, secretKey: Buffer }, name: string, devices?: C.Device[], secrets?: Record<string, string>,
    *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number,
-   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null, reportsFile?: string | null, app?: string }} o
+   *   handoffAskMs?: number, handoffIdleMs?: number, resultsFile?: string | null, reportsFile?: string | null, app?: string, projOpMs?: number }} o
    */
   constructor(o) {
     super();
@@ -58,6 +58,9 @@ class Link extends EventEmitter {
     // Kept in reportsFile (userData/link/reports-out.json, 0600, newest 50) so one not yet delivered is sent on reconnect.
     this.reportsFile = o.reportsFile || null;
     this.reportsOut = this.loadReports();
+    // v3.33 project actions we asked a device for (proj-op): id → { pub, resolve, timer }
+    this.projOps = new Map();
+    this.projOpMs = o.projOpMs || 12000;
     this.destroyed = false;
   }
 
@@ -254,6 +257,11 @@ class Link extends EventEmitter {
       this.emit('change');
     } else if (m.t === 'cmd') {
       this.receiveCommand(conn, d, m);
+    } else if (m.t === 'proj-op') {
+      this.receiveProjOp(conn, d, m);
+    } else if (m.t === 'proj-op-status') {
+      const o = this.projOps.get(m.id);
+      if (o && o.pub === d.pub) this.endProjOp(m.id, { ok: m.ok, ...(m.reason ? { reason: m.reason } : {}) });
     } else if (m.t === 'cmd-status') {
       const o = this.outgoing.find((x) => x.id === m.id && x.pub === d.pub);
       if (o) { o.status = m.status; o.reason = m.reason; this.emit('change'); }
@@ -480,6 +488,40 @@ class Link extends EventEmitter {
     this.emit('command', { device: d, id: m.id, project: m.project, text: s.text, reply, report: m.report === true && this.peerHas(d.pub, 'report') });
   }
 
+  // --- v3.33 project actions (start / wake / sleep / stop a project's boss tab on another device)
+
+  /** A device asks us to act on one of our projects: allowed to manage, rate limited (shared with commands); main acts. */
+  receiveProjOp(conn, d, m) {
+    if (!this.peerHas(d.pub, 'manage')) return;   // it never said it understands the answer (amendment 1)
+    // the answer goes only while it is still trusted: a removed device hears nothing
+    const reply = (ok, reason) => { if (C.trusted(this.devices, this.secrets, d.pub) && !conn.destroyed) this.write(conn, { t: 'proj-op-status', id: m.id, ok, ...(reason && !ok ? { reason } : {}) }); };
+    if (!C.mayManage(this.devices, this.secrets, d.pub)) return reply(false, 'not-allowed');
+    if (!this.limiter.take(d.pub)) return reply(false, 'rate-limited');
+    this.emit('proj-op', { device: d, id: m.id, op: m.op, project: m.project, reply });
+  }
+  /** Asks a device to start / wake / sleep / stop one of its projects. → Promise<{ ok, reason? }> (never rejects). */
+  sendProjOp(pub, project, op) {
+    const conn = this.conns.get(pub);
+    if (!C.PROJ_OPS.includes(op) || !/^[A-Za-z0-9_.:-]{1,64}$/.test(String(project))) return Promise.resolve({ ok: false, reason: 'failed' });
+    if (!C.trusted(this.devices, this.secrets, pub)) return Promise.resolve({ ok: false, reason: 'removed' });
+    if (!conn) return Promise.resolve({ ok: false, reason: 'offline' });
+    if (!this.peerHas(pub, 'manage')) return Promise.resolve({ ok: false, reason: 'no-manage' });
+    const id = crypto.randomBytes(8).toString('hex');
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.endProjOp(id, { ok: false, reason: 'timeout' }), this.projOpMs);
+      timer.unref?.();
+      this.projOps.set(id, { pub, resolve, timer });
+      this.write(conn, { t: 'proj-op', id, op, project });
+    });
+  }
+  endProjOp(id, result) {
+    const o = this.projOps.get(id);
+    if (!o) return;
+    this.projOps.delete(id);
+    clearTimeout(o.timer);
+    o.resolve(result);
+  }
+
   /** Sends a prompt to a remote project's boss tab. Returns the command's local record. */
   sendCommand(pub, project, text, { report = false } = {}) {
     const conn = this.conns.get(pub);
@@ -632,6 +674,7 @@ class Link extends EventEmitter {
     this.remotes.delete(pub);
     this.forgetPeer(pub);
     for (const [id, r] of this.reportsOut) if (r.pub === pub) this.reportsOut.delete(id);   // its reports go with it
+    for (const [id, o] of this.projOps) if (o.pub === pub) this.endProjOp(id, { ok: false, reason: 'removed' });   // v3.33
     this.saveReports();
     this.persist();
     this.emit('change');
@@ -665,6 +708,7 @@ class Link extends EventEmitter {
   async destroy() {
     this.destroyed = true;
     clearTimeout(this.pubTimer);
+    for (const id of [...this.projOps.keys()]) this.endProjOp(id, { ok: false, reason: 'offline' });
     if (this.pairing) { clearTimeout(this.pairing.timer); clearInterval(this.pairing.retry); this.pairing.reject?.(new Error('cancelled')); this.pairing = null; }
     const s = this.swarm;
     this.swarm = null;

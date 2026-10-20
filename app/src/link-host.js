@@ -20,6 +20,7 @@ const REPORT_POLL_MS = 5000;
  *   tabState: (projectId: string) => 'ready' | 'busy' | 'starting' | 'gone', type: (projectId: string, text: string, o?: { taskId?: string }) => boolean | void,   // false: not typed
  *   loginOf?: (projectId: string) => 'in' | 'out' | 'unknown', reportsDir?: string,
  *   onReport?: (r: { id: string, machine: string, pub: string, report: any }) => void,
+ *   manage?: (op: 'start' | 'wake' | 'sleep' | 'stop', projectId: string) => { ok: boolean, reason?: string } | Promise<{ ok: boolean, reason?: string }>,
  *   handoff?: { describe: (projectId: string) => any, release: (projectId: string) => void, lock: (projectId: string, on: boolean) => void,
  *     confirmPush: (project: string, url: string) => Promise<boolean>, confirmKeep: (project: string, device: string) => Promise<boolean>,
  *     target: (dir: string) => { root: string, memoryDir: string, factsFile: string, accountId?: string },
@@ -30,6 +31,7 @@ function setupLink(d) {
   const keysFile = path.join(dir, 'keys.bin');
   const devicesFile = path.join(dir, 'devices.json');
   const logFile = path.join(dir, 'commands.log');
+  const manageLog = path.join(dir, 'manage.log');   // v3.33 every project action a device asked for
   const handoffLog = path.join(dir, 'handoff.log');
   const ownersFile = path.join(dir, 'owners.json');
   const resultsFile = path.join(dir, 'handoff-results.json');   // the receiver's handoff outcomes (no secrets)
@@ -74,6 +76,7 @@ function setupLink(d) {
       link.on('change', push);
       link.on('remote', onRemote);
       link.on('command', onCommand);
+      link.on('proj-op', onProjOp);
       link.on('report', ({ device, id, report }) => d.onReport?.({ id, machine: device.name, pub: device.pub, report }));
       link.on('handoff-offer', onHandoffOffer);
       link.on('handoff-refused', ({ device, offer, reason }) => hlog({ dir: 'in', device: device.name, project: offer.name, outcome: `refused:${reason}` }));
@@ -98,7 +101,8 @@ function setupLink(d) {
     if (!defaults.has(id)) { const h = link?.handoffsIn.get(id); defaults.set(id, h ? H.defaultTarget(h.offer) || '' : ''); }
     return defaults.get(id);
   }
-  const view = () => ({ ...(link ? { ...withTargets(link.view()), error: null } : { name: os.hostname(), id: '', pairing: null, devices: [], remotes: [], outgoing: [], handoffs: { out: [], in: [] }, self: { app: '', res: null, catalog: [] }, error: error || 'off' }), owners: ownersView() });
+  const opStatus = new Map();            // v3.33 `${devicePub}/${projectId}` → { op, state: 'sent'|'ok'|'failed', reason?, at } (our asks)
+  const view = () => ({ projOps: Object.fromEntries(opStatus), ...(link ? { ...withTargets(link.view()), error: null } : { name: os.hostname(), id: '', pairing: null, devices: [], remotes: [], outgoing: [], handoffs: { out: [], in: [] }, self: { app: '', res: null, catalog: [] }, error: error || 'off' }), owners: ownersView() });
   let pushTimer = null;
   function push() {
     if (pushTimer) return;
@@ -318,6 +322,55 @@ function setupLink(d) {
       if (!q.length) queue.delete(project);
     }
   }
+  // --- v3.33 project actions from a device allowed to manage (proj-op): one at a time, logged, a notice here
+  const opQueue = [];
+  let opRunning = false;
+  function mlog(entry) {
+    try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); fs.appendFileSync(manageLog, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`, { mode: 0o600 }); } catch { /* best effort */ }
+  }
+  function onProjOp({ device, id, op, project, reply }) {
+    if (opQueue.length >= QUEUE_MAX * 4) { mlog({ device: device.name, op, project, outcome: 'rejected:rate-limited' }); return reply(false, 'rate-limited'); }
+    opQueue.push({ device, id, op, project, reply });
+    runOps();
+  }
+  async function runOps() {
+    if (opRunning) return;
+    opRunning = true;
+    try {
+      while (opQueue.length) {
+        const o = opQueue.shift();
+        const p = d.projects().find((x) => x.id === o.project);
+        const name = p?.name || o.project;
+        // removed meanwhile: dropped, never run, no answer
+        if (!link?.devices.some((x) => x.pub === o.device.pub)) { mlog({ device: o.device.name, op: o.op, project: name, outcome: 'dropped:removed' }); continue; }
+        /** @type {{ ok: boolean, reason?: string }} */ let r;
+        if (!p) r = { ok: false, reason: 'unknown-project' };
+        else if (!d.manage) r = { ok: false, reason: 'failed' };
+        else {
+          try { r = await d.manage(o.op, p.id); } catch { r = { ok: false, reason: 'failed' }; }
+          if (!r || typeof r.ok !== 'boolean') r = { ok: false, reason: 'failed' };
+        }
+        const reason = r.ok ? undefined : (C.PROJ_OP_REASONS.includes(r.reason) ? r.reason : 'failed');
+        mlog({ device: o.device.name, op: o.op, project: name, outcome: r.ok ? 'ok' : `rejected:${reason}` });
+        if (r.ok) d.notify(d.T('main.projOpNotice', { device: o.device.name, project: name, op: d.T(`machines.op.${o.op}`) }), '');
+        o.reply(r.ok, reason);
+      }
+    } finally { opRunning = false; }
+  }
+  /** Asks a paired device to start / wake / sleep / stop one of its projects; the outcome shows in the view. */
+  async function projOp(pub, projectId, op) {
+    const l = link;
+    if (!l) return { ok: false, reason: 'offline' };
+    const key = `${pub}/${projectId}`;
+    opStatus.set(key, { op, state: 'sent', at: Date.now() });
+    push();
+    const r = await l.sendProjOp(pub, projectId, op);
+    if (l.devices.some((x) => x.pub === pub)) opStatus.set(key, { op, state: r.ok ? 'ok' : 'failed', ...(r.reason ? { reason: r.reason } : {}), at: Date.now() });
+    else opStatus.delete(key);
+    push();
+    return r;
+  }
+
   const pumpTimer = setInterval(pump, 1500);
   pumpTimer.unref?.();
 
@@ -377,7 +430,8 @@ function setupLink(d) {
   ipc('link:setName', (l, name) => l.setName(String(name || '')));
   ipc('link:rename', (l, id, name) => l.rename(String(id), String(name || '')));
   ipc('link:setAllow', (l, id, on) => l.setAllow(String(id), on === true));
-  ipc('link:remove', (l, id) => l.remove(String(id)));
+  ipc('link:remove', (l, id) => { for (const k of [...opStatus.keys()]) if (k.startsWith(`${id}/`)) opStatus.delete(k); return l.remove(String(id)); });
+  ipc('link:projOp', (_l, id, project, op) => { projOp(String(id), String(project), String(op)); });   // v3.33: the outcome comes in a later view
   ipc('link:setAllowHandoff', (l, id, on) => l.setAllowHandoff(String(id), on === true));
   ipc('link:setAllowManage', (l, id, on) => l.setAllowManage(String(id), on === true));       // v3.31
   ipc('link:setAllowAccounts', (l, id, on) => l.setAllowAccounts(String(id), on === true));   // v3.31
@@ -393,7 +447,7 @@ function setupLink(d) {
     publish(projects, office, attention) { if (link) link.publish(C.snapshotOf(projects, office, attention)); },
     /** v3.32: this machine's resources (C.resOf) and project catalog; the link sends them by capability and opt-in. */
     publishMachine(res, catalog) { if (link) { link.publishRes(res); link.publishCatalog(catalog); } },
-    pump, dispatchLocal, dispatchRemote, scanReports,
+    pump, dispatchLocal, dispatchRemote, scanReports, projOp,
     /** The Link (tests; null while off). */
     link: () => link,
     /** Paired devices a project can be handed to (online ones first). */

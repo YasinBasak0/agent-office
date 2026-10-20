@@ -515,7 +515,8 @@
     "handoffKeepDetail": "{device} projeyi devralmış olabilir. Devraldıysa iki bilgisayar da sahip olur ve çalışmalar ayrışabilir. Bunu yalnızca {device} yanıt veremiyorsa kullanın.",
     "handoffStillUnknown": "{device}, {project} projesini devralıp almadığını bilmiyor",
     "reportReady": "Rapor hazır: {project} ({machine})",
-    "officeUnavailable": "Boss sekmeleri için Agent Office araçları kapalı: ofis soketi açılamadı"
+    "officeUnavailable": "Boss sekmeleri için Agent Office araçları kapalı: ofis soketi açılamadı",
+    "projOpNotice": "{device}: {project} → {op}"
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",
@@ -694,6 +695,15 @@
       "running": "çalışıyor",
       "asleep": "uyuyor",
       "stopped": "durdu"
-    }
+    },
+    "op": {
+      "start": "Başlat",
+      "wake": "Uyandır",
+      "sleep": "Uyut",
+      "stop": "Durdur"
+    },
+    "opTitle": "{device} üzerinde {project}: {op}",
+    "opSent": "{op}…",
+    "opFailed": "{op} reddedildi: {reason}"
   }
 }
