@@ -16,6 +16,7 @@ const Z = require('./src/sleep.js');
 const TR = require('./src/transfer.js');
 const TIO = require('./src/transfer-io.js');
 const SC = require('./src/shared-config.js');
+const PF = require('./src/project-files.js');
 const OD = require('./src/office-directory.js');
 const MR = require('./src/mcp-reload.js');
 const R = require('./src/resume.js');
@@ -652,6 +653,40 @@ function startCmdLogin() {
 // --- account quota (see src/usage.js)
 const readJson = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return undefined; } };
 
+// Opt-in project files (contract v3.38, src/project-files.js): the files Agent Office keeps in the project folder for
+// Antigravity / Command Code. MCP: only servers of the project's own .mcp.json that the user approved for it (the
+// approvals Claude Code keeps: the folder's .claude/settings.local.json, the account's settings.json and .claude.json
+// entry for the folder); never account, shared or office servers. Returns { written, removed, refused }.
+function syncProjectFiles(p, { gone = false } = {}) {
+  if (!p?.dir) return { written: [], removed: [], refused: [] };
+  const home = app.getPath('home');
+  const { configDir } = A.accountOf(state, p);
+  const own = configDir || path.join(home, '.claude');
+  const accountConfig = readJson(configDir ? path.join(configDir, '.claude.json') : path.join(home, '.claude.json'));
+  const projectMcp = readJson(path.join(p.dir, '.mcp.json'));
+  const approved = Object.keys(SC.approvedProjectServers(projectMcp, [
+    readJson(path.join(p.dir, '.claude', 'settings.local.json')),
+    readJson(path.join(own, 'settings.json')),
+    accountConfig?.projects && typeof accountConfig.projects === 'object' ? accountConfig.projects[p.dir] : null,
+  ]));
+  const desired = PF.desiredFiles({
+    engine: P.engineOf(p), enabled: !gone && P.projectFilesOf(p), manager: P.managerOf(state, p),
+    agentModel: P.agentModelOf(p), projectMcp, approved,
+  });
+  try { return PF.syncProjectFiles(p.dir, desired); } catch (e) {
+    console.error('project files', e);
+    return { written: [], removed: [], refused: [], error: String(e?.message || e) };
+  }
+}
+/** Syncs and tells the user about files left alone (a file of theirs with the same name, or ours they changed). */
+function syncProjectFilesNotice(p, opts) {
+  const r = syncProjectFiles(p, opts);
+  if (win && (r.refused.length || r.error)) {
+    warnBox(T('main.projectFilesRefused', { name: p.name }), [...r.refused, r.error].filter(Boolean).join('\n')).catch(() => {});
+  }
+  return r;
+}
+
 // The script is written to userData/usage at startup (it is not run from inside the signed .app bundle).
 // Windows: statusline.js and agent-office-statusline.cmd, which runs this executable as Node on it (see usage.js).
 let usageScript;
@@ -971,6 +1006,7 @@ function startPty(id, { resume = false, sessionId = null, imported = false, prom
 // prompt: agy's -i, only when resuming. There is no session id: a sleeping or restarted tab continues the same way.
 function startAgy(id, { tab, dir: cwd, project }, { resume = false, prompt = '' } = {}) {
   removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
+  if (P.projectFilesOf(project)) syncProjectFiles(project); // v3.38: the project's approved .mcp.json may have changed
   const { cols, rows } = sizes.get(id) || lastSize;
   const isResume = resume && (!tab || Boolean(tab.worktree));
   const args = EN.agyArgs({ resume: isResume, prompt, model: P.bossModelOf(project) });
@@ -1081,6 +1117,7 @@ function agySessions(now = Date.now()) {
 const cmdNoMod = new Set(); // tabs whose mod failed this launch: started without --mod
 const cmdSpool = new Map(); // tab → { file, cursor } of its mod spool
 function startCommandCode(id, { project, tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+  if (P.projectFilesOf(project)) syncProjectFiles(project); // v3.38: the worker agent file (agent model)
   removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
   const { cols, rows } = sizes.get(id) || lastSize;
   const isResume = resume && (!tab || Boolean(tab.worktree)) && hasCmdHistory(cwd);
@@ -1877,6 +1914,7 @@ ipcMain.handle('projects:add', async () => {
 // Removing a project closes all its tabs; worktree folders are left untouched (like the project folder).
 ipcMain.handle('projects:remove', (_e, id) => {
   const p = P.findProject(state, id);
+  if (p && P.projectFilesOf(p)) syncProjectFiles(p, { gone: true }); // our files leave with the project (v3.38)
   for (const pid of p ? P.ptyIdsOf(p) : [id]) {
     killPty(pid);
     asleep.delete(pid);
@@ -1911,6 +1949,7 @@ ipcMain.handle('projects:setManager', (_e, id, value) => {
   commit(next);
   const p = P.findProject(state, id);
   if (!p || P.managerOf(state, p) === was) return { restarted: [] };
+  if (P.projectFilesOf(p)) syncProjectFilesNotice(p); // v3.38: the manager brief and Stop gate follow manager mode
   return { restarted: restartIdle(p) };
 });
 // Per-project boss model (contract v3.27): 'sonnet' | 'opus' | 'haiku' (`--model` on the launch line), null = Auto.
@@ -1929,6 +1968,7 @@ ipcMain.handle('projects:setAgentModel', (_e, id, value) => {
   if (next === state) return { restarted: [] };
   commit(next);
   const p = P.findProject(state, id);
+  if (p && P.projectFilesOf(p)) syncProjectFilesNotice(p); // v3.38: the worker agent file carries the agent model
   return { restarted: p ? restartIdle(p) : [] };
 });
 // Per-project context cap (contract v3.15): 200000 | 400000 tokens (CLAUDE_CODE_AUTO_COMPACT_WINDOW), null = Auto.
@@ -1978,9 +2018,23 @@ ipcMain.handle('projects:setEngine', async (_e, id, value) => {
   commit(next);
   const now = P.findProject(state, id);
   if (!now) return { restarted: [] };
+  if (P.projectFilesOf(now)) syncProjectFilesNotice(now); // v3.38: the other engine's files go, this one's come
   const ids = P.ptyIdsOf(now);
   for (const pid of ids) startPty(pid);
   return { restarted: ids };
+});
+// Opt-in project files (contract v3.38): true writes Agent Office's files for Antigravity / Command Code into the
+// project folder (src/project-files.js), false removes exactly those. Idle tabs restart to pick them up.
+// Returns { restarted, written, removed, refused }.
+ipcMain.handle('projects:setProjectFiles', (_e, id, value) => {
+  const next = P.setProjectFiles(state, id, value === true);
+  const p0 = P.findProject(state, id);
+  if (!p0) return { restarted: [], written: [], removed: [], refused: [] };
+  if (next !== state) commit(next);
+  const p = P.findProject(state, id);
+  const r = syncProjectFilesNotice(p);
+  const restarted = next !== state && P.engineOf(p) !== 'claude' ? restartIdle(p) : [];
+  return { restarted, written: r.written, removed: r.removed, refused: r.refused };
 });
 /** Restarts the project's idle tabs, each resuming its own session; returns their pty ids. */
 function restartIdle(p) {

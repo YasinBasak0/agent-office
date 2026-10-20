@@ -12,14 +12,14 @@ const en = JSON.parse(readFileSync(new URL('../locales/en.json', import.meta.url
 
 test('every engine has every feature; Claude Code can do all of them', () => {
   for (const e of ENGINES) assert.deepEqual(Object.keys(caps(e)), FEATURES)
-  for (const f of FEATURES) assert.equal(cap('claude', f).ok, true, f)
+  for (const f of FEATURES) assert.equal(cap('claude', f).ok, f !== 'projectFiles', f) // nothing is written for Claude Code (v3.38)
   assert.deepEqual(caps('nope'), caps('claude')) // unknown engine = Claude Code
   assert.deepEqual(caps(undefined), caps('claude'))
 })
 
 test('a feature an engine cannot honour has a reason with a locale string', () => {
-  for (const e of ENGINES) {
-    for (const [f, c] of Object.entries(caps(e))) {
+  for (const e of ENGINES) for (const projectFiles of [false, true]) {
+    for (const [f, c] of Object.entries(caps(e, { projectFiles }))) {
       if (c.ok) { assert.equal(c.reason, undefined); continue }
       assert.equal(typeof en.sidebar.na[c.reason], 'string', `${e}.${f}: sidebar.na.${c.reason} missing`)
     }
@@ -67,4 +67,18 @@ test('no leak: the model is the only thing added to the agy / Command Code launc
   const a = EN.agyArgs({ model: 'pro' }); const c = EN.cmdArgs({ model: 'claude-opus-5-5' })
   assert.deepEqual([a, c], [['--model', 'pro'], ['-m', 'claude-opus-5-5']])
   for (const x of [...a, ...c]) assert.doesNotMatch(x, /plugin|settings|mcp|office|AGENT_OFFICE/i)
+})
+
+test('project files toggle (v3.38): agy manager + agent model and Command Code agent model need it; off says why', () => {
+  for (const [e, fs] of [['agy', ['manager', 'agentModel']], ['commandcode', ['agentModel']]]) {
+    for (const f of fs) {
+      assert.deepEqual(cap(e, f), { ok: false, reason: 'filesOff' }, `${e}.${f}`)
+      assert.deepEqual(cap(e, f, { projectFiles: true }), { ok: true }, `${e}.${f}`)
+    }
+    assert.equal(cap(e, 'projectFiles').ok, true)
+  }
+  assert.match(en.sidebar.na.filesOff, /turn on Agent Office files/)
+  assert.equal(cap('claude', 'projectFiles').reason, 'claudeProjectFiles')
+  assert.deepEqual(caps('claude', { projectFiles: true }), caps('claude')) // the toggle changes nothing for Claude Code
+  for (const f of ['contextCap', 'savings', 'workers', 'cost', 'backup']) assert.equal(cap('agy', f, { projectFiles: true }).ok, false, f)
 })
