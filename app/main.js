@@ -527,7 +527,7 @@ function spawnRelayLogin(account, relayId, devicePub) {
   } else {
     t = pty.spawn(shell(), ['-l', '-i', '-c', A.claudeCommand('auth login')], { name: 'xterm-256color', cols: 4000, rows: 50, cwd: app.getPath('home'), env });
   }
-  t.accountId = account.id;
+  /** @type {any} */ (t).accountId = account.id;
   relays.set(id, t);
   t.onExit(() => { if (relays.get(id) === t) relays.delete(id); });
   return { onData: (f) => t.onData(f), onExit: (f) => t.onExit(f), write: (x) => t.write(x), kill: () => { if (relays.get(id) === t) relays.delete(id); try { t.kill(); } catch {} } };
