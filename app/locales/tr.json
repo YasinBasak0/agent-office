@@ -506,7 +506,14 @@
     "handoffPushConfirm": "{project} 200 MB'tan büyük, doğrudan gönderilemiyor. Ara çalışma dalı {remote} adresine gönderilsin mi?",
     "handoffPushDetail": "agent-office/handoff-… dalı deponuzun kancalarıyla gönderilir ve diğer cihaz aldıktan sonra uzak depodan yeniden silinir.",
     "handoffPushGo": "Gönder",
-    "handoffLocked": "{project} devrediliyor: bitene kadar giriş duraklatıldı."
+    "handoffLocked": "{project} devrediliyor: bitene kadar giriş duraklatıldı.",
+    "handoffUnknown": "Devir sonucu bilinmiyor ({device})",
+    "handoffAskAgain": "Yeniden sor",
+    "handoffKeepHere": "Burada tut…",
+    "handoffKeepGo": "Burada tut",
+    "handoffKeepConfirm": "{project} bu bilgisayarda kalsın mı?",
+    "handoffKeepDetail": "{device} projeyi devralmış olabilir. Devraldıysa iki bilgisayar da sahip olur ve çalışmalar ayrışabilir. Bunu yalnızca {device} yanıt veremiyorsa kullanın.",
+    "handoffStillUnknown": "{device}, {project} projesini devralıp almadığını bilmiyor"
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",
@@ -649,8 +656,11 @@
       "out": "{project} → {device}",
       "unknown": "sonuç bilinmiyor: diğer cihaz bekleniyor",
       "target": "Klasör: {dir}",
-      "targetAsk": "Klasörü siz seçeceksiniz"
+      "targetAsk": "Klasörü siz seçeceksiniz",
+      "askAgain": "Yeniden sor",
+      "keepHere": "Burada tut",
+      "askOffline": "Diğer cihaz çevrimdışı"
     },
-    "handedOffUnknown": "{project} → {device}? (sonucu bekleniyor)"
+    "handedOffUnknown": "Devir sonucu bilinmiyor: {project} → {device}"
   }
 }

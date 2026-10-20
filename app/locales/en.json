@@ -525,7 +525,14 @@
     "handoffPushConfirm": "{project} is larger than 200 MB, too big to send directly. Push its work-in-progress branch to {remote}?",
     "handoffPushDetail": "The branch agent-office/handoff-… is pushed with your repository hooks and deleted from the remote again once the other device has it.",
     "handoffPushGo": "Push",
-    "handoffLocked": "{project} is being handed off: input is paused until it is done."
+    "handoffLocked": "{project} is being handed off: input is paused until it is done.",
+    "handoffUnknown": "Handoff outcome unknown ({device})",
+    "handoffAskAgain": "Ask again",
+    "handoffKeepHere": "Keep it here…",
+    "handoffKeepGo": "Keep it here",
+    "handoffKeepConfirm": "Keep {project} on this computer?",
+    "handoffKeepDetail": "{device} may have taken over the project already. If it did, both computers will own it and work can diverge. Use this only when {device} cannot answer.",
+    "handoffStillUnknown": "{device} does not know whether it took over {project}"
   },
   "auth": {
     "unreadable": "could not read the login status",
@@ -677,8 +684,11 @@
       "out": "{project} → {device}",
       "unknown": "outcome unknown: waiting for the other device",
       "target": "Folder: {dir}",
-      "targetAsk": "You will choose a folder"
+      "targetAsk": "You will choose a folder",
+      "askAgain": "Ask again",
+      "keepHere": "Keep it here",
+      "askOffline": "The other device is offline"
     },
-    "handedOffUnknown": "{project} → {device}? (waiting for its result)"
+    "handedOffUnknown": "Handoff outcome unknown: {project} → {device}"
   }
 }
