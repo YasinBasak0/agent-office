@@ -83,3 +83,34 @@ test('project files toggle (v3.38): agy manager + agent model and Command Code a
   assert.deepEqual(caps('claude', { projectFiles: true }), caps('claude')) // the toggle changes nothing for Claude Code
   for (const f of ['contextCap', 'savings', 'workers', 'cost', 'backup']) assert.equal(cap('agy', f, { projectFiles: true }).ok, false, f)
 })
+
+test('OpenCode (contract v3.40): observed only; boss model via -m, no files, no login needed', () => {
+  assert.ok(ENGINES.includes('opencode'))
+  const tr = JSON.parse(readFileSync(new URL('../locales/tr.json', import.meta.url), 'utf8'))
+  for (const f of ['account', 'login', 'bossModel', 'approvals']) assert.equal(cap('opencode', f).ok, true, f)
+  for (const projectFiles of [false, true]) {
+    for (const f of ['manager', 'agentModel', 'contextCap', 'savings', 'backup', 'workers', 'cost', 'projectFiles']) {
+      const c = cap('opencode', f, { projectFiles })
+      assert.equal(c.ok, false, f); assert.match(c.reason, /^oc/)
+      assert.equal(typeof en.sidebar.na[c.reason], 'string'); assert.equal(typeof tr.sidebar.na[c.reason], 'string')
+    }
+  }
+  assert.notDeepEqual(caps('opencode'), caps('claude'))
+  assert.deepEqual(bossModelChoices('opencode').map((c) => c.value), P.BOSS_MODELS_BY_ENGINE.opencode)
+  assert.ok(bossModelChoices('opencode').every((c) => c.value.includes('/'))) // provider/model
+})
+
+test('OpenCode in the sidebar (contract v3.36, v3.40): an Account entry, a read-only tag, no badge for "not logged in"', () => {
+  const sb = readFileSync(new URL('../renderer/sidebar.js', import.meta.url), 'utf8')
+  assert.match(sb, /opencode: '__engine:opencode'/)
+  assert.match(sb, /const engineOfRow = \(p\) => \([^\n]*p\.engine === 'opencode'/)
+  assert.match(sb, /if \(ocShown\(\) \|\| engine === 'opencode'\) \{[^\n]*\n\s*sel\.append\(h\('option', \{ value: ENGINE_OPT\.opencode/)
+  assert.equal(sb.includes('function engineSelect'), false) // the Engine select is gone since v3.36
+  const badge = sb.slice(sb.indexOf('function loginBadge'), sb.indexOf('function renderProjects'))
+  assert.match(badge, /engine === 'opencode'\) \{[^\n]*\n\s*if \(ocAuth\?\.state !== 'missing'\) return null;/)
+  const tag = sb.slice(sb.indexOf('function engineTag'), sb.indexOf('function backupSelect'))
+  assert.match(tag, /engine === 'opencode'\) return h\('span', \{ class: 'sb-tag sb-agy', title: t\('sidebar\.ocHintTitle'\) \}/)
+  const mock = readFileSync(new URL('../renderer/dev-mock.js', import.meta.url), 'utf8')
+  assert.match(mock, /q\.has\('ocProject'\) && projects\[2\]\) \/\*\* @type \{any\} \*\/ \(projects\[2\]\)\.engine = 'opencode'/)
+  for (const k of ['ocHint', 'ocHintTitle', 'engineOpencode', 'ocMissing', 'ocMissingTitle']) assert.equal(typeof en.sidebar[k], 'string', k)
+})

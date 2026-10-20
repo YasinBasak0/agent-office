@@ -2,7 +2,7 @@
 // the sidebar renders EVERY control for every engine and disables the ones an engine can't honour, with a one-line
 // reason (the locale key `sidebar.na.<reason>`). Tested with node --test (app/test/engine-caps.test.mjs).
 
-export const ENGINES = ['claude', 'agy', 'commandcode'];
+export const ENGINES = ['claude', 'agy', 'commandcode', 'opencode'];
 
 /** The features of a project row, in the order the sidebar shows them. */
 export const FEATURES = ['account', 'login', 'manager', 'bossModel', 'agentModel', 'contextCap', 'savings', 'backup', 'workers', 'approvals', 'cost', 'projectFiles'];
@@ -24,6 +24,17 @@ const TABLE = {
   },
   commandcode: {
     backup: no('cmdBackup'),
+  },
+  // OpenCode (contract v3.40): observed from its terminal only; no launch config or files from the app, no token counts.
+  opencode: {
+    manager: no('ocManager'),
+    agentModel: no('ocAgentModel'),
+    contextCap: no('ocContextCap'),
+    savings: no('ocSavings'),
+    backup: no('ocBackup'),
+    workers: no('ocWorkers'),
+    cost: no('ocCost'),
+    projectFiles: no('ocProjectFiles'),
   },
 };
 
@@ -58,6 +69,7 @@ export const BOSS_MODEL_CHOICES = {
     { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5' }, { value: 'claude-opus-5-5', label: 'Opus 5.5' },
     { value: 'claude-haiku-5-5', label: 'Haiku 5.5' }, { value: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
   ],
+  opencode: [{ value: 'opencode/big-pickle', label: 'Big Pickle (free)' }], // v3.40: `-m provider/model`
 };
 
 /** The boss model choices of an engine. */

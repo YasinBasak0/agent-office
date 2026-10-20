@@ -104,7 +104,7 @@
     "addProjectTitle": "Add project ({mod}O)",
     "accounts": "ACCOUNTS",
     "account": "Account",
-    "accountTitle": "The account this project runs on: a Claude account (Claude Code), Antigravity (Google Antigravity CLI, its own Google login) or Command Code (its own login). Choosing Antigravity or Command Code switches the project's engine and starts its tabs again, fresh; choosing a Claude account switches back. Changing the Claude account restarts Claude.",
+    "accountTitle": "The account this project runs on: a Claude account (Claude Code), Antigravity (Google Antigravity CLI, its own Google login), Command Code (its own login) or OpenCode (its own providers; no login needed for its free models). Choosing Antigravity, Command Code or OpenCode switches the project's engine and starts its tabs again, fresh; choosing a Claude account switches back. Changing the Claude account restarts Claude.",
     "newAccount": "+ New account…",
     "projectManager": "Boss",
     "projectManagerTitle": "How this project's boss works: Global follows the Manager mode setting; Delegates splits the work across agents; Does it itself works without agents. Either way it keeps going until the work is done. Applies when the project's Claude starts next (idle tabs restart now).",
@@ -134,7 +134,7 @@
     "savingsNormal": "Normal",
     "savingsStrict": "Strict",
     "engine": "Engine",
-    "engineTitle": "This project runs Claude Code. The Account dropdown picks the engine: a Claude account, Antigravity or Command Code.",
+    "engineTitle": "This project runs Claude Code. The Account dropdown picks the engine: a Claude account, Antigravity, Command Code or OpenCode.",
     "engineClaude": "Claude Code",
     "engineAgy": "Antigravity",
     "agyHint": "Antigravity — observed",
@@ -249,7 +249,15 @@
       "agyCost": "Antigravity writes no token counts Agent Office can read.",
       "cmdBackup": "Command Code has one login; there is no second account to switch to.",
       "filesOff": "Needs the project's files: turn on Agent Office files for this project.",
-      "claudeProjectFiles": "Claude Code gets Agent Office's setup at launch; nothing is written to the project."
+      "claudeProjectFiles": "Claude Code gets Agent Office's setup at launch; nothing is written to the project.",
+      "ocManager": "OpenCode gets no launch config or files from the app, so there is no manager mode for it.",
+      "ocAgentModel": "OpenCode picks its own subagent models; the app passes it no agent setting.",
+      "ocContextCap": "OpenCode compacts its conversation by itself; the app sets no size for it.",
+      "ocSavings": "OpenCode gets no output caps or step budget from the app.",
+      "ocBackup": "OpenCode keeps its own provider logins; there is no second account to switch to.",
+      "ocWorkers": "Workers are not followed for OpenCode: the app only watches its terminal.",
+      "ocCost": "OpenCode reports no token counts to the app.",
+      "ocProjectFiles": "Agent Office writes no project files for OpenCode."
     }
   },
   "panel": {

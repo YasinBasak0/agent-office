@@ -230,7 +230,7 @@ export function mountSidebar(el, on) {
   }
   renderChrome();
 
-  const engineOfRow = (p) => (p.engine === 'agy' || p.engine === 'commandcode' ? p.engine : 'claude');
+  const engineOfRow = (p) => (p.engine === 'agy' || p.engine === 'commandcode' || p.engine === 'opencode' ? p.engine : 'claude');
   /**
    * A row control with its label (contract v3.36): every engine shows it; one the engine can't honour (src/engine-caps.mjs)
    * is disabled, its reason in the title and in a small line shown on hover or focus.
@@ -250,7 +250,7 @@ export function mountSidebar(el, on) {
   // engine (main's projects:setEngine: refused or cancelled, the select goes back); choosing a Claude account sets the
   // engine back to Claude Code and the account. p.accountId stays the Claude account while another engine runs.
   const NEW_ACCOUNT = '__new__';
-  const ENGINE_OPT = { agy: '__engine:agy', commandcode: '__engine:commandcode' };
+  const ENGINE_OPT = { agy: '__engine:agy', commandcode: '__engine:commandcode', opencode: '__engine:opencode' }; // opencode: v3.40
   function accountSelect(p) {
     const engine = engineOfRow(p);
     const now = engine === 'claude' ? p.accountId : ENGINE_OPT[engine];
@@ -267,7 +267,7 @@ export function mountSidebar(el, on) {
           acctList.querySelector('.sb-add-menu')?.scrollIntoView?.({ block: 'nearest' });
           return;
         }
-        const eng = v === ENGINE_OPT.agy ? 'agy' : v === ENGINE_OPT.commandcode ? 'commandcode' : null;
+        const eng = Object.keys(ENGINE_OPT).find((k) => ENGINE_OPT[k] === v) || null;
         // leaving agy/cmd for another Claude account: the account first, so the restarted tabs use it
         const leaving = !eng && engine !== 'claude';
         if (leaving && v !== p.accountId) await on.setAccount(p.id, v);
@@ -291,6 +291,9 @@ export function mountSidebar(el, on) {
     }
     if (cmdShown() || engine === 'commandcode') {
       sel.append(h('option', { value: ENGINE_OPT.commandcode, selected: engine === 'commandcode' }, t('sidebar.engineCommandcode')));
+    }
+    if (ocShown() || engine === 'opencode') { // contract v3.40
+      sel.append(h('option', { value: ENGINE_OPT.opencode, selected: engine === 'opencode' }, t('sidebar.engineOpencode')));
     }
     sel.append(h('option', { value: NEW_ACCOUNT }, t('sidebar.newAccount')));
     return control(p, 'account', t('sidebar.account'), sel);
@@ -387,10 +390,11 @@ export function mountSidebar(el, on) {
   }
 
   // The program the project's tabs run (contract v3.22, v3.25): a read-only tag since v3.36; the Account dropdown
-  // picks it (Claude accounts, Antigravity, Command Code).
+  // picks it (Claude accounts, Antigravity, Command Code, OpenCode).
   function engineTag(p) {
     const engine = engineOfRow(p);
     if (engine === 'claude') return h('span', { class: 'sb-tag sb-engine', title: t('sidebar.engineTitle'), 'aria-label': t('sidebar.engine') }, t('sidebar.engineClaude'));
+    if (engine === 'opencode') return h('span', { class: 'sb-tag sb-agy', title: t('sidebar.ocHintTitle') }, t('sidebar.ocHint')); // v3.40
     return engine === 'commandcode'
       ? h('span', { class: 'sb-tag sb-agy', title: t('sidebar.cmdHintTitle') }, t('sidebar.cmdHint'))
       : h('span', { class: 'sb-tag sb-agy', title: t('sidebar.agyHintTitle') }, t('sidebar.agyHint'));
@@ -422,6 +426,10 @@ export function mountSidebar(el, on) {
   /** Warning in the project row if its account is not logged in; clicking opens the login overlay. */
   function loginBadge(p) {
     const engine = engineOfRow(p);
+    if (engine === 'opencode') { // contract v3.40: no login is normal (free models); only a missing CLI is a problem
+      if (ocAuth?.state !== 'missing') return null;
+      return h('span', { class: 'sb-warn', title: t('sidebar.ocMissingTitle') }, t('sidebar.ocMissing'));
+    }
     if (engine !== 'claude') { // Antigravity's / Command Code's own login (v3.24, v3.30; contract v3.36)
       const auth = engine === 'agy' ? agyAuth : cmdAuth;
       if (auth?.state !== 'out') return null;

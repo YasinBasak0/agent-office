@@ -103,7 +103,7 @@
     "addProjectTitle": "Proje ekle ({mod}O)",
     "accounts": "HESAPLAR",
     "account": "Hesap",
-    "accountTitle": "Bu projenin çalıştığı hesap: bir Claude hesabı (Claude Code), Antigravity (Google Antigravity CLI, kendi Google girişi) ya da Command Code (kendi girişi). Antigravity ya da Command Code seçmek projenin motorunu değiştirir ve sekmelerini baştan başlatır; bir Claude hesabı seçmek geri döndürür. Claude hesabını değiştirmek Claude'u yeniden başlatır.",
+    "accountTitle": "Bu projenin çalıştığı hesap: bir Claude hesabı (Claude Code), Antigravity (Google Antigravity CLI, kendi Google girişi), Command Code (kendi girişi) ya da OpenCode (kendi sağlayıcıları; ücretsiz modelleri için giriş gerekmez). Antigravity, Command Code ya da OpenCode seçmek projenin motorunu değiştirir ve sekmelerini baştan başlatır; bir Claude hesabı seçmek geri döndürür. Claude hesabını değiştirmek Claude'u yeniden başlatır.",
     "newAccount": "+ Yeni hesap…",
     "projectManager": "Müdür",
     "projectManagerTitle": "Bu projede müdür nasıl çalışır: Genel ayar Müdür modu ayarını izler; Dağıtır işi ajanlara böler; Kendisi yapar ajansız çalışır. Her iki durumda da iş bitene kadar devam eder. Projenin Claude'u bir sonraki başlayışında geçerli olur (boştaki sekmeler hemen yeniden başlar).",
@@ -133,7 +133,7 @@
     "savingsNormal": "Normal",
     "savingsStrict": "Sıkı",
     "engine": "Motor",
-    "engineTitle": "Bu proje Claude Code çalıştırıyor. Motoru Hesap menüsü seçer: bir Claude hesabı, Antigravity ya da Command Code.",
+    "engineTitle": "Bu proje Claude Code çalıştırıyor. Motoru Hesap menüsü seçer: bir Claude hesabı, Antigravity, Command Code ya da OpenCode.",
     "engineClaude": "Claude Code",
     "engineAgy": "Antigravity",
     "agyHint": "Antigravity — izleniyor",
@@ -248,7 +248,15 @@
       "agyCost": "Antigravity, Agent Office'in okuyabileceği token sayısı yazmaz.",
       "cmdBackup": "Command Code'da tek giriş var; geçilecek ikinci hesap yok.",
       "filesOff": "Projenin dosyalarını gerektirir: bu proje için Agent Office dosyalarını açın.",
-      "claudeProjectFiles": "Claude Code, Agent Office ayarlarını başlarken alır; projeye hiçbir şey yazılmaz."
+      "claudeProjectFiles": "Claude Code, Agent Office ayarlarını başlarken alır; projeye hiçbir şey yazılmaz.",
+      "ocManager": "OpenCode uygulamadan başlatma ayarı ya da dosya almaz; bu yüzden yönetici modu yok.",
+      "ocAgentModel": "OpenCode alt ajan modellerini kendisi seçer; uygulama ona ajan ayarı geçmez.",
+      "ocContextCap": "OpenCode konuşmasını kendisi sıkıştırır; uygulama ona boyut ayarlamaz.",
+      "ocSavings": "OpenCode uygulamadan çıktı sınırı ya da adım bütçesi almaz.",
+      "ocBackup": "OpenCode sağlayıcı girişlerini kendisi tutar; geçilecek ikinci hesap yok.",
+      "ocWorkers": "OpenCode için çalışanlar izlenmez: uygulama yalnızca terminalini izler.",
+      "ocCost": "OpenCode uygulamaya token sayısı bildirmez.",
+      "ocProjectFiles": "Agent Office, OpenCode için proje dosyası yazmaz."
     }
   },
   "panel": {

@@ -110,6 +110,7 @@ function desiredFiles({ engine, enabled, manager = false, agentModel = null, pro
     const model = CMD_MODEL[agentModel];
     if (model) out.push({ rel: '.commandcode/agents/ao-worker.md', content: agentFile({ model, tools: '"*"' }) });
   }
+  // OpenCode (contract v3.40) and Claude Code: nothing is written (engine-caps projectFiles: no('ocProjectFiles'))
   return out;
 }
 
