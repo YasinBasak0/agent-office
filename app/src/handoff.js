@@ -3,8 +3,9 @@
 //
 // Sender: snapshotWip commits the working tree (tracked changes and untracked, not ignored, files) on a new branch
 // `agent-office/handoff-<time>` through a temporary index, so the current branch, the real index and the working
-// tree stay exactly as they were. pushWip pushes that branch to the project's remote; when there is none or the
-// push fails, createBundle makes a git bundle that travels over the link. packSession gathers the project's Claude
+// tree stay exactly as they were. prepareCode sends it as a git bundle over the link whenever the bundle fits the
+// 200 MB cap; only a larger one is pushed to the project's remote (after the person confirms the URL), and that
+// remote branch is deleted again once the receiver applied it. packSession gathers the project's Claude
 // transcripts, memory, facts file and settings (never logins or env).
 // Receiver: receiveCode fetches the branch (remote or bundle) into the chosen folder (a new folder is initialised),
 // restoreWip puts the WIP back as uncommitted changes when the folder is clean and on the same commit, else leaves
@@ -54,40 +55,80 @@ function gitInfo(dir) {
 
 /**
  * Commits the working tree on a new WIP branch without touching the current branch, index or files.
- * @returns {{ wip: string, commit: string, base: string, branch: string, remote: string, remoteName: string, root: string, dirty: boolean, top: string } | null}
+ * @returns {{ wip: string, commit: string, tree: string, base: string, branch: string, remote: string, remoteName: string, root: string, dirty: boolean, top: string } | null}
  */
 function snapshotWip(dir, { now = Date.now } = {}) {
   const info = gitInfo(dir);
   if (!info) return null;
+  const tree = worktreeTree(info);
+  const ident = tryGit(info.top, ['config', 'user.email']) ? {} : { GIT_AUTHOR_NAME: 'Agent Office', GIT_AUTHOR_EMAIL: 'agent-office@localhost', GIT_COMMITTER_NAME: 'Agent Office', GIT_COMMITTER_EMAIL: 'agent-office@localhost' };
+  const commit = git(info.top, ['commit-tree', tree, ...(info.head ? ['-p', info.head] : []), '-m', `Agent Office handoff: work in progress on ${info.branch || 'a detached HEAD'}`], { env: ident });
+  const wip = `${BRANCH_PREFIX}${stamp(now())}`;
+  git(info.top, ['update-ref', `refs/heads/${wip}`, commit]);
+  return { wip, commit, tree, base: info.head, branch: info.branch, remote: info.remote, remoteName: info.remoteName, root: info.root, dirty: info.dirty, top: info.top };
+}
+
+/** The tree of the working tree as it is now (tracked and untracked, not ignored), through a temporary index. */
+function worktreeTree(info) {
   const gitDir = git(info.top, ['rev-parse', '--absolute-git-dir']);
   const tmpIndex = path.join(gitDir, `agent-office-handoff-${process.pid}-${crypto.randomBytes(4).toString('hex')}.index`);
   try {
     const env = { GIT_INDEX_FILE: tmpIndex };
     if (info.head) git(info.top, ['read-tree', info.head], { env });
     git(info.top, ['add', '-A'], { env });
-    const tree = git(info.top, ['write-tree'], { env });
-    const ident = tryGit(info.top, ['config', 'user.email']) ? {} : { GIT_AUTHOR_NAME: 'Agent Office', GIT_AUTHOR_EMAIL: 'agent-office@localhost', GIT_COMMITTER_NAME: 'Agent Office', GIT_COMMITTER_EMAIL: 'agent-office@localhost' };
-    const commit = git(info.top, ['commit-tree', tree, ...(info.head ? ['-p', info.head] : []), '-m', `Agent Office handoff: work in progress on ${info.branch || 'a detached HEAD'}`], { env: ident });
-    const wip = `${BRANCH_PREFIX}${stamp(now())}`;
-    git(info.top, ['update-ref', `refs/heads/${wip}`, commit]);
-    return { wip, commit, base: info.head, branch: info.branch, remote: info.remote, remoteName: info.remoteName, root: info.root, dirty: info.dirty, top: info.top };
+    return git(info.top, ['write-tree'], { env });
   } finally {
     fs.rmSync(tmpIndex, { force: true });
   }
 }
 
-/** Pushes the WIP branch to the project's remote. Resolves false when there is none or the push fails. */
-function pushWip(snap) {
-  if (!snap?.remoteName) return Promise.resolve(false);
-  return gitAsync(snap.top, ['push', '--no-verify', snap.remoteName, `refs/heads/${snap.wip}:refs/heads/${snap.wip}`]);
+/** 'changed' when the folder's HEAD or files differ from the snapshot (work done during the transfer), else null. */
+function changedSince(snap, dir) {
+  const info = gitInfo(dir);
+  if (!info || info.head !== snap.base) return 'changed';
+  try { return worktreeTree(info) === snap.tree ? null : 'changed'; } catch { return 'changed'; }
 }
 
-/** The WIP branch (with its history) as a git bundle file's bytes; null when larger than MAX_BUNDLE. */
-function createBundle(snap, tmpDir) {
+/** Is dir the top of its git work tree (not a subfolder of a larger repository)? */
+function isRepoRoot(dir) {
+  const info = gitInfo(dir);
+  if (!info) return false;
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  return real(info.top) === real(dir);
+}
+
+/** Pushes the WIP branch to the project's remote (the repository's hooks run). Resolves false when there is none or it fails. */
+function pushWip(snap) {
+  if (!snap?.remoteName) return Promise.resolve(false);
+  return gitAsync(snap.top, ['push', snap.remoteName, `refs/heads/${snap.wip}:refs/heads/${snap.wip}`]);
+}
+/** Deletes the pushed WIP branch from the remote again (after the receiver applied it). Best effort. */
+function deleteRemoteWip(snap) {
+  if (!snap?.remoteName || !snap.wip) return Promise.resolve(false);
+  return gitAsync(snap.top, ['push', snap.remoteName, '--delete', `refs/heads/${snap.wip}`]);
+}
+
+/**
+ * How the code travels: a bundle over the link whenever it fits maxBundle (nothing is pushed); else, only after
+ * confirmPush(remote URL without credentials) says yes, a push of the WIP branch to the project's remote.
+ * @param {any} snap @param {string} tmpDir @param {{ confirmPush: (url: string) => Promise<boolean> | boolean, maxBundle?: number }} o
+ * @returns {Promise<{ mode: 'bundle' | 'remote', bundle: Buffer | null } | { reason: string }>}
+ */
+async function prepareCode(snap, tmpDir, { confirmPush, maxBundle = C.MAX_BUNDLE }) {
+  const bundle = createBundle(snap, tmpDir, maxBundle);
+  if (bundle) return { mode: 'bundle', bundle };
+  if (!snap.remoteName || !snap.remote) return { reason: 'too-large' };
+  if (!(await confirmPush(safeRemote(snap.remote)))) return { reason: 'push-declined' };
+  if (!(await pushWip(snap))) return { reason: 'push-failed' };
+  return { mode: 'remote', bundle: null };
+}
+
+/** The WIP branch (with its history) as a git bundle file's bytes; null when larger than maxBundle. */
+function createBundle(snap, tmpDir, maxBundle = C.MAX_BUNDLE) {
   const file = path.join(tmpDir, `handoff-${crypto.randomBytes(6).toString('hex')}.bundle`);
   try {
     git(snap.top, ['bundle', 'create', file, `refs/heads/${snap.wip}`]);
-    if (fs.statSync(file).size > C.MAX_BUNDLE) return null;
+    if (fs.statSync(file).size > maxBundle) return null;
     return fs.readFileSync(file);
   } finally {
     fs.rmSync(file, { force: true });
@@ -264,19 +305,20 @@ function writeSession(pack, o) {
 }
 
 /**
- * Why this project cannot be handed off now, or null. Claude Code projects only, a git folder, no busy tab, the
- * device online.
- * @param {{ engine?: string, busy?: boolean, git?: boolean, online?: boolean }} o
+ * Why this project cannot be handed off now, or null. Claude Code projects only, the top folder of a git repository
+ * (a subfolder of a larger repository is refused), no busy tab, the device online.
+ * @param {{ engine?: string, busy?: boolean, git?: boolean, subfolder?: boolean, online?: boolean }} o
  */
 function refusal(o) {
   if (o.online === false) return 'offline';
   if (o.engine !== 'claude') return 'engine';
   if (!o.git) return 'not-git';
+  if (o.subfolder) return 'subfolder';
   if (o.busy) return 'busy';
   return null;
 }
 
 module.exports = {
-  BRANCH_PREFIX, git, gitInfo, safeRemote, sha256, slugOf, snapshotWip, pushWip, createBundle, sameRepo, defaultTarget,
+  BRANCH_PREFIX, git, gitInfo, safeRemote, sha256, slugOf, snapshotWip, changedSince, isRepoRoot, pushWip, deleteRemoteWip, prepareCode, createBundle, sameRepo, defaultTarget,
   receiveCode, restoreWip, safeRel, inside, rewritePaths, cleanSettings, packSession, parsePack, writeSession, refusal,
 };

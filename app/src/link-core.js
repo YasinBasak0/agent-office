@@ -17,7 +17,7 @@ const CODE_WORDS = 5;                     // 5 words of 256 = 40 bits, stretched
 const MAX_BUNDLE = 200 * 1024 * 1024;     // a git bundle sent over the link
 const MAX_PACK = 100 * 1024 * 1024;       // the session data (transcripts, memory, facts, settings)
 const CHUNK = 32 * 1024;                  // bytes per ho-chunk (base64 keeps the line under MAX_FRAME)
-const HANDOFF_REASONS = ['declined', 'not-allowed', 'busy', 'engine', 'not-git', 'offline', 'too-large', 'bad-data', 'checksum', 'apply-failed', 'timeout', 'in-progress', 'cancelled', 'unknown-project'];
+const HANDOFF_REASONS = ['declined', 'not-allowed', 'busy', 'engine', 'not-git', 'offline', 'too-large', 'bad-data', 'checksum', 'apply-failed', 'timeout', 'in-progress', 'cancelled', 'unknown-project', 'changed', 'subfolder', 'push-declined', 'push-failed'];
 const APPLIED = ['restored', 'branch-only'];
 
 // 256 short, distinct, easy-to-type English words: a code word is one byte.

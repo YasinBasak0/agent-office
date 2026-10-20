@@ -478,11 +478,19 @@
       "timeout": "zamanında yanıt gelmedi",
       "in-progress": "orada başka bir devir sürüyor",
       "cancelled": "klasör seçilmedi",
-      "unknown-project": "böyle bir proje yok"
+      "unknown-project": "böyle bir proje yok",
+      "changed": "aktarım sırasında klasörde dosya ya da commit değişti: yeniden devredin",
+      "subfolder": "klasör daha büyük bir git deposunun alt klasörü: devretmek için deponun üst klasörünü proje olarak ekleyin",
+      "push-declined": "kod 200 MB'tan büyük ve uzak depoya gönderme reddedildi",
+      "push-failed": "kod 200 MB'tan büyük ve uzak depoya gönderme başarısız oldu"
     },
     "handoffOffer": "{device} size {project} projesini devretmek istiyor",
     "handoffBranchOnly": "{project}: klasörde başka değişiklikler vardı, iş {branch} dalında",
-    "handoffPickFolder": "Devredilen proje için klasör"
+    "handoffPickFolder": "Devredilen proje için klasör",
+    "handoffPushConfirm": "{project} 200 MB'tan büyük, doğrudan gönderilemiyor. Ara çalışma dalı {remote} adresine gönderilsin mi?",
+    "handoffPushDetail": "agent-office/handoff-… dalı deponuzun kancalarıyla gönderilir ve diğer cihaz aldıktan sonra uzak depodan yeniden silinir.",
+    "handoffPushGo": "Gönder",
+    "handoffLocked": "{project} devrediliyor: bitene kadar giriş duraklatıldı."
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",
@@ -622,7 +630,11 @@
       "applying": "uygulanıyor",
       "done": "devredildi",
       "failed": "başarısız: {reason}",
-      "out": "{project} → {device}"
-    }
+      "out": "{project} → {device}",
+      "unknown": "sonuç bilinmiyor: diğer cihaz bekleniyor",
+      "target": "Klasör: {dir}",
+      "targetAsk": "Klasörü siz seçeceksiniz"
+    },
+    "handedOffUnknown": "{project} → {device}? (sonucu bekleniyor)"
   }
 }

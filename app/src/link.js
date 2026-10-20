@@ -8,7 +8,8 @@ const C = require('./link-core.js');
 class Link extends EventEmitter {
   /**
    * @param {{ keyPair: { publicKey: Buffer, secretKey: Buffer }, name: string, devices?: C.Device[], secrets?: Record<string, string>,
-   *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number }} o
+   *   bootstrap?: any[], now?: () => number, swarmFactory?: (opts: any) => any, heartbeatMs?: number,
+   *   handoffAskMs?: number, handoffIdleMs?: number }} o
    */
   constructor(o) {
     super();
@@ -35,6 +36,9 @@ class Link extends EventEmitter {
     this.lastPub = 0;
     this.handoffsOut = new Map(); // v3.29 projects this device hands off: id → record
     this.handoffsIn = new Map();  // projects offered to this device: id → record
+    this.handoffAskMs = o.handoffAskMs || 10 * 60 * 1000;   // an offer nobody answers is dropped after this
+    this.handoffIdleMs = o.handoffIdleMs || 2 * 60 * 1000;  // an accepted transfer with no chunk for this long is dropped
+    this.lateResults = new Map(); // device pub → ho-result lines to send when it is back (applied while it was away)
     this.destroyed = false;
   }
 
@@ -189,10 +193,13 @@ class Link extends EventEmitter {
       // its answers came on this connection: a command still sent or queued will never hear its outcome
       for (const o of this.outgoing) if (o.pub === device.pub && (o.status === 'sent' || o.status === 'queued')) o.status = 'unknown';
       for (const h of this.handoffsOut.values()) if (h.pub === device.pub) h.finish?.({ ok: false, reason: 'offline' });
-      for (const h of [...this.handoffsIn.values()]) if (h.pub === device.pub) this.dropIn(h, 'offline', false);
+      // an offer or transfer dies with the connection; one being applied finishes and reports on the next connection
+      for (const h of [...this.handoffsIn.values()]) if (h.pub === device.pub && h.stage !== 'applying') this.dropIn(h, 'offline', false);
       this.emit('change');
     });
     this.write(conn, { t: 'hello', v: C.PROTOCOL, name: this.name });
+    for (const m of this.lateResults.get(device.pub) || []) this.write(conn, m);
+    this.lateResults.delete(device.pub);
     this.flushTo(device.pub, conn);
     this.emit('change');
   }
@@ -220,7 +227,13 @@ class Link extends EventEmitter {
       this.receiveChunk(d, m);
     } else if (m.t === 'ho-answer' || m.t === 'ho-result') {
       const h = this.handoffsOut.get(m.id);
-      if (h && h.pub === d.pub) (m.t === 'ho-answer' ? h.onAnswer : h.onResult)?.(m);
+      const hin = m.t === 'ho-result' ? this.handoffsIn.get(m.id) : null;
+      if (h && h.pub === d.pub && !h.done) (m.t === 'ho-answer' ? h.onAnswer : h.onResult)?.(m);
+      else if (hin && hin.pub === d.pub) {
+        // the sender gave up (timeout, changed): drop the offer; one being applied must not be adopted any more
+        if (hin.stage === 'applying') hin.cancelled = true;
+        else this.dropIn(hin, m.reason || 'cancelled', false);
+      } else if (m.t === 'ho-result' && (!h || h.pub === d.pub)) this.emit('handoff-late-result', { device: d, id: m.id, ok: m.ok, applied: m.applied, reason: m.reason });
     }
   }
 
@@ -228,10 +241,14 @@ class Link extends EventEmitter {
 
   /**
    * Offers a project to a paired device and, once accepted, sends its data. Resolves with the receiver's result.
+   * A failure decided here (timeout, beforeSend) is also told to the receiver so it drops the offer. A failure after
+   * all data was sent (timeout or connection lost while the receiver applies) is `unknown: true` with the id: the
+   * receiver may still apply it and reports through 'handoff-late-result'.
    * @param {string} pub @param {{ name: string, dir: string, git: any }} offer @param {{ pack: Buffer, bundle?: Buffer | null }} parts
-   * @returns {Promise<{ ok: boolean, reason?: string, applied?: string }>}
+   * @param {{ answerMs?: number, resultMs?: number, beforeSend?: () => Promise<string | null> | string | null }} [o]
+   * @returns {Promise<{ ok: boolean, reason?: string, applied?: string, unknown?: boolean, id?: string }>}
    */
-  offerHandoff(pub, offer, parts, { answerMs = 10 * 60 * 1000, resultMs = 60 * 60 * 1000 } = {}) {
+  offerHandoff(pub, offer, parts, { answerMs = 10 * 60 * 1000, resultMs = 60 * 60 * 1000, beforeSend } = {}) {
     const conn = this.conns.get(pub);
     if (!conn) return Promise.resolve({ ok: false, reason: 'offline' });
     const id = crypto.randomBytes(8).toString('hex');
@@ -240,28 +257,34 @@ class Link extends EventEmitter {
     this.handoffsOut.set(id, h);
     return new Promise((resolve) => {
       let timer = setTimeout(() => h.finish({ ok: false, reason: 'timeout' }), answerMs);
-      h.finish = (r) => {
+      h.finish = (r, fromPeer = false) => {
         if (h.done) return;
         h.done = true;
         clearTimeout(timer);
-        Object.assign(h, { stage: r.ok ? 'done' : 'failed', reason: r.reason, applied: r.applied });
+        if (!r.ok && !fromPeer) {
+          if (!conn.destroyed) this.write(conn, { t: 'ho-result', id, ok: false, reason: r.reason });
+          if (h.stage === 'applying') r = { ...r, unknown: true, id };
+        }
+        Object.assign(h, { stage: r.ok ? 'done' : r.unknown ? 'unknown' : 'failed', reason: r.reason, applied: r.applied });
         this.emit('change');
         resolve(r);
       };
       h.onAnswer = async (m) => {
-        if (!m.ok) return h.finish({ ok: false, reason: m.reason || 'declined' });
+        if (!m.ok) return h.finish({ ok: false, reason: m.reason || 'declined' }, true);
         if (h.stage !== 'asking') return;
         clearTimeout(timer);
         timer = setTimeout(() => h.finish({ ok: false, reason: 'timeout' }), resultMs);
         h.stage = 'sending';
         this.emit('change');
         try {
+          const why = beforeSend ? await beforeSend() : null;
+          if (why) return h.finish({ ok: false, reason: why });
           await this.stream(conn, h, 'pack', parts.pack);
           if (parts.bundle) await this.stream(conn, h, 'bundle', parts.bundle);
           if (!h.done) { h.stage = 'applying'; this.emit('change'); }
         } catch { h.finish({ ok: false, reason: 'offline' }); }
       };
-      h.onResult = (m) => h.finish({ ok: m.ok, ...(m.reason ? { reason: m.reason } : {}), ...(m.applied ? { applied: m.applied } : {}) });
+      h.onResult = (m) => h.finish({ ok: m.ok, ...(m.reason ? { reason: m.reason } : {}), ...(m.applied ? { applied: m.applied } : {}) }, true);
       this.write(conn, { t: 'ho-offer', id, name: offer.name, dir: offer.dir, engine: 'claude', git: offer.git, pack: sum(parts.pack), bundle: sum(parts.bundle) });
       this.emit('change');
     });
@@ -283,6 +306,8 @@ class Link extends EventEmitter {
     if (this.handoffsIn.size) return answer(false, 'in-progress');
     const h = { id: m.id, pub: d.pub, conn, offer: m, stage: 'asking', parts: { pack: [], bundle: [] }, bytes: { pack: 0, bundle: 0 }, seq: { pack: 0, bundle: 0 }, at: this.now() };
     this.handoffsIn.set(m.id, h);
+    h.timer = setTimeout(() => { if (this.handoffsIn.get(m.id) === h && h.stage === 'asking') { answer(false, 'timeout'); this.dropIn(h, 'timeout', false); } }, this.handoffAskMs);
+    h.timer.unref?.();
     this.emit('handoff-offer', { device: d, offer: m });
     this.emit('change');
   }
@@ -290,12 +315,19 @@ class Link extends EventEmitter {
   answerHandoff(id, accept, reason = 'declined') {
     const h = this.handoffsIn.get(id);
     if (!h || h.stage !== 'asking') return false;
+    clearTimeout(h.timer);
     if (!accept) { this.write(h.conn, { t: 'ho-answer', id, ok: false, reason }); this.handoffsIn.delete(id); }
-    else { h.stage = 'receiving'; this.write(h.conn, { t: 'ho-answer', id, ok: true }); }
+    else {
+      h.stage = 'receiving';
+      h.timer = setTimeout(() => { if (this.handoffsIn.get(id) === h && h.stage === 'receiving') this.dropIn(h, 'timeout'); }, this.handoffIdleMs);
+      h.timer.unref?.();
+      this.write(h.conn, { t: 'ho-answer', id, ok: true });
+    }
     this.emit('change');
     return true;
   }
   dropIn(h, reason, tell = true) {
+    clearTimeout(h.timer);
     if (tell) this.write(h.conn, { t: 'ho-result', id: h.id, ok: false, reason });
     this.handoffsIn.delete(h.id);
     this.emit('handoff-failed', { offer: h.offer, reason });
@@ -308,6 +340,7 @@ class Link extends EventEmitter {
     if (!want || m.seq !== h.seq[m.part] || (m.part === 'bundle' && h.bytes.pack < h.offer.pack.size)) return this.dropIn(h, 'bad-data');
     const buf = Buffer.from(m.data, 'base64');
     if (h.bytes[m.part] + buf.length > want.size) return this.dropIn(h, 'too-large');
+    h.timer?.refresh?.();
     h.parts[m.part].push(buf);
     h.bytes[m.part] += buf.length;
     h.seq[m.part]++;
@@ -315,16 +348,22 @@ class Link extends EventEmitter {
     const parts = { pack: Buffer.concat(h.parts.pack), bundle: h.offer.bundle ? Buffer.concat(h.parts.bundle) : null };
     const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
     if (sha(parts.pack) !== h.offer.pack.sha || (parts.bundle && sha(parts.bundle) !== h.offer.bundle.sha)) return this.dropIn(h, 'checksum');
+    clearTimeout(h.timer);
     h.stage = 'applying';
     h.parts = null;
     this.emit('change');
-    const done = (r) => {
-      if (!this.handoffsIn.has(h.id)) return;
-      this.write(h.conn, { t: 'ho-result', id: h.id, ok: r.ok === true, ...(r.reason ? { reason: r.reason } : {}), ...(r.applied ? { applied: r.applied } : {}) });
+    const done = (/** @type {{ ok: boolean, reason?: string, applied?: string }} */ r) => {
+      if (this.handoffsIn.get(h.id) !== h) return;
+      const msg = { t: 'ho-result', id: h.id, ok: r.ok === true, ...(r.reason ? { reason: r.reason } : {}), ...(r.applied ? { applied: r.applied } : {}) };
+      const conn = this.conns.get(h.pub);
+      if (conn && !conn.destroyed) this.write(conn, msg);
+      else this.lateResults.set(h.pub, [...(this.lateResults.get(h.pub) || []), msg].slice(-10));   // sent when it is back
       this.handoffsIn.delete(h.id);
       this.emit('change');
     };
-    this.emit('handoff-data', { device: d, offer: h.offer, parts, done });
+    // alive() turns false when the sender gave up meanwhile: the receiver must then not adopt the project
+    const alive = () => this.handoffsIn.get(h.id) === h && !h.cancelled;
+    this.emit('handoff-data', { device: d, offer: h.offer, parts, done, alive });
   }
 
   receiveCommand(conn, d, m) {

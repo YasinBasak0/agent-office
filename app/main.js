@@ -1101,7 +1101,7 @@ function unfinishedTabs() {
 /** Types the prompt into a running claude's input box and submits it. */
 function typePrompt(id, text) {
   const t = terms.get(id);
-  if (!t) return;
+  if (!t || handoffLocked(id)) return;
   t.write(R.typedPrompt(text));
   setTimeout(() => { if (terms.get(id) === t) t.write('\r'); }, ENTER_DELAY_MS);
   const a = activity.get(id);
@@ -1113,6 +1113,7 @@ function linkTabState(projectId) {
   const p = P.findProject(state, projectId);
   const t = terms.get(projectId);
   if (!p || !t) return 'gone';
+  if (handoffLocks.has(projectId)) return 'busy';   // being handed off: remote commands wait (and fail once it left)
   const claude = readJson(Z.claudePidFile(A.accountOf(state, p).configDir, app.getPath('home'), t.pid));
   const sid = validSid(claude?.sessionId);
   if (!claude || R.isTurnBusy({ claude, office: sid ? office()?.readSession(sid) : undefined })) return 'busy';
@@ -1134,9 +1135,33 @@ function handoffMemoryDir(configDir, home, dir) {
   return M.sharedMemoryDir({ configDir, home, base }) || path.join(PD.claudeRoot(configDir, home), 'projects', M.memorySlug(base) || base.replace(/[^a-zA-Z0-9]/g, '-'), 'memory');
 }
 const factsFileOf = (home, dir) => path.join(home, '.claude', 'agent-office', 'facts', `${path.basename(dir)}.md`);
+// projects being handed off: their tabs take no input until the outcome is known (the snapshot must stay the truth)
+const handoffLocks = new Set();
+const handoffLocked = (ptyId) => handoffLocks.has(String(ptyId).split(':')[0]);
+const lockedShown = new Map();   // pty id → when the notice was last written into it
+function lockedNotice(id) {
+  if (Date.now() - (lockedShown.get(id) || 0) < 5000) return;
+  lockedShown.set(id, Date.now());
+  const p = P.findProject(state, String(id).split(':')[0]);
+  send('pty:data', id, `\r\n\x1b[33m${T('main.handoffLocked', { project: p?.name || '' })}\x1b[0m\r\n`);
+}
 function handoffDeps() {
   const home = app.getPath('home');
+  /** The account a received folder lands in: the project already at that folder keeps its own, else the active one's. */
+  const accountFor = (dir) => {
+    const p = P.findByDir(state, dir) || P.findProject(state, state.activeId);
+    return p ? A.accountOf(state, p) : null;
+  };
   return {
+    lock(projectId, on) {
+      if (on) handoffLocks.add(projectId); else handoffLocks.delete(projectId);
+      for (const k of [...lockedShown.keys()]) if (String(k).split(':')[0] === projectId) lockedShown.delete(k);
+    },
+    async confirmPush(project, url) {
+      if (!win) return false;
+      const r = await dialog.showMessageBox(win, { type: 'question', buttons: [T('main.handoffPushGo'), T('main.cancel')], defaultId: 1, cancelId: 1, message: T('main.handoffPushConfirm', { project, remote: url }), detail: T('main.handoffPushDetail') });
+      return r.response === 0;
+    },
     describe(projectId) {
       const p = P.findProject(state, projectId);
       if (!p) return null;
@@ -1162,23 +1187,27 @@ function handoffDeps() {
       };
     },
     release(projectId) {
+      handoffLocks.delete(projectId);
       const p = P.findProject(state, projectId);
       if (!p) return;
       for (const pid of P.ptyIdsOf(p)) { killPty(pid); asleep.delete(pid); sizes.delete(pid); }
       commit(P.removeProject(state, projectId));
     },
     target(dir) {
-      const active = P.findProject(state, state.activeId);
-      const configDir = active ? A.accountOf(state, active).configDir : null;
-      return { root: PD.claudeRoot(configDir, home), memoryDir: handoffMemoryDir(configDir, home, dir), factsFile: factsFileOf(home, dir) };
+      const acc = accountFor(dir);
+      const configDir = acc ? acc.configDir : null;
+      return { root: PD.claudeRoot(configDir, home), memoryDir: handoffMemoryDir(configDir, home, dir), factsFile: factsFileOf(home, dir), accountId: acc?.id };
     },
-    adopt({ dir, settings, sessionIds }) {
-      const active = P.findProject(state, state.activeId);
-      const r = P.addProject(state, dir, active ? { accountId: active.accountId } : {});
+    adopt({ dir, settings, sessionIds, accountId }) {
+      // addProject returns the project already at dir (with its own account) when there is one; the transcripts were
+      // written under that same account by target(), so --resume finds them
+      const r = P.addProject(state, dir, accountId ? { accountId } : {});
       let next = { ...r.state, projects: r.state.projects.map((x) => (x.id === r.project.id ? { ...x, ...settings } : x)) };
       next = { ...next, ...P.normalizeState(next) };
       const tabs = [];
-      for (const sid of sessionIds.slice(1, 8)) {
+      // the main tab already running (an existing project): the first session also opens in a new tab
+      const mainRunning = terms.has(r.project.id);
+      for (const sid of sessionIds.slice(mainRunning ? 0 : 1, 8)) {
         const n = P.nextTabNumber(P.findProject(next, r.project.id));
         next = P.addTab(next, r.project.id, { n });
         tabs.push([`${r.project.id}:${n}`, sid]);
@@ -2043,6 +2072,7 @@ ipcMain.handle('projects:menu', (_e, id) => {
 // --- pty (each message carries a tab's pty id — projectId or `<projectId>:<n>` — or 'login:<accountId>')
 
 ipcMain.on('pty:write', (_e, id, d) => {
+  if (handoffLocked(id)) { lockedNotice(id); return; }
   if (!terms.has(id)) wake(id);
   const a = activity.get(id);
   if (a) { a.at = Date.now(); a.draft = Z.draftAfter(a.draft, d); }

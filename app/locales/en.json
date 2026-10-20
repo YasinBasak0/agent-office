@@ -497,11 +497,19 @@
       "timeout": "no answer in time",
       "in-progress": "another handoff is in progress there",
       "cancelled": "no folder was chosen",
-      "unknown-project": "no such project"
+      "unknown-project": "no such project",
+      "changed": "files or commits changed in the folder during the transfer: hand it off again",
+      "subfolder": "the folder is a subfolder of a larger git repository: add the repository's top folder as the project to hand it off",
+      "push-declined": "the code is larger than 200 MB and pushing it to the remote was declined",
+      "push-failed": "the code is larger than 200 MB and pushing it to the remote failed"
     },
     "handoffOffer": "{device} wants to hand you {project}",
     "handoffBranchOnly": "{project}: the folder had other changes, so the work is on branch {branch}",
-    "handoffPickFolder": "Folder for the handed-off project"
+    "handoffPickFolder": "Folder for the handed-off project",
+    "handoffPushConfirm": "{project} is larger than 200 MB, too big to send directly. Push its work-in-progress branch to {remote}?",
+    "handoffPushDetail": "The branch agent-office/handoff-… is pushed with your repository hooks and deleted from the remote again once the other device has it.",
+    "handoffPushGo": "Push",
+    "handoffLocked": "{project} is being handed off: input is paused until it is done."
   },
   "auth": {
     "unreadable": "could not read the login status",
@@ -650,7 +658,11 @@
       "applying": "applying",
       "done": "handed off",
       "failed": "failed: {reason}",
-      "out": "{project} → {device}"
-    }
+      "out": "{project} → {device}",
+      "unknown": "outcome unknown: waiting for the other device",
+      "target": "Folder: {dir}",
+      "targetAsk": "You will choose a folder"
+    },
+    "handedOffUnknown": "{project} → {device}? (waiting for its result)"
   }
 }

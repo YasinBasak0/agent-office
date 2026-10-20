@@ -436,3 +436,121 @@ test('integration: a full handoff over the link (opt-in refused first, then bund
   assert.equal(moved.cwd, dst);
 
 });
+
+// --- handoff review fixes: bundle first, subfolder, changes during the transfer, timeouts, drop before adopt
+test('handoff: the code goes as a bundle when it fits; a push only above the cap, confirmed, with hooks, deleted after', async (t) => {
+  const src = repo(t, 'bf');
+  const bare = tmp(t, 'bare');
+  H.git(bare, ['init', '-q', '--bare']);
+  H.git(src, ['remote', 'add', 'origin', bare]);
+  H.git(src, ['push', '-q', 'origin', 'main']);
+  H.git(src, ['branch', '-q', '--set-upstream-to', 'origin/main']);
+  fs.writeFileSync(path.join(src, 'a.txt'), 'wip\n');
+  const marker = path.join(tmp(t, 'mk'), 'pre-push-ran');
+  fs.writeFileSync(path.join(src, '.git', 'hooks', 'pre-push'), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+  const snap = H.snapshotWip(src);
+  const asked = [];
+  const confirmPush = (url) => { asked.push(url); return true; };
+  const small = await H.prepareCode(snap, tmp(t, 'b1'), { confirmPush });
+  assert.equal(small.mode, 'bundle');
+  assert.ok(small.bundle.length > 0);
+  assert.deepEqual(asked, []);
+  assert.equal(H.git(bare, ['branch', '--list', snap.wip]), '', 'nothing pushed when the bundle fits');
+  const declined = await H.prepareCode(snap, tmp(t, 'b2'), { confirmPush: () => false, maxBundle: 1 });
+  assert.deepEqual(declined, { reason: 'push-declined' });
+  const big = await H.prepareCode(snap, tmp(t, 'b3'), { confirmPush, maxBundle: 1 });
+  assert.deepEqual(big, { mode: 'remote', bundle: null });
+  assert.deepEqual(asked, [bare]);
+  assert.ok(fs.existsSync(marker), 'the pre-push hook ran (no --no-verify)');
+  assert.match(H.git(bare, ['branch', '--list', snap.wip]), /handoff/);
+  assert.equal(await H.deleteRemoteWip(snap), true);
+  assert.equal(H.git(bare, ['branch', '--list', snap.wip]), '');
+  // no remote at all and too big: too-large, nobody asked
+  const lone = repo(t, 'lone');
+  assert.deepEqual(await H.prepareCode(H.snapshotWip(lone), tmp(t, 'b4'), { confirmPush: () => assert.fail('asked'), maxBundle: 1 }), { reason: 'too-large' });
+});
+
+test('handoff: a subfolder of a larger repository is refused; changes after the snapshot are detected', (t) => {
+  const d = repo(t, 'sub');
+  const sub = path.join(d, 'pkg');
+  fs.mkdirSync(sub);
+  assert.equal(H.isRepoRoot(d), true);
+  assert.equal(H.isRepoRoot(sub), false);
+  assert.equal(H.refusal({ engine: 'claude', git: true, subfolder: true, online: true }), 'subfolder');
+  assert.equal(H.refusal({ engine: 'claude', git: true, subfolder: false, online: true }), null);
+  fs.writeFileSync(path.join(d, 'a.txt'), 'wip\n');
+  const snap = H.snapshotWip(d);
+  assert.equal(H.changedSince(snap, d), null);
+  fs.writeFileSync(path.join(d, 'a.txt'), 'wip more\n');               // an already-changed file changed again
+  assert.equal(H.changedSince(snap, d), 'changed');
+  fs.writeFileSync(path.join(d, 'a.txt'), 'wip\n');
+  assert.equal(H.changedSince(snap, d), null);
+  fs.writeFileSync(path.join(d, 'new.txt'), 'x\n');                     // a new untracked file
+  assert.equal(H.changedSince(snap, d), 'changed');
+  fs.rmSync(path.join(d, 'new.txt'));
+  H.git(d, ['commit', '-q', '-am', 'during']);                         // a commit
+  assert.equal(H.changedSince(snap, d), 'changed');
+});
+
+test('integration: handoff timeouts reach the receiver, busy/changed aborts, a dropped receiver does not adopt', { timeout: 60000 }, async (t) => {
+  const createTestnet = require('hyperdht/testnet');
+  const DHT = require('hyperdht');
+  const testnet = await createTestnet(3);
+  t.after(() => testnet.destroy());
+  const a = new Link({ keyPair: DHT.keyPair(), name: 'Studio', bootstrap: testnet.bootstrap });
+  const b = new Link({ keyPair: DHT.keyPair(), name: 'Laptop', bootstrap: testnet.bootstrap });
+  t.after(() => Promise.all([a.destroy(), b.destroy()]));
+  const until = (fn, ms = 20000) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => { const v = fn(); if (v) return resolve(v); if (Date.now() - t0 > ms) return reject(new Error('timeout')); setTimeout(tick, 20); };
+    tick();
+  });
+  const { code } = await a.invite();
+  await b.join(code);
+  await until(() => a.view().devices[0]?.online && b.view().devices[0]?.online);
+  b.setAllowHandoff(a.pub, true);
+  const pack = Buffer.from(JSON.stringify({ v: 1, dir: '/x/p', settings: {}, sessionIds: [], files: [] }));
+  const offer = { name: 'p', dir: '/x/p', git: { mode: 'remote', wip: 'agent-office/handoff-20261020100000123', base: 'b'.repeat(40), root: 'c'.repeat(40), branch: 'main', remote: 'https://example.com/r.git' } };
+
+  // 1. the sender's answer timeout is told to the receiver: its offer card goes away
+  const r1 = await a.offerHandoff(b.pub, offer, { pack }, { answerMs: 300 });
+  assert.deepEqual(r1, { ok: false, reason: 'timeout' });
+  await until(() => b.handoffsIn.size === 0);
+
+  // 2. the receiver's own timer: an offer nobody answers is declined with timeout
+  b.handoffAskMs = 300;
+  const r2 = await a.offerHandoff(b.pub, offer, { pack });
+  assert.deepEqual(r2, { ok: false, reason: 'timeout' });
+  assert.equal(b.handoffsIn.size, 0);
+  b.handoffAskMs = 10 * 60 * 1000;
+
+  // 3. busy / changed just before sending: aborted, nothing sent, the receiver drops it
+  const onOffer = ({ offer: o }) => b.answerHandoff(o.id, true);
+  b.on('handoff-offer', onOffer);
+  let gotData = false;
+  const onData = () => { gotData = true; };
+  b.on('handoff-data', onData);
+  const r3 = await a.offerHandoff(b.pub, offer, { pack }, { beforeSend: async () => 'changed' });
+  assert.deepEqual(r3, { ok: false, reason: 'changed' });
+  await until(() => b.handoffsIn.size === 0);
+  assert.equal(gotData, false);
+  b.off('handoff-data', onData);
+
+  // 4. the sender times out while the receiver applies: unknown on the sender, alive() false on the receiver (no
+  //    adopt), and the receiver's result arrives late
+  let pending = null;
+  b.on('handoff-data', (x) => { pending = x; });
+  const late = new Promise((resolve) => a.once('handoff-late-result', resolve));
+  const r4 = await a.offerHandoff(b.pub, offer, { pack }, { resultMs: 500 });
+  assert.equal(r4.ok, false);
+  assert.equal(r4.reason, 'timeout');
+  assert.equal(r4.unknown, true);
+  assert.match(r4.id, /^[0-9a-f]{16}$/);
+  assert.equal(a.view().handoffs.out.at(-1).stage, 'unknown');
+  await until(() => pending && pending.alive() === false);
+  pending.done({ ok: false, reason: 'cancelled' });
+  const lr = await late;
+  assert.equal(lr.id, r4.id);
+  assert.equal(lr.ok, false);
+  assert.equal(b.handoffsIn.size, 0);
+});
