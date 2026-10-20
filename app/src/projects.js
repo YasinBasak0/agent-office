@@ -233,8 +233,9 @@ const BOSS_MODELS_BY_ENGINE = {
   claude: BOSS_MODELS,
   agy: ['flash', 'pro'],
   commandcode: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'deepseek/deepseek-v4-flash'],
+  opencode: ['opencode/big-pickle'], // v3.40: `-m provider/model`; OpenCode's free model, no login needed
 };
-const bossModelValue = (v, engine) => ((BOSS_MODELS_BY_ENGINE[engineValue(engine) || 'claude']).includes(v) ? v : null);
+const bossModelValue = (v, engine) => ((BOSS_MODELS_BY_ENGINE[engineValue(engine) || 'claude'] || []).includes(v) ? v : null);
 // normalizeState keeps a model valid for ANY engine (switching back finds it again); only the launch args check the active engine
 const anyEngineBossModel = (v) => Object.values(BOSS_MODELS_BY_ENGINE).some((l) => l.includes(v));
 const withBossModel = (v) => (anyEngineBossModel(v) ? { bossModel: v } : {});
@@ -254,11 +255,12 @@ function setProjectBossModel(state, id, value) {
 /** The model the project pins its boss session to (for its engine), or null (Auto). */
 const bossModelOf = (project) => bossModelValue(project?.bossModel, project?.engine);
 
-/** The boss model's launch arguments for the project's engine: claude and agy `--model <v>`, Command Code `-m <id>`; [] for Auto. */
+/** The boss model's launch arguments for the project's engine: claude and agy `--model <v>`, Command Code and OpenCode `-m <id>`; [] for Auto. */
 const bossModelArgs = (project) => {
   const v = bossModelOf(project);
   if (!v) return [];
-  return engineValue(project?.engine) === 'commandcode' ? ['-m', v] : ['--model', v];
+  const e = engineValue(project?.engine);
+  return e === 'commandcode' || e === 'opencode' ? ['-m', v] : ['--model', v];
 };
 
 // --- per-project subagent model (contract v3.14)

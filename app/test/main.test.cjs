@@ -3717,9 +3717,54 @@ test('OpenCode motoru (v3.40): engine değeri, ocArgs, ocEnv izin listesi, başl
     PATH: '/b', HOME: '/h', XDG_DATA_HOME: '/d', LC_ALL: 'tr_TR', OPENCODE_CONFIG: '/c', OPENAI_API_KEY: 'k', GEMINI_API_KEY: 'g',
     ANTHROPIC_API_KEY: 'a', CLAUDE_CONFIG_DIR: '/x', AGENT_OFFICE_HOME: '/o', MY_MCP_API_KEY: 'm', SECRET: 's', AGY_ADC_AUTH: 'true',
   });
-  assert.deepEqual(Object.keys(env).sort(), ['COLORTERM', 'GEMINI_API_KEY', 'HOME', 'LC_ALL', 'OPENAI_API_KEY', 'OPENCODE_CONFIG', 'PATH', 'TERM', 'XDG_DATA_HOME']);
+  assert.deepEqual(Object.keys(env).sort(), ['COLORTERM', 'GEMINI_API_KEY', 'HOME', 'LC_ALL', 'OPENAI_API_KEY', 'OPENCODE_CONFIG',
+    'OPENCODE_DISABLE_CLAUDE_CODE', 'OPENCODE_DISABLE_CLAUDE_CODE_PROMPT', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS', 'PATH', 'TERM', 'XDG_DATA_HOME']);
   assert.match(EN.OC_COMMAND, /exec opencode "\$@"$/);
   assert.equal(EN.OC.bin, 'opencode');
+});
+
+test('OpenCode ortamı (v3.40): yalnız belgelenmiş sağlayıcı anahtarları; Claude Code uyumluluğu kapalı, kullanıcı açamaz', () => {
+  const EN = require('../src/engine.js');
+  const env = EN.ocEnv({
+    PATH: '/b', OPENAI_API_KEY: 'k', OPENROUTER_API_KEY: 'r', GROQ_API_KEY: 'g', MISTRAL_API_KEY: 'm', XAI_API_KEY: 'x',
+    DEEPSEEK_API_KEY: 'd', TOGETHER_API_KEY: 't', GOOGLE_GENERATIVE_AI_API_KEY: 'gg',
+    STRIPE_API_KEY: 's', SENDGRID_API_KEY: 's', DATADOG_API_KEY: 's', ACME_API_KEY: 's', ANTHROPIC_API_KEY: 'a', ANTHROPIC_AUTH_TOKEN: 'a',
+    OPENCODE_DISABLE_CLAUDE_CODE: '0', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false',
+  });
+  for (const k of ['STRIPE_API_KEY', 'SENDGRID_API_KEY', 'DATADOG_API_KEY', 'ACME_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']) assert.equal(k in env, false, k);
+  for (const k of ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'GROQ_API_KEY', 'MISTRAL_API_KEY', 'XAI_API_KEY', 'DEEPSEEK_API_KEY', 'TOGETHER_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY']) assert.equal(typeof env[k], 'string', k);
+  assert.equal(env.OPENCODE_DISABLE_CLAUDE_CODE, '1'); assert.equal(env.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT, '1'); assert.equal(env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS, '1');
+  assert.equal(EN.OC_PROVIDER_KEYS.some((k) => /ANTHROPIC|CLAUDE/.test(k)), false);
+  assert.ok(EN.OC_PROVIDER_KEYS.every((k) => /^[A-Z][A-Z0-9_]+$/.test(k)));
+  // Windows: names compare upper-case, the same result
+  const w = EN.ocEnv({ Path: 'C:\\b', openai_api_key: 'k', stripe_api_key: 's' }, 'win32');
+  assert.equal('openai_api_key' in w, true); assert.equal('stripe_api_key' in w, false); assert.equal(w.OPENCODE_DISABLE_CLAUDE_CODE, '1');
+});
+
+test('OpenCode başlatma satırı ve boss modeli (v3.40, v3.36): launchLine, -m provider/model, eksik tablo çökertmez', () => {
+  const EN = require('../src/engine.js');
+  assert.equal(EN.OC_COMMAND, EN.launchLine('opencode'));
+  assert.equal(EN.CMD_COMMAND, EN.launchLine('commandcode'));
+  assert.equal(EN.AGY_COMMAND, EN.launchLine('agy'));
+  assert.ok(EN.OC_COMMAND.endsWith('exec opencode "$@"')); assert.equal(EN.OC_COMMAND.includes('exec agy'), false);
+  assert.ok(EN.OC_COMMAND.startsWith('for v in $(env | sed -n'));
+  assert.deepEqual(EN.ocArgs({ model: 'opencode/big-pickle' }), ['-m', 'opencode/big-pickle']);
+  assert.deepEqual(EN.ocArgs({ model: 'opencode/big-pickle', resume: true, prompt: 'go' }), ['-m', 'opencode/big-pickle', '--continue', '--prompt', 'go']);
+  // D1 regression: an OpenCode project's boss model lookup must not throw
+  assert.equal(P.bossModelOf({ engine: 'opencode', bossModel: 'opus' }), null);
+  assert.deepEqual(P.bossModelArgs({ engine: 'opencode' }), []);
+  assert.deepEqual(P.bossModelArgs({ engine: 'opencode', bossModel: 'opencode/big-pickle' }), ['-m', 'opencode/big-pickle']);
+  let st = P.normalizeState({ projects: [{ id: 'o', dir: '/o', engine: 'opencode' }] }, { id: 'x' });
+  st = P.setProjectBossModel(st, 'o', 'opencode/big-pickle');
+  assert.equal(P.findProject(st, 'o').bossModel, 'opencode/big-pickle');
+  assert.equal(P.setProjectBossModel(st, 'o', 'pro').projects[0].bossModel, undefined); // agy's tier doesn't fit: Auto
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'main.js'), 'utf8');
+  assert.match(src, /EN\.ocArgs\(\{ resume: isResume, prompt, model: P\.bossModelOf\(project\) \}\)/);
+});
+
+test('OpenCode proje dosyaları (v3.38, v3.40): hiçbir dosya yazılmaz', () => {
+  const PF = require('../src/project-files.js');
+  assert.deepEqual(PF.desiredFiles({ engine: 'opencode', enabled: true, manager: true, agentModel: 'opus' }), []);
 });
 
 test('OpenCode girişi (v3.40): giriş yok normal durum; yalnız sağlayıcı adı ve türü okunur, anahtar asla', () => {

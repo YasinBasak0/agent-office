@@ -1274,11 +1274,11 @@ function startCommandCode(id, { project, tab, dir: cwd }, { resume = false, prom
 // launch line drops what rc files set), and an env from an allowlist (engine.js ocEnv). resume: --continue, only for
 // a tab that continues (main tab, worktree tab); with no session in the folder it simply starts a new one, so no history check. prompt only when resuming.
 // The app watches it one way like agy (src/agy-watch.js, engine 'opencode'), with no transcript. It needs no login: its free models work without one.
-function startOpenCode(id, { tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
+function startOpenCode(id, { project, tab, dir: cwd }, { resume = false, prompt = '' } = {}) {
   removeMcpFile(id); // no MCP or office directory file of an earlier Claude Code start stays behind for this tab
   const { cols, rows } = sizes.get(id) || lastSize;
   const isResume = resume && (!tab || Boolean(tab.worktree));
-  const args = EN.ocArgs({ resume: isResume, prompt });
+  const args = EN.ocArgs({ resume: isResume, prompt, model: P.bossModelOf(project) }); // boss model: v3.36
   const startedAt = Date.now();
   // an allowlist of the user's env (engine.js ocEnv): no Claude, Anthropic, office or MCP variable
   const env = EN.ocEnv(process.env);
