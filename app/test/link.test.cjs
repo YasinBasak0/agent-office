@@ -217,3 +217,222 @@ test('heartbeat: pings keep a quiet session online, a silent peer shows offline 
   assert.ok(took >= heartbeatMs * 2, `offline too early (${took} ms)`);
   assert.ok(took <= heartbeatMs * 3 + 1000, `offline too late (${took} ms)`);
 });
+
+// --- project handoff (contract v3.29)
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const H = require('../src/handoff.js');
+
+Object.assign(process.env, { GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com', GIT_CONFIG_NOSYSTEM: '1' });
+const tmp = (t, name) => { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `ao-ho-${name}-`))); t.after(() => fs.rmSync(d, { recursive: true, force: true })); return d; };
+function repo(t, name) {
+  const d = tmp(t, name);
+  H.git(d, ['init', '-q', '-b', 'main']);
+  fs.writeFileSync(path.join(d, 'a.txt'), 'one\n');
+  fs.writeFileSync(path.join(d, '.gitignore'), 'secret.env\n');
+  H.git(d, ['add', '-A']);
+  H.git(d, ['commit', '-q', '-m', 'first']);
+  return d;
+}
+const state = (d) => ({ head: H.git(d, ['rev-parse', 'HEAD']), branch: H.git(d, ['symbolic-ref', '--short', 'HEAD']), status: H.git(d, ['status', '--porcelain']), index: H.git(d, ['diff', '--cached', '--name-status']), a: fs.readFileSync(path.join(d, 'a.txt'), 'utf8') });
+
+test('handoff: the WIP snapshot leaves the branch, index and working tree unchanged', (t) => {
+  const d = repo(t, 'wip');
+  fs.writeFileSync(path.join(d, 'a.txt'), 'one\ntwo\n');        // modified
+  fs.writeFileSync(path.join(d, 'new.txt'), 'new\n');           // untracked
+  fs.writeFileSync(path.join(d, 'secret.env'), 'KEY=1\n');      // ignored
+  fs.writeFileSync(path.join(d, 'staged.txt'), 'staged\n');
+  H.git(d, ['add', 'staged.txt']);
+  const before = state(d);
+  const snap = H.snapshotWip(d, { now: () => Date.UTC(2026, 9, 20, 10, 0, 0) });
+  assert.match(snap.wip, /^agent-office\/handoff-20261020100000/);
+  assert.deepEqual(state(d), before);
+  assert.equal(H.git(d, ['show', `${snap.wip}:a.txt`]), 'one\ntwo');
+  assert.equal(H.git(d, ['show', `${snap.wip}:new.txt`]), 'new');
+  assert.equal(H.git(d, ['show', `${snap.wip}:staged.txt`]), 'staged');
+  assert.throws(() => H.git(d, ['show', `${snap.wip}:secret.env`]));
+  assert.equal(H.git(d, ['rev-parse', `${snap.wip}^`]), before.head);
+  assert.equal(snap.base, before.head);
+  assert.equal(snap.branch, 'main');
+  assert.ok(!fs.readdirSync(path.join(d, '.git')).some((f) => f.includes('handoff') && f.endsWith('.index')));
+});
+
+test('handoff: bundle round trip between two repos; restored only when clean on the same commit', async (t) => {
+  const a = repo(t, 'src');
+  fs.writeFileSync(path.join(a, 'a.txt'), 'changed\n');
+  fs.writeFileSync(path.join(a, 'b.txt'), 'b\n');
+  const snap = H.snapshotWip(a);
+  const bundle = H.createBundle(snap, tmp(t, 'bundles'));
+  assert.ok(bundle.length > 0);
+  const g = { mode: 'bundle', wip: snap.wip, base: snap.base, root: snap.root, branch: snap.branch, remote: '' };
+  const file = path.join(tmp(t, 'f'), 'x.bundle');
+  fs.writeFileSync(file, bundle);
+  // a fresh folder: the sender's branch at its base, the WIP as uncommitted changes
+  const fresh = path.join(tmp(t, 'dst'), 'proj');
+  await H.receiveCode(fresh, g, file);
+  assert.equal(H.restoreWip(fresh, g), 'restored');
+  assert.equal(H.git(fresh, ['symbolic-ref', '--short', 'HEAD']), 'main');
+  assert.equal(H.git(fresh, ['rev-parse', 'HEAD']), snap.base);
+  assert.equal(fs.readFileSync(path.join(fresh, 'a.txt'), 'utf8'), 'changed\n');
+  assert.equal(fs.readFileSync(path.join(fresh, 'b.txt'), 'utf8'), 'b\n');
+  assert.match(H.git(fresh, ['status', '--porcelain']), /M a\.txt/);
+  // a clone with local changes keeps them: only the branch arrives
+  const dirty = tmp(t, 'dirty');
+  H.git(dirty, ['clone', '-q', a, '.']);
+  fs.writeFileSync(path.join(dirty, 'a.txt'), 'mine\n');
+  assert.ok(H.sameRepo(dirty, g));
+  await H.receiveCode(dirty, g, file);
+  assert.equal(H.restoreWip(dirty, g), 'branch-only');
+  assert.equal(fs.readFileSync(path.join(dirty, 'a.txt'), 'utf8'), 'mine\n');
+  assert.equal(H.git(dirty, ['rev-parse', snap.wip]), snap.commit);
+  // a different repository is not the same repo; a non-empty foreign folder is refused
+  const other = repo(t, 'other');
+  H.git(other, ['commit', '-q', '--allow-empty', '-m', 'x']);
+  const otherRoot = H.gitInfo(other).root;
+  assert.equal(H.sameRepo(other, { ...g, root: otherRoot === g.root ? 'f'.repeat(40) : g.root }), false);
+  const junk = tmp(t, 'junk');
+  fs.writeFileSync(path.join(junk, 'x'), '1');
+  await assert.rejects(H.receiveCode(junk, g, file), /not-empty/);
+  assert.equal(H.defaultTarget({ dir: junk, git: g }), null);
+});
+
+test('handoff: slugs, path rewrite, settings and remote URLs', () => {
+  assert.equal(H.slugOf('/Users/me/my proj'), '-Users-me-my-proj');
+  const line = JSON.stringify({ cwd: '/Users/me/proj', file: '/Users/me/proj/src/a.js', other: '/Users/me/project2/x', note: 'in /Users/me/proj, ok' });
+  const out = JSON.parse(H.rewritePaths(line, '/Users/me/proj', '/home/me/work/proj'));
+  assert.equal(out.cwd, '/home/me/work/proj');
+  assert.equal(out.file, '/home/me/work/proj/src/a.js');
+  assert.equal(out.other, '/Users/me/project2/x');
+  assert.equal(out.note, 'in /home/me/work/proj, ok');
+  assert.equal(H.rewritePaths('C:\\\\a\\\\b', 'C:\\a\\b', 'D:\\c'), 'D:\\\\c');
+  assert.deepEqual(H.cleanSettings({ manager: true, savings: { cache: 1 }, accountId: 'x', oauthAccount: { k: 1 }, primaryApiKey: 'sk' }), { manager: true, savings: { cache: 1 } });
+  assert.equal(H.safeRemote('https://user:ghp_token@github.com/a/b.git'), 'https://github.com/a/b.git');
+  assert.equal(H.safeRemote('git@github.com:a/b.git'), 'git@github.com:a/b.git');
+});
+
+test('handoff: paths outside the target folders are rejected, whole pack', (t) => {
+  for (const bad of ['../x', '/etc/passwd', 'a/../../b', 'a\\..\\b', 'C:/x', '', 'a//b', './a', 'a\0b']) assert.equal(H.safeRel(bad), false, bad);
+  assert.equal(H.inside('/base', '../x'), null);
+  assert.equal(H.inside('/base', 'a/b.jsonl'), path.resolve('/base/a/b.jsonl'));
+  const pack = (files) => Buffer.from(JSON.stringify({ v: 1, dir: '/old', settings: {}, sessionIds: ['s1'], files }));
+  const ok = { area: 'projects', rel: 's1.jsonl', data: Buffer.from('{"cwd":"/old"}\n').toString('base64') };
+  assert.ok(H.parsePack(pack([ok])));
+  assert.equal(H.parsePack(pack([ok, { area: 'projects', rel: '../../.credentials.json', data: '' }])), null);
+  assert.equal(H.parsePack(pack([{ area: 'home', rel: 'x', data: '' }])), null);
+  assert.equal(H.parsePack(pack([{ area: 'facts', rel: 'other.md', data: '' }])), null);
+  assert.equal(H.parsePack(Buffer.from('{"v":1,"dir":"/old","files":[],"sessionIds":["../x"]}')), null);
+  assert.equal(H.parsePack(Buffer.from('nope')), null);
+  // pack → write: under the new slug, paths rewritten, a continued transcript replaces, a foreign one gets lines
+  const root = tmp(t, 'cfg');
+  const src = path.join(root, 'projects', H.slugOf('/old'));
+  fs.mkdirSync(path.join(src, 's1', 'subagents'), { recursive: true });
+  fs.writeFileSync(path.join(src, 's1.jsonl'), '{"cwd":"/old"}\n');
+  fs.writeFileSync(path.join(src, 's1', 'subagents', 'agent-1.jsonl'), '{"cwd":"/old/sub"}\n');
+  fs.writeFileSync(path.join(src, 'other.jsonl'), 'not sent\n');
+  const mem = path.join(root, 'mem');
+  fs.mkdirSync(mem);
+  fs.writeFileSync(path.join(mem, 'MEMORY.md'), '- see /old/README\n');
+  const facts = path.join(root, 'facts.md');
+  fs.writeFileSync(facts, '# old: facts\n');
+  fs.writeFileSync(path.join(root, '.credentials.json'), '{"secret":1}');
+  const buf = H.packSession({ root, dir: '/old', sessionIds: ['s1', 'missing', '../x'], memoryDir: mem, factsFile: facts, settings: { manager: true } });
+  assert.ok(!buf.toString().includes('secret'));
+  const p = H.parsePack(buf);
+  assert.deepEqual(p.sessionIds, ['s1']);
+  const dst = tmp(t, 'cfg2');
+  const r = H.writeSession(p, { from: '/old', to: '/new/place', root: dst, memoryDir: path.join(dst, 'm'), factsFile: path.join(dst, 'f', 'place.md') });
+  assert.equal(r.written, 4);
+  const slug = path.join(dst, 'projects', H.slugOf('/new/place'));
+  assert.equal(fs.readFileSync(path.join(slug, 's1.jsonl'), 'utf8'), '{"cwd":"/new/place"}\n');
+  assert.equal(fs.readFileSync(path.join(slug, 's1', 'subagents', 'agent-1.jsonl'), 'utf8'), '{"cwd":"/new/place/sub"}\n');
+  assert.ok(!fs.existsSync(path.join(slug, 'other.jsonl')));
+  assert.equal(fs.readFileSync(path.join(dst, 'm', 'MEMORY.md'), 'utf8'), '- see /new/place/README\n');
+  assert.equal(fs.readFileSync(path.join(dst, 'f', 'place.md'), 'utf8'), '# old: facts\n');
+  assert.throws(() => H.writeSession({ files: [{ area: 'projects', rel: '../evil', data: '' }] }, { from: '/a', to: '/b', root: dst, memoryDir: dst, factsFile: path.join(dst, 'x') }), /bad-path/);
+});
+
+test('handoff: refusals (busy, engine, not git, offline) and the offer schema', () => {
+  assert.equal(H.refusal({ engine: 'claude', git: true, busy: true, online: true }), 'busy');
+  assert.equal(H.refusal({ engine: 'agy', git: true, online: true }), 'engine');
+  assert.equal(H.refusal({ engine: 'claude', git: false, online: true }), 'not-git');
+  assert.equal(H.refusal({ engine: 'claude', git: true, online: false }), 'offline');
+  assert.equal(H.refusal({ engine: 'claude', git: true, busy: false, online: true }), null);
+  const sha = 'a'.repeat(64);
+  const offer = { t: 'ho-offer', id: 'abc', name: 'shop', dir: '/x/shop', engine: 'claude', git: { mode: 'bundle', wip: 'agent-office/handoff-20261020100000123', base: 'b'.repeat(40), root: 'c'.repeat(40), branch: 'main', remote: '' }, pack: { size: 10, sha }, bundle: { size: 10, sha } };
+  assert.ok(C.validateMessage(offer));
+  assert.equal(C.validateMessage({ ...offer, engine: 'agy' }), null);
+  assert.equal(C.validateMessage({ ...offer, git: { ...offer.git, wip: 'main' } }), null);
+  assert.equal(C.validateMessage({ ...offer, git: { ...offer.git, branch: '--upload-pack=x' } }), null);
+  assert.equal(C.validateMessage({ ...offer, git: { ...offer.git, branch: 'a/../b' } }), null);
+  assert.equal(C.validateMessage({ ...offer, git: { ...offer.git, mode: 'remote', remote: '-oProxy=x' } }), null);
+  assert.equal(C.validateMessage({ ...offer, bundle: { size: C.MAX_BUNDLE + 1, sha } }), null);
+  assert.equal(C.validateMessage({ ...offer, bundle: null }), null);                 // bundle mode needs a bundle
+  assert.equal(C.validateMessage({ t: 'ho-chunk', id: 'abc', part: 'pack', seq: 0, data: 'not base64!' }), null);
+  assert.equal(C.validateMessage({ t: 'ho-chunk', id: 'abc', part: 'pack', seq: 0, data: 'A'.repeat(C.CHUNK * 2) }), null);
+  assert.equal(C.validateMessage({ t: 'ho-result', id: 'abc', ok: false, reason: 'whatever' }), null);
+  assert.ok(C.encode({ t: 'ho-chunk', id: 'abc', part: 'bundle', seq: 99999, data: Buffer.alloc(C.CHUNK, 255).toString('base64') }));
+  assert.deepEqual(C.normalizeDevices([{ pub: pubA, name: 'x', allowHandoff: 'yes' }])[0].allowHandoff, false);
+});
+
+test('integration: a full handoff over the link (opt-in refused first, then bundle + sessions applied)', { timeout: 60000 }, async (t) => {
+  const createTestnet = require('hyperdht/testnet');
+  const DHT = require('hyperdht');
+  const testnet = await createTestnet(3);
+  t.after(() => testnet.destroy());
+  const a = new Link({ keyPair: DHT.keyPair(), name: 'Studio', bootstrap: testnet.bootstrap });
+  const b = new Link({ keyPair: DHT.keyPair(), name: 'Laptop', bootstrap: testnet.bootstrap });
+  t.after(() => Promise.all([a.destroy(), b.destroy()]));
+  const until = (fn, ms = 20000) => new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => { const v = fn(); if (v) return resolve(v); if (Date.now() - t0 > ms) return reject(new Error('timeout')); setTimeout(tick, 20); };
+    tick();
+  });
+  const { code } = await a.invite();
+  await b.join(code);
+  await until(() => a.view().devices[0]?.online && b.view().devices[0]?.online);
+
+  // the sender's project: a repo with uncommitted work, a transcript, ~200 KB of history to need many chunks
+  const src = repo(t, 'proj');
+  fs.writeFileSync(path.join(src, 'big.bin'), crypto.randomBytes(200 * 1024));
+  H.git(src, ['add', '-A']);
+  H.git(src, ['commit', '-q', '-m', 'big']);
+  fs.writeFileSync(path.join(src, 'a.txt'), 'wip\n');
+  const cfgA = tmp(t, 'cfgA');
+  fs.mkdirSync(path.join(cfgA, 'projects', H.slugOf(src)), { recursive: true });
+  fs.writeFileSync(path.join(cfgA, 'projects', H.slugOf(src), 'sess-1.jsonl'), `${JSON.stringify({ cwd: src, sessionId: 'sess-1' })}\n`);
+  const before = state(src);
+  const snap = H.snapshotWip(src);
+  assert.deepEqual(state(src), before);
+  const bundle = H.createBundle(snap, tmp(t, 'b'));
+  const pack = H.packSession({ root: cfgA, dir: src, sessionIds: ['sess-1'], settings: { manager: true } });
+  const offer = { name: 'proj', dir: src, git: { mode: 'bundle', wip: snap.wip, base: snap.base, root: snap.root, branch: snap.branch, remote: '' } };
+
+  // opt-in: b has not allowed handoffs from a
+  const refused = await a.offerHandoff(b.pub, offer, { pack, bundle });
+  assert.deepEqual(refused, { ok: false, reason: 'not-allowed' });
+  b.setAllowHandoff(a.pub, true);
+
+  // b accepts and applies into a new folder under its own config dir
+  const dstParent = tmp(t, 'dst');
+  const dst = path.join(dstParent, 'proj');
+  const cfgB = tmp(t, 'cfgB');
+  b.on('handoff-offer', ({ offer: o }) => { assert.equal(o.name, 'proj'); b.answerHandoff(o.id, true); });
+  b.on('handoff-data', async ({ offer: o, parts, done }) => {
+    const file = path.join(dstParent, 'in.bundle');
+    fs.writeFileSync(file, parts.bundle);
+    await H.receiveCode(dst, o.git, file);
+    const applied = H.restoreWip(dst, o.git);
+    H.writeSession(H.parsePack(parts.pack), { from: o.dir, to: dst, root: cfgB, memoryDir: path.join(cfgB, 'mem'), factsFile: path.join(cfgB, 'facts.md') });
+    done({ ok: true, applied });
+  });
+  const r = await a.offerHandoff(b.pub, offer, { pack, bundle });
+  assert.deepEqual(r, { ok: true, applied: 'restored' });
+  assert.equal(a.view().handoffs.out.at(-1).stage, 'done');
+  assert.equal(b.view().handoffs.in.length, 0);
+  assert.equal(fs.readFileSync(path.join(dst, 'a.txt'), 'utf8'), 'wip\n');
+  assert.ok(fs.readFileSync(path.join(dst, 'big.bin')).equals(fs.readFileSync(path.join(src, 'big.bin'))));
+  const moved = JSON.parse(fs.readFileSync(path.join(cfgB, 'projects', H.slugOf(dst), 'sess-1.jsonl'), 'utf8'));
+  assert.equal(moved.cwd, dst);
+
+});

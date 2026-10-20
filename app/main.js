@@ -1125,7 +1125,81 @@ function startLink() {
     projects: () => state.projects.map((p) => ({ id: p.id, name: p.name, engine: P.engineOf(p) })),
     tabState: linkTabState,
     type: typePrompt,
+    handoff: handoffDeps(),
   });
+}
+// --- project handoff (v3.29, src/handoff.js + src/link-host.js): what main knows about a project's tabs and files
+function handoffMemoryDir(configDir, home, dir) {
+  const base = M.memoryBase(dir);
+  return M.sharedMemoryDir({ configDir, home, base }) || path.join(PD.claudeRoot(configDir, home), 'projects', M.memorySlug(base) || base.replace(/[^a-zA-Z0-9]/g, '-'), 'memory');
+}
+const factsFileOf = (home, dir) => path.join(home, '.claude', 'agent-office', 'facts', `${path.basename(dir)}.md`);
+function handoffDeps() {
+  const home = app.getPath('home');
+  return {
+    describe(projectId) {
+      const p = P.findProject(state, projectId);
+      if (!p) return null;
+      const { configDir } = A.accountOf(state, p);
+      const ids = P.ptyIdsOf(p);
+      const sessionIds = [];
+      for (const id of ids) {
+        const t = terms.get(id);
+        const sid = validSid((t && readJson(Z.claudePidFile(configDir, home, t.pid))?.sessionId) || lastSid.get(id)) || (id === p.id ? validSid(TIO.newestSession(p.dir, configDir, home)) : null);
+        if (sid && !sessionIds.includes(sid)) sessionIds.push(sid);
+      }
+      return {
+        name: p.name, dir: p.dir, engine: P.engineOf(p), root: PD.claudeRoot(configDir, home), sessionIds,
+        busy: ids.some((id) => {
+          const t = terms.get(id);
+          if (!t) return false;
+          const c = readJson(Z.claudePidFile(configDir, home, t.pid));
+          const sid = validSid(c?.sessionId);
+          return !c || R.isTurnBusy({ claude: c, office: sid ? office()?.readSession(sid) : undefined }) || attention.get(id) === 'permission';
+        }),
+        memoryDir: handoffMemoryDir(configDir, home, p.dir), factsFile: factsFileOf(home, p.dir),
+        settings: { manager: p.manager, bossModel: p.bossModel, agentModel: p.agentModel, contextCap: p.contextCap, savings: p.savings, engine: p.engine },
+      };
+    },
+    release(projectId) {
+      const p = P.findProject(state, projectId);
+      if (!p) return;
+      for (const pid of P.ptyIdsOf(p)) { killPty(pid); asleep.delete(pid); sizes.delete(pid); }
+      commit(P.removeProject(state, projectId));
+    },
+    target(dir) {
+      const active = P.findProject(state, state.activeId);
+      const configDir = active ? A.accountOf(state, active).configDir : null;
+      return { root: PD.claudeRoot(configDir, home), memoryDir: handoffMemoryDir(configDir, home, dir), factsFile: factsFileOf(home, dir) };
+    },
+    adopt({ dir, settings, sessionIds }) {
+      const active = P.findProject(state, state.activeId);
+      const r = P.addProject(state, dir, active ? { accountId: active.accountId } : {});
+      let next = { ...r.state, projects: r.state.projects.map((x) => (x.id === r.project.id ? { ...x, ...settings } : x)) };
+      next = { ...next, ...P.normalizeState(next) };
+      const tabs = [];
+      for (const sid of sessionIds.slice(1, 8)) {
+        const n = P.nextTabNumber(P.findProject(next, r.project.id));
+        next = P.addTab(next, r.project.id, { n });
+        tabs.push([`${r.project.id}:${n}`, sid]);
+      }
+      commit(next);
+      if (!terms.has(r.project.id)) startPty(r.project.id, sessionIds[0] ? { sessionId: sessionIds[0], imported: true } : {});
+      for (const [id, sid] of tabs) startPty(id, { sessionId: sid, imported: true });
+    },
+    pickFolder: async (defaultPath) => {
+      const r = await dialog.showOpenDialog(win, { title: T('main.handoffPickFolder'), buttonLabel: T('main.pickButton'), properties: ['openDirectory', 'createDirectory'], defaultPath: path.dirname(defaultPath) });
+      return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+    },
+  };
+}
+async function handOffProject(projectId, device) {
+  const p = P.findProject(state, projectId);
+  if (!p || !linkHost || !win) return;
+  const ok = await dialog.showMessageBox(win, { type: 'question', buttons: [T('main.handoffGo'), T('main.cancel')], defaultId: 0, cancelId: 1, message: T('main.handoffConfirm', { project: p.name, device: device.name }), detail: T('main.handoffDetail') });
+  if (ok.response !== 0) return;
+  const r = await linkHost.handOff(device.id, projectId);
+  if (!r.ok) dialog.showMessageBox(win, { type: 'warning', message: T('main.handoffFailed', { project: p.name, device: device.name }), detail: T(`main.handoffReason.${r.reason}`) });
 }
 // close the link before exiting so paired devices see this one go offline at once, not after the heartbeat (≤ 1 s)
 let linkClosed = false;
@@ -1944,12 +2018,23 @@ function importResumeFailed(sessionId, configDir) {
 // the sidebar's "Resume unfinished work" button (v3.8); the menu item sends the result as work:resumed
 ipcMain.handle('work:resumeUnfinished', () => resumeUnfinished());
 
+// "Hand off to <device>" (v3.29): Claude Code projects only; paired devices, offline ones disabled
+function handoffMenu(p) {
+  const devices = linkHost?.devices() || [];
+  if (!devices.length) return [];
+  const claude = P.engineOf(p) === 'claude';
+  return [{
+    label: T('main.handoffTo'), enabled: claude, ...(claude ? {} : { toolTip: T('main.handoffClaudeOnly'), sublabel: T('main.handoffClaudeOnly') }),
+    submenu: devices.map((dv) => ({ label: dv.name, enabled: claude && dv.online, click: () => { handOffProject(p.id, dv).catch((e) => console.error('handoff:', e.message)); } })),
+  }];
+}
 // right click on a project in the sidebar
 ipcMain.handle('projects:menu', (_e, id) => {
   const p = P.findProject(state, id);
   if (!p || !win) return;
   Menu.buildFromTemplate([
     { label: T('main.moveSession'), enabled: P.engineOf(p) === 'claude', click: () => exportSession(p.id) },
+    ...handoffMenu(p),
     { type: 'separator' },
     { label: T('main.openSessionFile'), click: () => importSession(null) },
   ]).popup({ window: win });

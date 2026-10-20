@@ -457,7 +457,32 @@
     "fallbackReturned": "{to} hesabının limiti sıfırlandı, {from} hesabından {to} hesabına geri dönüldü",
     "fallbackStuck": "{from} hesabının limiti doldu; devam edecek yedek hesap yok (giriş yapılmamış ya da onun da limiti dolu)",
     "fallbackLoop": "{from} hesabının limiti doldu, ama bu proje son zamanda birkaç kez hesap değiştirdi; {from} hesabında kalınıyor",
-    "linkApproval": "{device}: {project} onay bekliyor"
+    "linkApproval": "{device}: {project} onay bekliyor",
+    "handoffTo": "Şuna devret",
+    "handoffClaudeOnly": "Yalnız Claude Code projeleri",
+    "handoffGo": "Devret",
+    "handoffConfirm": "{project} projesi {device} cihazına devredilsin mi?",
+    "handoffDetail": "Kaydedilmemiş değişiklikler yeni bir agent-office/handoff-… dalına gider (dalınız ve dosyalarınız olduğu gibi kalır), uzak depoya gönderilir ya da doğrudan aktarılır. Oturumlar, hafıza ve ayarlar da gider. Proje bundan sonra diğer cihazda çalışır; burada kapanır ve uzak proje olarak görünür.",
+    "handoffFailed": "{project}, {device} cihazına devredilemedi",
+    "handoffReason": {
+      "declined": "reddetti",
+      "not-allowed": "orada bu cihazdan devir kapalı",
+      "busy": "projenin bir sekmesi çalışıyor: bekleyin ya da durdurun",
+      "engine": "yalnız Claude Code projeleri",
+      "not-git": "klasör bir git deposu değil",
+      "offline": "cihaz çevrimdışı ya da bağlantı koptu",
+      "too-large": "veri izin verilenden büyük (kod 200 MB, oturumlar 100 MB)",
+      "bad-data": "veri bozuk biçimli",
+      "checksum": "veri bozuk geldi (sağlama toplamı)",
+      "apply-failed": "diğer cihaz uygulayamadı (oradaki handoff.log dosyasına bakın)",
+      "timeout": "zamanında yanıt gelmedi",
+      "in-progress": "orada başka bir devir sürüyor",
+      "cancelled": "klasör seçilmedi",
+      "unknown-project": "böyle bir proje yok"
+    },
+    "handoffOffer": "{device} size {project} projesini devretmek istiyor",
+    "handoffBranchOnly": "{project}: klasörde başka değişiklikler vardı, iş {branch} dalında",
+    "handoffPickFolder": "Devredilen proje için klasör"
   },
   "auth": {
     "unreadable": "giriş durumu okunamadı",
@@ -583,6 +608,21 @@
       "no-keychain": "Cihaz anahtarlarını güvenle saklayacak sistem anahtarlığı yok: cihaz bağlantısı kapalı",
       "keys": "Cihaz anahtarları okunamadı: cihaz bağlantısı kapalı",
       "off": "Kapalı"
+    },
+    "allowHandoff": "Bu cihazdan devirleri kabul et",
+    "handedOff": "{project} → {device}",
+    "handedOffTitle": "Devredildi",
+    "handoff": {
+      "offer": "{device} size {project} projesini devretmek istiyor",
+      "accept": "Kabul et",
+      "decline": "Reddet",
+      "asking": "yanıt bekleniyor",
+      "sending": "gönderiliyor %{pct}",
+      "receiving": "alınıyor %{pct}",
+      "applying": "uygulanıyor",
+      "done": "devredildi",
+      "failed": "başarısız: {reason}",
+      "out": "{project} → {device}"
     }
   }
 }

@@ -33,6 +33,8 @@ class Link extends EventEmitter {
     this.seq = 0;
     this.pubTimer = null;
     this.lastPub = 0;
+    this.handoffsOut = new Map(); // v3.29 projects this device hands off: id → record
+    this.handoffsIn = new Map();  // projects offered to this device: id → record
     this.destroyed = false;
   }
 
@@ -154,7 +156,7 @@ class Link extends EventEmitter {
   }
 
   addDevice(pub, name, secret) {
-    const device = { pub, name: C.deviceName(name), addedAt: this.now(), allowCommands: false };   // commands OFF by default
+    const device = { pub, name: C.deviceName(name), addedAt: this.now(), allowCommands: false, allowHandoff: false };   // both OFF by default
     this.devices = [...this.devices.filter((d) => d.pub !== pub), device];
     this.secrets[pub] = secret;
     this.swarm?.join(C.pairTopic(secret), { server: true, client: true });
@@ -186,6 +188,8 @@ class Link extends EventEmitter {
       this.remotes.delete(device.pub);
       // its answers came on this connection: a command still sent or queued will never hear its outcome
       for (const o of this.outgoing) if (o.pub === device.pub && (o.status === 'sent' || o.status === 'queued')) o.status = 'unknown';
+      for (const h of this.handoffsOut.values()) if (h.pub === device.pub) h.finish?.({ ok: false, reason: 'offline' });
+      for (const h of [...this.handoffsIn.values()]) if (h.pub === device.pub) this.dropIn(h, 'offline', false);
       this.emit('change');
     });
     this.write(conn, { t: 'hello', v: C.PROTOCOL, name: this.name });
@@ -210,7 +214,117 @@ class Link extends EventEmitter {
     } else if (m.t === 'cmd-status') {
       const o = this.outgoing.find((x) => x.id === m.id && x.pub === d.pub);
       if (o) { o.status = m.status; o.reason = m.reason; this.emit('change'); }
+    } else if (m.t === 'ho-offer') {
+      this.receiveOffer(conn, d, m);
+    } else if (m.t === 'ho-chunk') {
+      this.receiveChunk(d, m);
+    } else if (m.t === 'ho-answer' || m.t === 'ho-result') {
+      const h = this.handoffsOut.get(m.id);
+      if (h && h.pub === d.pub) (m.t === 'ho-answer' ? h.onAnswer : h.onResult)?.(m);
     }
+  }
+
+  // --- project handoff (v3.29): offer → answer → chunks (pack, then bundle) → result
+
+  /**
+   * Offers a project to a paired device and, once accepted, sends its data. Resolves with the receiver's result.
+   * @param {string} pub @param {{ name: string, dir: string, git: any }} offer @param {{ pack: Buffer, bundle?: Buffer | null }} parts
+   * @returns {Promise<{ ok: boolean, reason?: string, applied?: string }>}
+   */
+  offerHandoff(pub, offer, parts, { answerMs = 10 * 60 * 1000, resultMs = 60 * 60 * 1000 } = {}) {
+    const conn = this.conns.get(pub);
+    if (!conn) return Promise.resolve({ ok: false, reason: 'offline' });
+    const id = crypto.randomBytes(8).toString('hex');
+    const sum = (b) => (b ? { size: b.length, sha: crypto.createHash('sha256').update(b).digest('hex') } : null);
+    const h = { id, pub, name: C.cleanLine(offer.name, 60), stage: 'asking', sent: 0, total: parts.pack.length + (parts.bundle?.length || 0), at: this.now() };
+    this.handoffsOut.set(id, h);
+    return new Promise((resolve) => {
+      let timer = setTimeout(() => h.finish({ ok: false, reason: 'timeout' }), answerMs);
+      h.finish = (r) => {
+        if (h.done) return;
+        h.done = true;
+        clearTimeout(timer);
+        Object.assign(h, { stage: r.ok ? 'done' : 'failed', reason: r.reason, applied: r.applied });
+        this.emit('change');
+        resolve(r);
+      };
+      h.onAnswer = async (m) => {
+        if (!m.ok) return h.finish({ ok: false, reason: m.reason || 'declined' });
+        if (h.stage !== 'asking') return;
+        clearTimeout(timer);
+        timer = setTimeout(() => h.finish({ ok: false, reason: 'timeout' }), resultMs);
+        h.stage = 'sending';
+        this.emit('change');
+        try {
+          await this.stream(conn, h, 'pack', parts.pack);
+          if (parts.bundle) await this.stream(conn, h, 'bundle', parts.bundle);
+          if (!h.done) { h.stage = 'applying'; this.emit('change'); }
+        } catch { h.finish({ ok: false, reason: 'offline' }); }
+      };
+      h.onResult = (m) => h.finish({ ok: m.ok, ...(m.reason ? { reason: m.reason } : {}), ...(m.applied ? { applied: m.applied } : {}) });
+      this.write(conn, { t: 'ho-offer', id, name: offer.name, dir: offer.dir, engine: 'claude', git: offer.git, pack: sum(parts.pack), bundle: sum(parts.bundle) });
+      this.emit('change');
+    });
+  }
+  async stream(conn, h, part, buf) {
+    let last = 0;
+    for (let off = 0, seq = 0; off < buf.length; off += C.CHUNK, seq++) {
+      if (conn.destroyed || h.done) throw new Error('closed');
+      const line = C.encode({ t: 'ho-chunk', id: h.id, part, seq, data: buf.subarray(off, off + C.CHUNK).toString('base64') });
+      if (!conn.write(line)) await new Promise((r) => { const go = () => { conn.off('drain', go); conn.off('close', go); r(); }; conn.on('drain', go); conn.on('close', go); });
+      h.sent += Math.min(C.CHUNK, buf.length - off);
+      if (this.now() - last > 250) { last = this.now(); this.emit('change'); }
+    }
+  }
+
+  receiveOffer(conn, d, m) {
+    const answer = (ok, reason) => this.write(conn, { t: 'ho-answer', id: m.id, ok, ...(reason ? { reason } : {}) });
+    if (!C.mayHandoff(this.devices, this.secrets, d.pub)) { this.emit('handoff-refused', { device: d, offer: m, reason: 'not-allowed' }); return answer(false, 'not-allowed'); }
+    if (this.handoffsIn.size) return answer(false, 'in-progress');
+    const h = { id: m.id, pub: d.pub, conn, offer: m, stage: 'asking', parts: { pack: [], bundle: [] }, bytes: { pack: 0, bundle: 0 }, seq: { pack: 0, bundle: 0 }, at: this.now() };
+    this.handoffsIn.set(m.id, h);
+    this.emit('handoff-offer', { device: d, offer: m });
+    this.emit('change');
+  }
+  /** The person's answer to an offer. Returns false when there is no such open offer. */
+  answerHandoff(id, accept, reason = 'declined') {
+    const h = this.handoffsIn.get(id);
+    if (!h || h.stage !== 'asking') return false;
+    if (!accept) { this.write(h.conn, { t: 'ho-answer', id, ok: false, reason }); this.handoffsIn.delete(id); }
+    else { h.stage = 'receiving'; this.write(h.conn, { t: 'ho-answer', id, ok: true }); }
+    this.emit('change');
+    return true;
+  }
+  dropIn(h, reason, tell = true) {
+    if (tell) this.write(h.conn, { t: 'ho-result', id: h.id, ok: false, reason });
+    this.handoffsIn.delete(h.id);
+    this.emit('handoff-failed', { offer: h.offer, reason });
+    this.emit('change');
+  }
+  receiveChunk(d, m) {
+    const h = this.handoffsIn.get(m.id);
+    if (!h || h.pub !== d.pub || h.stage !== 'receiving') return;
+    const want = h.offer[m.part];
+    if (!want || m.seq !== h.seq[m.part] || (m.part === 'bundle' && h.bytes.pack < h.offer.pack.size)) return this.dropIn(h, 'bad-data');
+    const buf = Buffer.from(m.data, 'base64');
+    if (h.bytes[m.part] + buf.length > want.size) return this.dropIn(h, 'too-large');
+    h.parts[m.part].push(buf);
+    h.bytes[m.part] += buf.length;
+    h.seq[m.part]++;
+    if (h.bytes.pack < h.offer.pack.size || (h.offer.bundle && h.bytes.bundle < h.offer.bundle.size)) return;
+    const parts = { pack: Buffer.concat(h.parts.pack), bundle: h.offer.bundle ? Buffer.concat(h.parts.bundle) : null };
+    const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+    if (sha(parts.pack) !== h.offer.pack.sha || (parts.bundle && sha(parts.bundle) !== h.offer.bundle.sha)) return this.dropIn(h, 'checksum');
+    h.stage = 'applying';
+    h.parts = null;
+    this.emit('change');
+    const done = (r) => {
+      if (!this.handoffsIn.has(h.id)) return;
+      this.write(h.conn, { t: 'ho-result', id: h.id, ok: r.ok === true, ...(r.reason ? { reason: r.reason } : {}), ...(r.applied ? { applied: r.applied } : {}) });
+      this.handoffsIn.delete(h.id);
+      this.emit('change');
+    };
+    this.emit('handoff-data', { device: d, offer: h.offer, parts, done });
   }
 
   receiveCommand(conn, d, m) {
@@ -263,6 +377,7 @@ class Link extends EventEmitter {
 
   rename(pub, name) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, name: C.deviceName(name, d.name) } : d)); this.persist(); this.emit('change'); }
   setAllow(pub, on) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowCommands: on === true } : d)); this.persist(); this.emit('change'); }
+  setAllowHandoff(pub, on) { this.devices = this.devices.map((d) => (d.pub === pub ? { ...d, allowHandoff: on === true } : d)); this.persist(); this.emit('change'); }
   setName(name) {
     this.name = C.deviceName(name, this.name);
     for (const conn of this.conns.values()) this.write(conn, { t: 'hello', v: C.PROTOCOL, name: this.name });
@@ -288,9 +403,13 @@ class Link extends EventEmitter {
     return {
       name: this.name, id: this.pub.slice(0, 8),
       pairing: this.pairing ? { role: this.pairing.role, code: this.pairing.role === 'inviter' ? this.pairing.code : null, expiresAt: this.pairing.expiresAt } : null,
-      devices: this.devices.map((d) => ({ id: d.pub, name: d.name, addedAt: d.addedAt, allowCommands: d.allowCommands, online: this.conns.has(d.pub) })),
+      devices: this.devices.map((d) => ({ id: d.pub, name: d.name, addedAt: d.addedAt, allowCommands: d.allowCommands, allowHandoff: d.allowHandoff, online: this.conns.has(d.pub) })),
       remotes: [...this.remotes].map(([pub, r]) => ({ device: pub, name: this.devices.find((d) => d.pub === pub)?.name || '?', at: r.at, ...r.snap })),
       outgoing: this.outgoing.map((o) => ({ ...o, deviceName: this.devices.find((d) => d.pub === o.pub)?.name || '?' })),
+      handoffs: {
+        out: [...this.handoffsOut.values()].slice(-5).map((h) => ({ id: h.id, device: h.pub, deviceName: this.devices.find((d) => d.pub === h.pub)?.name || '?', name: h.name, stage: h.stage, sent: h.sent, total: h.total, ...(h.reason ? { reason: h.reason } : {}), ...(h.applied ? { applied: h.applied } : {}), at: h.at })),
+        in: [...this.handoffsIn.values()].map((h) => ({ id: h.id, device: h.pub, deviceName: this.devices.find((d) => d.pub === h.pub)?.name || '?', name: h.offer.name, dir: h.offer.dir, stage: h.stage, got: h.bytes.pack + h.bytes.bundle, total: h.offer.pack.size + (h.offer.bundle?.size || 0), at: h.at })),
+      },
     };
   }
 

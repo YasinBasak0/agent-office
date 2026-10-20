@@ -476,7 +476,32 @@
     "fallbackReturned": "{to}'s usage limit has reset; back on {to} (from {from})",
     "fallbackStuck": "{from}'s usage limit is reached and no backup account can take over (not logged in or at its limit too)",
     "fallbackLoop": "{from}'s usage limit is reached, but this project already changed accounts several times recently; staying on {from}",
-    "linkApproval": "{device}: {project} needs approval"
+    "linkApproval": "{device}: {project} needs approval",
+    "handoffTo": "Hand off to",
+    "handoffClaudeOnly": "Claude Code projects only",
+    "handoffGo": "Hand off",
+    "handoffConfirm": "Hand off {project} to {device}?",
+    "handoffDetail": "Uncommitted changes go on a new branch agent-office/handoff-… (your branch and files stay as they are), pushed to the remote or sent directly. The sessions, memory and settings go with it. The project then runs on the other device; here it closes and shows as a remote project.",
+    "handoffFailed": "{project} was not handed off to {device}",
+    "handoffReason": {
+      "declined": "they declined",
+      "not-allowed": "handoffs from this device are off there",
+      "busy": "a tab of the project is working: wait or stop it first",
+      "engine": "Claude Code projects only",
+      "not-git": "the folder is not a git repository",
+      "offline": "the device is offline or the connection dropped",
+      "too-large": "the data is larger than allowed (code 200 MB, sessions 100 MB)",
+      "bad-data": "the data was malformed",
+      "checksum": "the data arrived damaged (checksum)",
+      "apply-failed": "the other device could not apply it (see handoff.log there)",
+      "timeout": "no answer in time",
+      "in-progress": "another handoff is in progress there",
+      "cancelled": "no folder was chosen",
+      "unknown-project": "no such project"
+    },
+    "handoffOffer": "{device} wants to hand you {project}",
+    "handoffBranchOnly": "{project}: the folder had other changes, so the work is on branch {branch}",
+    "handoffPickFolder": "Folder for the handed-off project"
   },
   "auth": {
     "unreadable": "could not read the login status",
@@ -611,6 +636,21 @@
       "no-keychain": "No system keychain to keep the device keys safely: the device link is off",
       "keys": "The device keys could not be read: the device link is off",
       "off": "Off"
+    },
+    "allowHandoff": "Accept handoffs from this device",
+    "handedOff": "{project} → {device}",
+    "handedOffTitle": "Handed off",
+    "handoff": {
+      "offer": "{device} wants to hand you {project}",
+      "accept": "Accept",
+      "decline": "Decline",
+      "asking": "waiting for an answer",
+      "sending": "sending {pct}%",
+      "receiving": "receiving {pct}%",
+      "applying": "applying",
+      "done": "handed off",
+      "failed": "failed: {reason}",
+      "out": "{project} → {device}"
     }
   }
 }

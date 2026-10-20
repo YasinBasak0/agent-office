@@ -13,6 +13,12 @@ const MAX_FRAME = 64 * 1024;              // one message on the wire (bytes); a 
 const MAX_COMMAND = 8 * 1024;             // a remote command's text (UTF-8 bytes)
 const MAX_NAME = 40;                      // device names
 const CODE_WORDS = 5;                     // 5 words of 256 = 40 bits, stretched by scrypt (see pairSecrets)
+// project handoff (contract v3.29)
+const MAX_BUNDLE = 200 * 1024 * 1024;     // a git bundle sent over the link
+const MAX_PACK = 100 * 1024 * 1024;       // the session data (transcripts, memory, facts, settings)
+const CHUNK = 32 * 1024;                  // bytes per ho-chunk (base64 keeps the line under MAX_FRAME)
+const HANDOFF_REASONS = ['declined', 'not-allowed', 'busy', 'engine', 'not-git', 'offline', 'too-large', 'bad-data', 'checksum', 'apply-failed', 'timeout', 'in-progress', 'cancelled', 'unknown-project'];
+const APPLIED = ['restored', 'branch-only'];
 
 // 256 short, distinct, easy-to-type English words: a code word is one byte.
 const WORDS = (
@@ -175,6 +181,27 @@ function validateMessage(m) {
     case 'cmd-status':
       return isId(m.id) && CMD_STATUS.includes(m.status) && (m.reason == null || REASONS.includes(m.reason))
         ? { t: 'cmd-status', id: m.id, status: m.status, ...(m.reason ? { reason: m.reason } : {}) } : null;
+    case 'ho-offer': {
+      const g = m.git;
+      const sum = (x) => x && isInt(x.size) && isHex(x.sha, 32) ? { size: x.size, sha: x.sha } : null;
+      const pack = sum(m.pack);
+      const bundle = m.bundle == null ? null : sum(m.bundle);
+      if (!isId(m.id) || !isStr(m.name, 200) || !isStr(m.dir, 1024) || !m.dir || m.engine !== 'claude' || !g || typeof g !== 'object') return null;
+      if (!['remote', 'bundle'].includes(g.mode) || !isStr(g.wip, 80) || !/^agent-office\/handoff-[0-9]{8,17}$/.test(g.wip)) return null;
+      if (!(g.base === '' || isHex(g.base, 20)) || !(g.root === '' || isHex(g.root, 20)) || !isStr(g.remote, 1000) || /[\s\0]/.test(g.remote)) return null;
+      if (!isStr(g.branch, 200) || !/^[A-Za-z0-9._/-]*$/.test(g.branch) || g.branch.includes('..') || g.branch.startsWith('-')) return null;
+      if (g.remote.startsWith('-') || (g.mode === 'remote' && !g.remote)) return null;
+      if (!pack || pack.size > MAX_PACK || (m.bundle != null && !bundle) || (bundle && bundle.size > MAX_BUNDLE) || (g.mode === 'bundle') !== Boolean(bundle)) return null;
+      return { t: 'ho-offer', id: m.id, name: cleanLine(m.name, 60) || '?', dir: m.dir, engine: 'claude', git: { mode: g.mode, wip: g.wip, base: g.base, root: g.root, branch: g.branch, remote: g.remote }, pack, bundle };
+    }
+    case 'ho-answer':
+      return isId(m.id) && typeof m.ok === 'boolean' && (m.reason == null || HANDOFF_REASONS.includes(m.reason)) ? { t: 'ho-answer', id: m.id, ok: m.ok, ...(m.reason ? { reason: m.reason } : {}) } : null;
+    case 'ho-chunk':
+      return isId(m.id) && (m.part === 'pack' || m.part === 'bundle') && isInt(m.seq, 1e6) && isStr(m.data, Math.ceil(CHUNK / 3) * 4) && /^[A-Za-z0-9+/]*={0,2}$/.test(m.data)
+        ? { t: 'ho-chunk', id: m.id, part: m.part, seq: m.seq, data: m.data } : null;
+    case 'ho-result':
+      return isId(m.id) && typeof m.ok === 'boolean' && (m.reason == null || HANDOFF_REASONS.includes(m.reason)) && (m.applied == null || APPLIED.includes(m.applied))
+        ? { t: 'ho-result', id: m.id, ok: m.ok, ...(m.reason ? { reason: m.reason } : {}), ...(m.applied ? { applied: m.applied } : {}) } : null;
     default:
       return null;
   }
@@ -212,12 +239,12 @@ function encode(m) {
 
 // --- the trust list (devices.json; the secrets live apart, encrypted)
 
-/** @typedef {{ pub: string, name: string, addedAt: number, allowCommands: boolean }} Device */
+/** @typedef {{ pub: string, name: string, addedAt: number, allowCommands: boolean, allowHandoff: boolean }} Device */
 function normalizeDevices(raw) {
   const out = [];
   for (const d of Array.isArray(raw) ? raw : []) {
     if (!d || !isHex(d.pub, 32) || out.some((o) => o.pub === d.pub)) continue;
-    out.push({ pub: d.pub, name: deviceName(d.name), addedAt: isInt(d.addedAt) ? d.addedAt : 0, allowCommands: d.allowCommands === true });
+    out.push({ pub: d.pub, name: deviceName(d.name), addedAt: isInt(d.addedAt) ? d.addedAt : 0, allowCommands: d.allowCommands === true, allowHandoff: d.allowHandoff === true });
   }
   return out;
 }
@@ -228,6 +255,8 @@ function trusted(devices, secrets, remotePub) {
 }
 /** May this device type into our tabs? Only a trusted device with the toggle on. */
 const mayCommand = (devices, secrets, remotePub) => Boolean(trusted(devices, secrets, remotePub)?.allowCommands);
+/** May this device hand us a project? Only a trusted device with "Accept handoffs" on (v3.29). */
+const mayHandoff = (devices, secrets, remotePub) => Boolean(trusted(devices, secrets, remotePub)?.allowHandoff);
 
 // --- what this device publishes: from the same OfficeData the office renders, nothing else
 
@@ -256,8 +285,9 @@ const logEntry = (at, device, project, text, outcome) => ({ at: new Date(at).toI
 
 module.exports = {
   PROTOCOL, HEARTBEAT_MS, HEARTBEAT_MISSES, PAIR_TTL_MS, MAX_FRAME, MAX_COMMAND, WORDS, CODE_WORDS, REASONS,
+  MAX_BUNDLE, MAX_PACK, CHUNK, HANDOFF_REASONS,
   makeCode, normalizeCode, pairSecrets, pairProof, proofOk, pairTopic, hex, isHex,
   cleanLine, sanitizeCommand, markedCommand, deviceName, RateLimiter,
   cleanSnapshot, validateMessage, validatePair, LineReader, encode,
-  normalizeDevices, trusted, mayCommand, snapshotOf, logEntry,
+  normalizeDevices, trusted, mayCommand, mayHandoff, snapshotOf, logEntry,
 };
