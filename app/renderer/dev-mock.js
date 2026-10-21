@@ -171,6 +171,7 @@ window.agentOffice = {
       changed();
     },
     setActive: async (id) => { activeId = id; changed(); },
+    openFolder: async () => true,
     menu: async () => {},
     setAccount: async (id, accountId) => {
       const p = projects.find((x) => x.id === id);
@@ -212,6 +213,29 @@ window.agentOffice = {
       return { restarted: [] };
     },
     onChange: ev.projects.add,
+  },
+  // contract v3.42: connectors are projects with an `mcp` field (the token is never kept in the mock)
+  connectors: {
+    get: async (id) => { const p = projects.find((x) => x.id === id); return p?.mcp ? { ...p.mcp, dir: p.dir, hasToken: true } : null; },
+    pickDir: async () => '/Users/me/Connectors/picked',
+    add: async (f) => {
+      if (!String(f?.label || '').trim()) return { ok: false, error: 'name' };
+      if (!/^https?:\/\//.test(String(f?.url || ''))) return { ok: false, error: 'url' };
+      const p = { id: rid(), dir: f.dir || `/Users/me/Library/Agent Office/connectors/${f.label.trim().toLowerCase()}`, name: f.label.trim().toLowerCase(), accountId: 'default', mcp: { label: f.label.trim(), url: f.url } };
+      projects.push(p);
+      activeId = p.id;
+      boot(p.id);
+      return { ok: true, project: { ...p } };
+    },
+    update: async (id, f) => {
+      const p = projects.find((x) => x.id === id);
+      if (!p?.mcp) return { ok: false, error: 'unknown' };
+      if (!String(f?.label || '').trim()) return { ok: false, error: 'name' };
+      if (!/^https?:\/\//.test(String(f?.url || ''))) return { ok: false, error: 'url' };
+      p.mcp = { label: f.label.trim(), url: f.url };
+      changed();
+      return { ok: true, restarted: [] };
+    },
   },
   tabs: {
     add: async (projectId, mode) => {

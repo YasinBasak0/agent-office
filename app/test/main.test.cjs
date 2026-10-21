@@ -3642,9 +3642,9 @@ test('müdür modeli: kenar çubuğunda her motorda, Ajan modelinden önce (v3.2
   const fs = require('node:fs');
   const path = require('node:path');
   const sb = fs.readFileSync(path.join(__dirname, '../renderer/sidebar.js'), 'utf8');
-  const boss = sb.indexOf('          bossModelSelect(p),');
-  const agent = sb.indexOf('          agentModelSelect(p),');
-  assert.ok(boss > 0 && agent > boss, 'Boss model dropdown must be shown for every engine, right before Agent model');
+  const boss = sb.indexOf('bossModelSelect(p), agentModelSelect(p)');
+  const agent = sb.indexOf('agentModelSelect(p)', boss);
+  assert.ok(boss > 0 && agent > boss, 'Boss model dropdown must be in the project popup for every engine, right before Agent model (v3.41)');
   assert.doesNotMatch(sb, /claude \? (account|manager|bossModel|agentModel|contextCap|savings|backup)Select\(p\) : null/, 'no control is hidden for another engine (v3.36)');
   const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
   assert.match(main, /R\.claudeArgs\(\[\.\.\.P\.bossModelArgs\(project\)/);
@@ -4038,4 +4038,58 @@ test('review fixes: bossModel survives another engine, exclude merge, secret fil
   fs2.symlinkSync(out2, pa.join(d2, '.agents'));
   const r2 = PF.syncProjectFiles(d2, PF.desiredFiles({ engine: 'agy', enabled: true, manager: true }));
   assert.deepEqual(fs2.readdirSync(out2), []); assert.ok(r2.warnings.includes('.agents'));
+});
+
+// --- plain terminal tab (contract v3.41)
+test('düz terminal sekmesi: shell:true + dir saklanır, motor id\'lerinde yok, allPtyIdsOf\'ta var (v3.41)', () => {
+  const P = require('../src/projects.js');
+  const tabs = P.normalizeTabs([{ n: 2, dir: '/x/y', shell: true }, { n: 3, shell: true }, { n: 4 }]);
+  assert.deepEqual(tabs, [{ n: 2, dir: '/x/y', shell: true }, { n: 4 }]); // a shell without a folder is dropped
+  const p = { id: 'p1', name: 'p', dir: '/p', tabs };
+  assert.deepEqual(P.ptyIdsOf(p), ['p1', 'p1:4']);
+  assert.deepEqual(P.allPtyIdsOf(p), ['p1', 'p1:2', 'p1:4']);
+  assert.equal(P.resolvePty({ projects: [p] }, 'p1:2').dir, '/x/y');
+  assert.deepEqual(P.sessionAliases([{ ...p, tabs: [{ n: 2, dir: '/other/zed', shell: true }] }]), {});
+});
+test('düz terminal sekmesi: main.js başlatır, uyutmaz, motor mantığına sokmaz (v3.41)', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../main.js'), 'utf8');
+  assert.match(src, /if \(r\.tab\?\.shell\) return startShell\(id, r\)/);
+  assert.match(src, /function startShell[\s\S]{0,900}AGENT_OFFICE_/);
+  assert.doesNotMatch(src.slice(src.indexOf('function startShell'), src.indexOf('function startOpenCode')), /sessionEnv|claudeArgs|plugin/);
+});
+
+// --- connectors (contract v3.42)
+test('bağlantı: adres ve ad doğrulanır, sunucu girdisi bearer başlığı taşır, token dosyada yok (v3.42)', () => {
+  const C = require('../src/connectors.js');
+  assert.equal(C.validate({ label: '', url: 'https://x.io/mcp' }), 'name');
+  assert.equal(C.validate({ label: 'N', url: 'ftp://x' }), 'url');
+  assert.equal(C.validate({ label: 'N', url: 'https://x.io/mcp' }), null);
+  const s = C.serverFor({ mcp: { label: 'My Notion', url: 'https://x.io/mcp' } }, 'tok');
+  assert.deepEqual(s, { 'conn-my-notion': { type: 'http', url: 'https://x.io/mcp', headers: { Authorization: 'Bearer tok' } } });
+  assert.equal(C.serverFor({}, 'tok'), null);
+  assert.deepEqual(C.serverFor({ mcp: { label: 'A', url: 'https://x.io/' } }, '')['conn-a'], { type: 'http', url: 'https://x.io/' });
+  assert.ok(!C.metaOf({ label: 'A', url: 'https://x.io/' }).includes('token'));
+});
+test('bağlantı: varsayılan klasör kararlı, başkasının klasörünü almaz; düzenleme klasörü (geçmişi) korur (v3.42)', () => {
+  const C = require('../src/connectors.js');
+  const P = require('../src/projects.js');
+  assert.equal(C.defaultDir('/r', 'My Notion', () => false), '/r/my-notion');
+  assert.equal(C.defaultDir('/r', 'My Notion', (d) => d === '/r/my-notion'), '/r/my-notion-2');
+  const st = { projects: [], accounts: [{ id: 'default', label: 'Varsayılan' }], activeId: null };
+  const a = P.addConnector(st, '/r/my-notion', { label: 'My Notion', url: 'https://x.io/mcp' });
+  assert.ok(a.project.mcp && a.project.name === 'my-notion');
+  assert.equal(P.addConnector(a.state, '/r/my-notion', { label: 'X', url: 'https://y.io' }), null); // the folder is taken
+  const b = P.setConnector(a.state, a.project.id, { label: 'Notion 2', url: 'https://z.io/mcp' });
+  const p = P.findProject(b, a.project.id);
+  assert.equal(p.dir, '/r/my-notion'); assert.equal(p.id, a.project.id); assert.equal(p.mcp.label, 'Notion 2');
+  assert.equal(P.setConnector(b, a.project.id, { label: 'Notion 2', url: 'https://z.io/mcp' }), b); // nothing changed
+  const n = P.normalizeState({ projects: [{ id: 'a', dir: '/r/my-notion', mcp: { label: 'N', url: 'javascript:1' } }] });
+  assert.equal(n.projects[0].mcp, undefined); // a bad address is dropped
+});
+test('bağlantı: token main.js\'te şifreli saklanır, yalnız oturumun MCP dosyasına girer, kaldırılınca silinir (v3.42)', () => {
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../main.js'), 'utf8');
+  assert.match(src, /safeStorage\.encryptString\(token\)/);
+  assert.match(src, /C\.serverFor\(project, loadConnectorToken\(project\.id\)\)/);
+  assert.match(src, /if \(p\?\.mcp\) deleteConnectorToken\(p\.id\)/);
+  assert.doesNotMatch(require('node:fs').readFileSync(require('node:path').join(__dirname, '../preload.js'), 'utf8'), /loadConnectorToken|token\s*:\s*\(/);
 });
